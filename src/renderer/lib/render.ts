@@ -107,10 +107,19 @@ function drawStep(ctx: CanvasRenderingContext2D, s: StepShape, index: number): v
 function drawObscure(
   ctx: CanvasRenderingContext2D,
   s: BlurShape,
-  canvas: HTMLCanvasElement | OffscreenCanvas
+  canvas: HTMLCanvasElement | OffscreenCanvas,
+  origin: { x: number; y: number }
 ): void {
   const r = normalizeRect(s)
   if (r.width < 2 || r.height < 2) return
+
+  // drawImage's SOURCE rect is never affected by the context transform, so the
+  // readback must be done in canvas space explicitly. Shapes are in image space
+  // and the canvas is crop-relative; without subtracting the crop origin this
+  // copies pixels from the wrong part of the image - which for a redaction tool
+  // means showing content it was never asked to reveal while leaving the
+  // sensitive pixels visible.
+  const src = { x: r.x - origin.x, y: r.y - origin.y }
 
   const scratch = document.createElement('canvas')
   const sctx = scratch.getContext('2d')
@@ -123,7 +132,7 @@ function drawObscure(
     scratch.width = w
     scratch.height = h
     sctx.imageSmoothingEnabled = false
-    sctx.drawImage(canvas as CanvasImageSource, r.x, r.y, r.width, r.height, 0, 0, w, h)
+    sctx.drawImage(canvas as CanvasImageSource, src.x, src.y, r.width, r.height, 0, 0, w, h)
     ctx.save()
     ctx.imageSmoothingEnabled = false
     ctx.drawImage(scratch, 0, 0, w, h, r.x, r.y, r.width, r.height)
@@ -131,7 +140,7 @@ function drawObscure(
   } else {
     scratch.width = Math.round(r.width)
     scratch.height = Math.round(r.height)
-    sctx.drawImage(canvas as CanvasImageSource, r.x, r.y, r.width, r.height, 0, 0, scratch.width, scratch.height)
+    sctx.drawImage(canvas as CanvasImageSource, src.x, src.y, r.width, r.height, 0, 0, scratch.width, scratch.height)
     ctx.save()
     ctx.filter = `blur(${Math.max(2, s.intensity)}px)`
     // Clip so the blur's soft edge can't bleed outside the selected region.
@@ -147,7 +156,8 @@ export function drawShape(
   ctx: CanvasRenderingContext2D,
   shape: Shape,
   canvas: HTMLCanvasElement | OffscreenCanvas,
-  stepIndex = 1
+  stepIndex = 1,
+  origin: { x: number; y: number } = { x: 0, y: 0 }
 ): void {
   const r = normalizeRect(shape)
 
@@ -198,7 +208,7 @@ export function drawShape(
       break
 
     case 'blur':
-      drawObscure(ctx, shape, canvas)
+      drawObscure(ctx, shape, canvas, origin)
       break
 
     case 'text':
@@ -240,7 +250,7 @@ export function renderDocument(
   let step = 0
   for (const shape of doc.shapes) {
     if (shape.kind === 'step') step += 1
-    drawShape(ctx, shape, canvas, step)
+    drawShape(ctx, shape, canvas, step, crop ?? { x: 0, y: 0 })
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0)

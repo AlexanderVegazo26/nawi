@@ -27,15 +27,35 @@ function pickMimeType(): string | undefined {
 }
 
 export class ScreenRecorder {
+  /**
+   * Fired when the recording stopped without anyone calling `stop()` — the user
+   * hit the OS's own "stop sharing" bar, or the source went away. Consumers must
+   * handle this or the recording is lost and the UI stays stuck showing
+   * "recording in progress".
+   */
+  onAutoStop: (() => void) | null = null
+
   private recorder: MediaRecorder | null = null
   private stream: MediaStream | null = null
   private chunks: Blob[] = []
   private startedAt = 0
+  /**
+   * Created at `start()`, not at `stop()`. Resolving a promise that only exists
+   * once someone asks to stop means an unsolicited stop has nowhere to deliver
+   * its result, and the finished recording is silently dropped.
+   */
+  private done: Promise<RecordingResult> | null = null
   private settle: ((r: RecordingResult) => void) | null = null
   private fail: ((e: Error) => void) | null = null
+  private stopRequested = false
 
   get active(): boolean {
     return this.recorder !== null && this.recorder.state === 'recording'
+  }
+
+  /** The in-flight recording's eventual result, or null if none was started. */
+  get result(): Promise<RecordingResult> | null {
+    return this.done
   }
 
   async start(sourceId: string, withAudio: boolean): Promise<void> {
@@ -71,6 +91,11 @@ export class ScreenRecorder {
     this.stream = stream
     this.chunks = []
     this.startedAt = performance.now()
+    this.stopRequested = false
+    this.done = new Promise<RecordingResult>((resolve, reject) => {
+      this.settle = resolve
+      this.fail = reject
+    })
 
     const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 })
     this.recorder = recorder
@@ -91,8 +116,12 @@ export class ScreenRecorder {
         height: Math.round(settings.height ?? 0),
         durationMs: Math.round(performance.now() - this.startedAt)
       }
+      const wasUnsolicited = !this.stopRequested
       this.cleanup()
       this.settle?.(result)
+      // Let the app persist the blob and clear its "recording" state; otherwise
+      // an OS-initiated stop loses the recording and wedges the UI.
+      if (wasUnsolicited) this.onAutoStop?.()
     }
 
     // The user can also stop from the OS's own "stop sharing" affordance.
@@ -105,15 +134,12 @@ export class ScreenRecorder {
   }
 
   stop(): Promise<RecordingResult> {
-    return new Promise<RecordingResult>((resolve, reject) => {
-      if (!this.recorder || this.recorder.state === 'inactive') {
-        reject(new Error('No recording in progress'))
-        return
-      }
-      this.settle = resolve
-      this.fail = reject
-      this.recorder.stop()
-    })
+    if (!this.recorder || this.recorder.state === 'inactive' || !this.done) {
+      return Promise.reject(new Error('No recording in progress'))
+    }
+    this.stopRequested = true
+    this.recorder.stop()
+    return this.done
   }
 
   /** Abandons the recording without producing a result. */

@@ -180,3 +180,95 @@ test('delete asks for confirmation, then empties the library', async () => {
   })
   expect(count).toBe(0)
 })
+
+/* ------------------------------------------------------------------ *
+ * Regression tests for defects found in review — each of these was a
+ * real bug that the original suite could not have caught.
+ * ------------------------------------------------------------------ */
+
+test('moving a shape is undoable', async () => {
+  await win.getByRole('button', { name: 'Capture', exact: true }).click()
+  await win.getByRole('button', { name: /Full screen/ }).click()
+  const canvas = win.locator('canvas[aria-label="Annotation canvas"]')
+  await expect(canvas).toBeVisible({ timeout: 20_000 })
+
+  const readPos = async (): Promise<{ x: number; y: number } | null> =>
+    win.evaluate(async () => {
+      const r = await window.api.listLibrary()
+      const s = r.ok ? r.value[0].annotations?.shapes[0] : null
+      return s ? { x: s.x, y: s.y } : null
+    })
+
+  // Draw a rectangle and persist it.
+  await win.getByRole('button', { name: 'Rectangle' }).click()
+  const box = (await canvas.boundingBox())!
+  await win.mouse.move(box.x + 50, box.y + 50)
+  await win.mouse.down()
+  await win.mouse.move(box.x + 160, box.y + 130, { steps: 10 })
+  await win.mouse.up()
+  await win.getByRole('button', { name: 'Save' }).click()
+  await expect.poll(async () => (await readPos()) !== null).toBe(true)
+  const posBefore = (await readPos())!
+
+  // Drag it with the select tool.
+  await win.getByRole('button', { name: 'Select' }).click()
+  await win.mouse.move(box.x + 105, box.y + 90)
+  await win.mouse.down()
+  await win.mouse.move(box.x + 205, box.y + 170, { steps: 10 })
+  await win.mouse.up()
+  await win.getByRole('button', { name: 'Save' }).click()
+  await expect.poll(async () => Math.round((await readPos())!.x)).not.toBe(Math.round(posBefore.x))
+
+  // The move must be undoable — it previously created no history entry at all,
+  // so Undo silently discarded some earlier operation instead.
+  await win.getByRole('button', { name: 'Undo' }).click()
+  await win.getByRole('button', { name: 'Save' }).click()
+  await expect.poll(async () => Math.round((await readPos())!.x)).toBe(Math.round(posBefore.x))
+  expect(Math.round((await readPos())!.y)).toBe(Math.round(posBefore.y))
+})
+
+test('copy to clipboard works against the real Electron clipboard API', async () => {
+  // Electron 44 replaced clipboard.writeImage with an async ClipboardItem API.
+  // If that call shape were wrong the feature would fail silently in a build.
+  await expect(win.locator('canvas[aria-label="Annotation canvas"]')).toBeVisible()
+  await win.getByRole('button', { name: 'Copy', exact: true }).click()
+
+  await expect
+    .poll(async () => app.evaluate(async ({ clipboard }) => clipboard.has('image/png')), {
+      timeout: 10_000
+    })
+    .toBe(true)
+})
+
+test('blur renders correctly over a cropped document', async () => {
+  const canvas = win.locator('canvas[aria-label="Annotation canvas"]')
+  const box = (await canvas.boundingBox())!
+
+  // Crop, which shifts the canvas origin away from image-space (0,0).
+  await win.getByRole('button', { name: 'Crop' }).click()
+  await win.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.35)
+  await win.mouse.down()
+  await win.mouse.move(box.x + box.width * 0.95, box.y + box.height * 0.95, { steps: 10 })
+  await win.mouse.up()
+
+  await expect.poll(async () => (await canvas.boundingBox())!.width < box.width).toBe(true)
+
+  // Draw a blur inside the cropped view. Before the fix this read pixels from
+  // the wrong part of the image — a redaction tool showing unrelated content.
+  await win.getByRole('button', { name: 'Blur / pixelate' }).click()
+  const b = (await canvas.boundingBox())!
+  await win.mouse.move(b.x + 30, b.y + 30)
+  await win.mouse.down()
+  await win.mouse.move(b.x + 140, b.y + 110, { steps: 10 })
+  await win.mouse.up()
+
+  // The blurred region must be fully opaque: sampling out of bounds yields
+  // transparent pixels, which is exactly what the coordinate bug produced.
+  const alpha = await win.evaluate(() => {
+    const c = document.querySelector('canvas[aria-label="Annotation canvas"]') as HTMLCanvasElement
+    const ctx = c.getContext('2d')!
+    const d = ctx.getImageData(60, 60, 1, 1).data
+    return d[3]
+  })
+  expect(alpha).toBe(255)
+})

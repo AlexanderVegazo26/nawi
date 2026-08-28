@@ -4,7 +4,7 @@ import { CaptureView } from './components/CaptureView'
 import { LibraryView } from './components/LibraryView'
 import { EditorView } from './components/EditorView'
 import { Toast } from './components/ui'
-import { ScreenRecorder, blobToBytes } from './lib/recorder'
+import { ScreenRecorder, blobToBytes, type RecordingResult } from './lib/recorder'
 
 type View = 'capture' | 'library'
 interface ToastMsg {
@@ -48,7 +48,10 @@ export function App(): React.JSX.Element {
   const [toasts, setToasts] = useState<ToastMsg[]>([])
   const [recording, setRecording] = useState<{ elapsedMs: number } | null>(null)
 
-  const recorderRef = useRef(new ScreenRecorder())
+  // Lazily constructed: `useRef(new ScreenRecorder())` would build and discard a
+  // recorder on every render, and this object owns a MediaStream.
+  const recorderRef = useRef<ScreenRecorder | null>(null)
+  if (recorderRef.current === null) recorderRef.current = new ScreenRecorder()
   const toastId = useRef(0)
 
   const notify = useCallback((message: string, tone: 'ok' | 'err' = 'ok') => {
@@ -79,11 +82,9 @@ export function App(): React.JSX.Element {
     // whether a recording is active, not on the elapsed value.
   }, [recording !== null]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const stopRecording = useCallback(async () => {
-    if (!recorderRef.current.active) return
-    try {
-      const result = await recorderRef.current.stop()
-      setRecording(null)
+  /** Writes a finished recording to the library. Shared by the explicit and OS-initiated stop paths. */
+  const persistRecording = useCallback(
+    async (result: RecordingResult) => {
       const bytes = await blobToBytes(result.blob)
       const res = await window.api.saveRecording({
         data: bytes,
@@ -98,11 +99,55 @@ export function App(): React.JSX.Element {
       setItems((prev) => [res.value, ...prev])
       setView('library')
       notify('Recording saved to library')
+    },
+    [notify]
+  )
+
+  const stopRecording = useCallback(async () => {
+    const rec = recorderRef.current!
+    // Clear the banner even when the recorder is already inactive, so the UI can
+    // never be stuck showing "recording in progress" with a dead recorder.
+    if (!rec.active) {
+      setRecording(null)
+      return
+    }
+    try {
+      const result = await rec.stop()
+      setRecording(null)
+      await persistRecording(result)
     } catch (err) {
       setRecording(null)
       notify(err instanceof Error ? err.message : String(err), 'err')
     }
-  }, [notify])
+  }, [notify, persistRecording])
+
+  // The user can stop a recording from the OS's own "stop sharing" bar. Without
+  // this the finished blob is discarded and the app stays stuck mid-recording.
+  useEffect(() => {
+    const rec = recorderRef.current!
+    rec.onAutoStop = () => {
+      void (async () => {
+        try {
+          const result = await rec.result
+          setRecording(null)
+          if (result) await persistRecording(result)
+          else notify('Recording stopped before anything was captured', 'err')
+        } catch (err) {
+          setRecording(null)
+          notify(err instanceof Error ? err.message : String(err), 'err')
+        }
+      })()
+    }
+    return () => {
+      rec.onAutoStop = null
+    }
+  }, [persistRecording, notify])
+
+  // Never leave a capture stream running behind a closed window.
+  useEffect(() => {
+    const rec = recorderRef.current!
+    return () => rec.cancel()
+  }, [])
 
   useEffect(() => {
     const handler = (): void => void stopRecording()
@@ -125,7 +170,7 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     return window.api.onShortcut((action) => {
       // A capture during recording would dim the recorded frames; refuse it.
-      if (recorderRef.current.active && action !== 'record-stop') {
+      if (recorderRef.current!.active && action !== 'record-stop') {
         notify('Stop the recording before starting a new capture', 'err')
         return
       }
@@ -256,7 +301,7 @@ export function App(): React.JSX.Element {
           <CaptureView
             onCaptured={onCaptured}
             notify={notify}
-            recorder={recorderRef.current}
+            recorder={recorderRef.current!}
             recording={recording}
             setRecording={setRecording}
           />

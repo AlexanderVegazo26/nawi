@@ -46,9 +46,20 @@ export function EditorView({
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [doc, setDoc] = useState<AnnotationDoc>(item.annotations ?? emptyDoc())
-  const [history, setHistory] = useState<AnnotationDoc[]>([])
-  const [future, setFuture] = useState<AnnotationDoc[]>([])
+  /**
+   * One atomic history state with a pure reducer. Calling setFuture/setDoc from
+   * inside a setHistory updater is an impure reducer - StrictMode double-invokes
+   * updaters, which duplicated entries, and it would misbehave under concurrent
+   * rendering.
+   */
+  const [hist, setHist] = useState<{
+    past: AnnotationDoc[]
+    present: AnnotationDoc
+    future: AnnotationDoc[]
+  }>({ past: [], present: item.annotations ?? emptyDoc(), future: [] })
+  const doc = hist.present
+  const history = hist.past
+  const future = hist.future
   const [tool, setTool] = useState<Tool>('select')
   const [color, setColor] = useState(SWATCHES[0])
   const [stroke, setStroke] = useState(4)
@@ -59,7 +70,11 @@ export function EditorView({
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; value: string } | null>(null)
   const [cropDraft, setCropDraft] = useState<Rect | null>(null)
 
-  const draggingRef = useRef<{ start: { x: number; y: number }; shape: Shape | null } | null>(null)
+  const draggingRef = useRef<{
+    start: { x: number; y: number }
+    shape: Shape | null
+    before?: AnnotationDoc
+  } | null>(null)
   const [preview, setPreview] = useState<Shape | null>(null)
 
   const isVideo = item.kind === 'video'
@@ -71,6 +86,7 @@ export function EditorView({
       return
     }
     let cancelled = false
+    let objectUrl: string | null = null
     const img = new Image()
     img.onload = () => {
       if (cancelled) return
@@ -95,9 +111,32 @@ export function EditorView({
       setLoadError('This capture could not be loaded from disk.')
       setLoading(false)
     }
-    img.src = `capture://asset/${item.id}`
+
+    // Deliberately NOT `capture://asset/<id>`. An image from a custom scheme is
+    // cross-origin to this page, which taints the canvas — and a tainted canvas
+    // makes toBlob() and getImageData() throw, silently breaking both Export and
+    // Copy. Reading the bytes over IPC and using a same-origin blob: URL keeps
+    // the canvas clean.
+    void (async () => {
+      const res = await window.api.readItemBytes(item.id)
+      if (cancelled) return
+      if (!res.ok) {
+        setLoadError(res.error)
+        setLoading(false)
+        return
+      }
+      // Copy out of the view's own byte range — the underlying buffer is typed
+      // as ArrayBufferLike, which isn't a valid BlobPart.
+      const view = res.value.data
+      const buf = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer
+      const blob = new Blob([buf], { type: res.value.mime })
+      objectUrl = URL.createObjectURL(blob)
+      img.src = objectUrl
+    })()
+
     return () => {
       cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [item.id, isVideo])
 
@@ -137,16 +176,21 @@ export function EditorView({
       const ctx = canvas.getContext('2d')
       const r = normalizeRect(cropDraft)
       if (ctx) {
+        // cropDraft is in image space; the canvas is crop-relative when a crop is
+        // already applied. Convert once, here, rather than mixing the two spaces.
+        const off = doc.crop ? normalizeRect(doc.crop) : { x: 0, y: 0 }
+        const cx = r.x - off.x
+        const cy = r.y - off.y
         ctx.save()
         ctx.fillStyle = 'rgba(6,8,12,0.55)'
         ctx.fillRect(0, 0, canvas.width, canvas.height)
-        ctx.clearRect(r.x, r.y, r.width, r.height)
+        ctx.clearRect(cx, cy, r.width, r.height)
         if (imageRef.current) {
-          ctx.drawImage(imageRef.current, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height)
+          ctx.drawImage(imageRef.current, r.x, r.y, r.width, r.height, cx, cy, r.width, r.height)
         }
         ctx.strokeStyle = '#6ba3ff'
         ctx.lineWidth = 2 / zoom
-        ctx.strokeRect(r.x, r.y, r.width, r.height)
+        ctx.strokeRect(cx, cy, r.width, r.height)
         ctx.restore()
       }
     }
@@ -157,36 +201,51 @@ export function EditorView({
   }, [redraw, loading, loadError])
 
   /* ---------------- history ---------------- */
-  const commit = useCallback(
-    (next: AnnotationDoc) => {
-      setHistory((h) => [...h.slice(-(MAX_HISTORY - 1)), doc])
-      setFuture([])
-      setDoc(next)
-      setDirty(true)
-    },
-    [doc]
-  )
+  const commit = useCallback((next: AnnotationDoc) => {
+    setHist((h) => ({
+      past: [...h.past.slice(-(MAX_HISTORY - 1)), h.present],
+      present: next,
+      future: []
+    }))
+    setDirty(true)
+  }, [])
+
+  /** Updates the document without creating a history entry (live drag feedback). */
+  const setPresent = useCallback((fn: (d: AnnotationDoc) => AnnotationDoc) => {
+    setHist((h) => ({ ...h, present: fn(h.present) }))
+  }, [])
+
+  /** Pushes an explicit before-state, for gestures whose start we snapshotted. */
+  const pushHistory = useCallback((before: AnnotationDoc) => {
+    setHist((h) => ({
+      past: [...h.past.slice(-(MAX_HISTORY - 1)), before],
+      present: h.present,
+      future: []
+    }))
+    setDirty(true)
+  }, [])
 
   const undo = useCallback(() => {
-    setHistory((h) => {
-      if (h.length === 0) return h
-      const prev = h[h.length - 1]
-      setFuture((f) => [doc, ...f])
-      setDoc(prev)
-      setDirty(true)
-      return h.slice(0, -1)
-    })
-  }, [doc])
+    setHist((h) =>
+      h.past.length === 0
+        ? h
+        : {
+            past: h.past.slice(0, -1),
+            present: h.past[h.past.length - 1],
+            future: [h.present, ...h.future]
+          }
+    )
+    setDirty(true)
+  }, [])
 
   const redo = useCallback(() => {
-    setFuture((f) => {
-      if (f.length === 0) return f
-      setHistory((h) => [...h, doc])
-      setDoc(f[0])
-      setDirty(true)
-      return f.slice(1)
-    })
-  }, [doc])
+    setHist((h) =>
+      h.future.length === 0
+        ? h
+        : { past: [...h.past, h.present], present: h.future[0], future: h.future.slice(1) }
+    )
+    setDirty(true)
+  }, [])
 
   /* ---------------- pointer → image coords ---------------- */
   const toImage = useCallback(
@@ -227,7 +286,8 @@ export function EditorView({
       // Topmost shape wins, matching what the user sees.
       const hit = [...doc.shapes].reverse().find((s) => hitTest(s, p.x, p.y))
       setSelectedId(hit?.id ?? null)
-      if (hit) draggingRef.current = { start: p, shape: hit }
+      // Snapshot the pre-move document so the move itself is undoable.
+      if (hit) draggingRef.current = { start: p, shape: hit, before: doc }
       return
     }
 
@@ -264,7 +324,7 @@ export function EditorView({
     if (tool === 'select' && drag.shape) {
       const dx = p.x - drag.start.x
       const dy = p.y - drag.start.y
-      setDoc((d) => ({
+      setPresent((d) => ({
         ...d,
         shapes: d.shapes.map((s) =>
           s.id === drag.shape!.id ? { ...s, x: drag.shape!.x + dx, y: drag.shape!.y + dy } : s
@@ -293,7 +353,13 @@ export function EditorView({
     }
 
     if (tool === 'select') {
-      if (drag?.shape) setDirty(true)
+      // Only record a history entry if the shape actually moved, so a plain
+      // click to select doesn't pollute the undo stack.
+      if (drag?.shape && drag.before) {
+        const moved = drag.before.shapes.find((s) => s.id === drag.shape!.id)
+        const now = doc.shapes.find((s) => s.id === drag.shape!.id)
+        if (moved && now && (moved.x !== now.x || moved.y !== now.y)) pushHistory(drag.before)
+      }
       return
     }
 

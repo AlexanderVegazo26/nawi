@@ -42,15 +42,26 @@ async function readIndex(): Promise<LibraryItem[]> {
 }
 
 function writeIndex(items: LibraryItem[]): Promise<void> {
-  cache = items
-  writeChain = writeChain.then(async () => {
+  // Chain on a *settled* tail. Chaining on the raw promise would mean one
+  // rejected write permanently poisons the queue — every later `.then` would be
+  // skipped and no index write would ever be attempted again this process.
+  const next = writeChain.catch(() => undefined).then(async () => {
     await ensureDirs()
     const tmp = `${indexPath()}.tmp`
     await fs.writeFile(tmp, JSON.stringify(items, null, 2), 'utf-8')
     // Atomic-ish replace, so a crash mid-write can't truncate the index.
     await fs.rename(tmp, indexPath())
+    // Only publish to the cache once the bytes are actually on disk, so a failed
+    // write can never leave the UI reporting state that didn't persist.
+    cache = items
   })
-  return writeChain as Promise<void>
+
+  writeChain = next
+  return next.catch((err: unknown) => {
+    // Drop the cache so the next read re-hydrates from whatever is truly on disk.
+    cache = null
+    throw err
+  })
 }
 
 function defaultName(kind: MediaKind, when: Date): string {

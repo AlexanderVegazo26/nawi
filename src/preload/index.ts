@@ -27,6 +27,7 @@ const api: NawiApi = {
   deleteLibraryItem: (id) => ipcRenderer.invoke(IPC.deleteLibraryItem, id),
   renameLibraryItem: (id, name) => ipcRenderer.invoke(IPC.renameLibraryItem, id, name),
   saveAnnotations: (id, doc) => ipcRenderer.invoke(IPC.saveAnnotations, id, doc),
+  readItemBytes: (id) => ipcRenderer.invoke(IPC.readItemBytes, id),
 
   exportAs: (req) => ipcRenderer.invoke(IPC.exportAs, req),
   exportOriginal: (itemId) => ipcRenderer.invoke(IPC.exportOriginal, itemId),

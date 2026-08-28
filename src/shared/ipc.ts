@@ -17,6 +17,7 @@ export const IPC = {
   deleteLibraryItem: 'library:delete',
   renameLibraryItem: 'library:rename',
   saveAnnotations: 'library:save-annotations',
+  readItemBytes: 'library:read-bytes',
 
   exportAs: 'export:as',
   exportOriginal: 'export:original',

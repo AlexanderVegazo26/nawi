@@ -38,9 +38,16 @@ let mainWindow: BrowserWindow | null = null
 interface RegionSession {
   windows: BrowserWindow[]
   frames: Map<number, NativeImage>
-  settle: (item: LibraryItem | null) => void
+  /** webContents.id -> displayId, so an overlay's identity comes from main, not its payload. */
+  displayByWc: Map<number, number>
+  /** Takes ownership of settling. Returns false if someone else already has it. */
+  claim: () => boolean
+  finish: (item: LibraryItem | null) => void
 }
 let regionSession: RegionSession | null = null
+
+/** Backstop so a wedged overlay can never strand the user with no visible window. */
+const REGION_TIMEOUT_MS = 120_000
 
 /** The source the renderer is about to record; consumed by the display-media handler. */
 let pendingRecordingSourceId: string | null = null
@@ -213,10 +220,24 @@ async function beginRegion(): Promise<LibraryItem | null> {
   }
 
   return new Promise<LibraryItem | null>((resolve) => {
-    let settled = false
-    const settle = (item: LibraryItem | null): void => {
-      if (settled) return
-      settled = true
+    let owner = false
+    let done = false
+    let timer: NodeJS.Timeout
+
+    /**
+     * Two-phase settle. `claim` hands exclusive ownership to the first caller, so
+     * an Escape landing while `commitRegion` is mid-save can't cancel a capture
+     * that has already been written to disk.
+     */
+    const claim = (): boolean => {
+      if (owner || done) return false
+      owner = true
+      return true
+    }
+    const finish = (item: LibraryItem | null): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
       closeRegionSession()
       if (wasVisible) {
         mainWindow?.show()
@@ -225,6 +246,14 @@ async function beginRegion(): Promise<LibraryItem | null> {
       resolve(item)
     }
 
+    timer = setTimeout(() => {
+      if (claim()) {
+        console.warn('[beginRegion] timed out waiting for a selection')
+        finish(null)
+      }
+    }, REGION_TIMEOUT_MS)
+
+    const displayByWc = new Map<number, number>()
     const windows: BrowserWindow[] = []
     for (const d of screen.getAllDisplays()) {
       const win = new BrowserWindow({
@@ -249,22 +278,58 @@ async function beginRegion(): Promise<LibraryItem | null> {
         win.show()
         win.focus()
       })
+      hardenWindow(win)
       attachDiagnostics(win, `overlay:${d.id}`)
+
+      // An overlay that never loads is never "closed", so without these the
+      // promise would hang forever with the main window hidden — leaving the
+      // user no visible window and no way back short of Task Manager.
+      win.webContents.on('did-fail-load', (_e, _code, desc) => {
+        console.error(`[overlay:${d.id}] failed to load: ${desc}`)
+        if (claim()) finish(null)
+      })
+      win.webContents.on('render-process-gone', () => {
+        if (claim()) finish(null)
+      })
+
+      displayByWc.set(win.webContents.id, d.id)
       loadPage(win, 'overlay', `?display=${d.id}`)
       windows.push(win)
     }
 
-    regionSession = { windows, frames, settle }
+    regionSession = { windows, frames, displayByWc, claim, finish }
     // If every overlay somehow goes away, treat it as a cancel rather than hanging.
     for (const w of windows) w.on('closed', () => {
-      if (regionSession && regionSession.windows.every((x) => x.isDestroyed())) settle(null)
+      if (regionSession && regionSession.windows.every((x) => x.isDestroyed())) {
+        if (claim()) finish(null)
+      }
     })
   })
 }
 
-async function commitRegion(displayId: number, rect: Rect): Promise<void> {
+/**
+ * `senderWcId` is the authority on which display committed — the payload's
+ * displayId is only cross-checked, never trusted, so a message from anything
+ * other than a registered overlay is ignored.
+ */
+async function commitRegion(senderWcId: number, claimedDisplayId: number, rect: Rect): Promise<void> {
   const sessionRef = regionSession
   if (!sessionRef) return
+
+  const displayId = sessionRef.displayByWc.get(senderWcId)
+  if (displayId === undefined) {
+    console.warn('[commitRegion] ignoring message from an unregistered sender')
+    return
+  }
+  if (displayId !== claimedDisplayId) {
+    console.warn('[commitRegion] payload displayId did not match the sender; ignoring')
+    return
+  }
+
+  // Take ownership *before* the await, so a concurrent Escape can't cancel a
+  // capture that is already being written to disk.
+  if (!sessionRef.claim()) return
+
   try {
     const frame = sessionRef.frames.get(displayId)
     if (!frame) throw new Error('Freeze frame missing for that display')
@@ -272,7 +337,7 @@ async function commitRegion(displayId: number, rect: Rect): Promise<void> {
     const size = frame.getSize()
     const pixels = capture.dipRectToPixels(rect, display, size)
     if (pixels.width < 1 || pixels.height < 1) {
-      sessionRef.settle(null)
+      sessionRef.finish(null)
       return
     }
     const cropped = frame.crop(pixels)
@@ -283,10 +348,10 @@ async function commitRegion(displayId: number, rect: Rect): Promise<void> {
       width: pixels.width,
       height: pixels.height
     })
-    sessionRef.settle(item)
+    sessionRef.finish(item)
   } catch (err) {
     console.error('[commitRegion]', err)
-    sessionRef.settle(null)
+    sessionRef.finish(null)
   }
 }
 
@@ -359,10 +424,16 @@ function registerIpc(): void {
 
   // IPC.overlayInit is registered separately — it resolves per-window from the sender.
 
-  ipcMain.on(IPC.commitRegion, (_e, displayId: number, rect: Rect) => {
-    void commitRegion(displayId, rect)
+  ipcMain.on(IPC.commitRegion, (e, displayId: number, rect: Rect) => {
+    void commitRegion(e.sender.id, displayId, rect)
   })
-  ipcMain.on(IPC.cancelRegion, () => regionSession?.settle(null))
+  ipcMain.on(IPC.cancelRegion, (e) => {
+    const s = regionSession
+    // Only a registered overlay may cancel, and only if nothing else has
+    // already taken ownership of settling this session.
+    if (!s || !s.displayByWc.has(e.sender.id)) return
+    if (s.claim()) s.finish(null)
+  })
 
   handle(IPC.prepareRecording, (sourceId: string) => {
     pendingRecordingSourceId = sourceId
@@ -387,6 +458,11 @@ function registerIpc(): void {
   })
   handle(IPC.renameLibraryItem, (id: string, name: string) => library.renameItem(id, name))
   handle(IPC.saveAnnotations, (id: string, doc: AnnotationDoc) => library.saveAnnotations(id, doc))
+
+  handle(IPC.readItemBytes, async (id: string) => {
+    const { bytes, mime } = await library.readItemBytes(id)
+    return { data: new Uint8Array(bytes), mime }
+  })
 
   handle(IPC.exportAs, async (req: ExportRequest) => {
     const target = await askSavePath(req.itemId, req.format)
@@ -457,9 +533,19 @@ app.whenReady().then(() => {
       void (async () => {
         try {
           // The handler needs the real Electron source object, not our DTO.
+          const wanted = pendingRecordingSourceId
+          pendingRecordingSourceId = null
           const real = await desktopCapturer.getSources({ types: ['screen', 'window'] })
-          const match = real.find((s) => s.id === pendingRecordingSourceId) ?? real[0]
-          callback(match ? { video: match } : {})
+          const match = real.find((s) => s.id === wanted)
+          // Deliberately no `?? real[0]` fallback: silently recording a
+          // different source than the user picked is a confidentiality problem.
+          // Denying the request surfaces a real error in the renderer instead.
+          if (!match) {
+            console.error('[displayMedia] requested source is no longer available')
+            callback({})
+            return
+          }
+          callback({ video: match })
         } catch (err) {
           console.error('[displayMedia]', err)
           callback({})

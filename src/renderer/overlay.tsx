@@ -49,10 +49,14 @@ function Overlay(): React.JSX.Element {
         window.api.cancelRegion()
         return
       }
-      // Back to virtual-desktop DIP coordinates, which is what main expects.
+      // Sent as display-local DIP — the overlay spans exactly its own display,
+      // so client coordinates already are that. Main looks the display's bounds
+      // up from the sender rather than us round-tripping through
+      // virtual-desktop space via window.screenX (which would break on
+      // negative-origin or mixed-DPI monitor layouts).
       window.api.commitRegion(init.displayId, {
-        x: r.x + window.screenX,
-        y: r.y + window.screenY,
+        x: r.x,
+        y: r.y,
         width: r.width,
         height: r.height
       })

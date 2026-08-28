@@ -157,6 +157,13 @@ export interface NawiApi {
   deleteLibraryItem(id: string): Promise<IpcResult<null>>
   renameLibraryItem(id: string, name: string): Promise<IpcResult<LibraryItem>>
   saveAnnotations(id: string, doc: AnnotationDoc): Promise<IpcResult<LibraryItem>>
+  /**
+   * Raw bytes of a stored asset. The editor needs these rather than a
+   * `capture://` URL: an image from a custom scheme is cross-origin to the
+   * renderer, which taints the canvas and makes toBlob/getImageData throw —
+   * breaking both export and copy-to-clipboard.
+   */
+  readItemBytes(id: string): Promise<IpcResult<{ data: Uint8Array; mime: string }>>
 
   /* export */
   exportAs(req: ExportRequest): Promise<IpcResult<string | null>>
