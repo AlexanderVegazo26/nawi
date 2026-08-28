@@ -1,0 +1,38 @@
+# Technical debt — Nawi
+
+## 2026-08-28 — Annotation editor (M1b)
+
+### Sensitive-region detector seam is unfilled (UX-ANN.3)
+`src/renderer/lib/detect.ts` defines the contract and returns `[]` unconditionally;
+`DETECTOR_AVAILABLE === false`. The editor's chip, list and named-risk revert
+confirmation are real and exercised (via a saved document containing auto
+redactions), but the **loading and error states are implemented and never
+reached in this build** — the loading chrome is deliberately gated on
+`DETECTOR_AVAILABLE` so it does not flash on every editor open for a call that
+can only return nothing. Filling the seam (FR-AI.2/3, main-process OCR/pixel
+detection) makes both states live; re-test them then.
+
+### Key map: `X` (redact) and `M` (magnifier) are unratified
+PRD-002 UX-ANN.1 lists `A R E T N B P C S` and assigns no key to solid
+redaction (required by FR-ANN.3) or to the magnifier inset (FR-ANN.5).
+`src/renderer/lib/tools.ts` picks `X` and `M` and records the reasoning in a
+block comment; `src/renderer/lib/tools.test.ts` locks the whole map.
+**Needs a `product-analyst` decision to amend UX-ANN.1.** `V` (select) and `H`
+(highlighter) are retained from the shipped build — the PRD leaves both
+unassigned, so they are additions rather than contradictions.
+
+### Redaction is solid-only, by decision
+`RedactShape.mode` is the one-member union `'solid'`. Blur- and pixelate-mode
+redactions were designed and then removed: they are transforms of the original
+values, so they cannot satisfy FR-ANN.3's "the underlying pixels must not exist
+in the exported artifact", and shipping them under a shield glyph would be the
+exact confusion UX-ANN.4 exists to prevent. Decorative blur and pixelate remain
+as their own tools, labelled as decorative. Revisit only if a destructive
+non-solid mode is actually specified.
+
+### Canvas colours must not be tokenised
+Everything `src/renderer/lib/render.ts` draws becomes pixels in the user's
+exported file, so it uses fixed literals, never `cssVar()`. Routing them through
+theme tokens would make the same document export differently in dark and light
+mode. `e2e/annotation.spec.ts` asserts byte-identical exports across both
+themes; `cssVar` belongs only on editor-only overlays (selection ring, crop dim).

@@ -9,7 +9,9 @@ export function Button({
   disabled,
   title,
   className = '',
-  type = 'button'
+  type = 'button',
+  autoFocusInModal = false,
+  ariaPressed
 }: {
   children: ReactNode
   onClick?: () => void
@@ -18,6 +20,16 @@ export function Button({
   title?: string
   className?: string
   type?: 'button' | 'submit'
+  /**
+   * Marks this as the control `Modal` should focus on open (UX-A11Y.3).
+   *
+   * A named prop rather than a bare `data-autofocus` attribute because this
+   * component does not spread unknown props onto the DOM: callers were already
+   * writing `<Button data-autofocus>`, it was being dropped on the floor, and
+   * every modal was silently falling back to focusing its own container.
+   */
+  autoFocusInModal?: boolean
+  ariaPressed?: boolean
 }): React.JSX.Element {
   const styles: Record<string, string> = {
     primary: 'bg-accent text-accent-fg hover:bg-accent-hover active:bg-accent-active',
@@ -31,6 +43,8 @@ export function Button({
       title={title}
       disabled={disabled}
       onClick={onClick}
+      data-autofocus={autoFocusInModal ? '' : undefined}
+      aria-pressed={ariaPressed}
       /* min-h-9 keeps every control at or above the 24px target-size floor. */
       className={`inline-flex min-h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-sm font-medium transition-colors motion-tool disabled:cursor-not-allowed disabled:opacity-40 ${styles[variant]} ${className}`}
     >

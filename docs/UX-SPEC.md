@@ -325,7 +325,7 @@ Eight tools, left-to-right, each a 32×32 icon button inside a 40px row (see §8
 
 Selection tool: `V` / Esc from any tool returns to Select, where existing objects can be clicked, moved, resized via handles, and deleted with `Delete`/`Backspace`.
 
-**UX-EDT-04 — bare-key suppression (mandatory).** Single-letter tool keys (`A R E T H B N C V`), swatch digits (`1`–`8`), `[` / `]`, and `Delete` are **inactive whenever a text input or inline-edit field has focus** — including a Text object in edit mode, the library search field, and inline rename. In those contexts only `Enter`, `Shift+Enter`, `Esc` and `Tab` carry shortcut meaning; every other keystroke is literal text. Without this, typing the word "Arrow" into a text box switches tools four times.
+**UX-EDT-04 — bare-key suppression (mandatory).** Single-letter tool keys (`V A R E F T H N B P X S M C`), swatch digits (`1`–`8`), `[` / `]`, and `Delete` are **inactive whenever a text input or inline-edit field has focus** — including a Text object in edit mode, the library search field, and inline rename. In those contexts only `Enter`, `Shift+Enter`, `Esc` and `Tab` carry shortcut meaning; every other keystroke is literal text. Without this, typing the word "Arrow" into a text box switches tools four times.
 
 **Every tool is operable without a pointer.** With a tool active and no pointer input: Enter places a default-sized instance (100×60, or a 100px arrow) at canvas center; arrow keys move the selected object 1px (Shift 10px); Alt+arrows resize; Tab cycles through placed objects in creation order with a visible focus ring; Enter on a focused text object enters edit mode.
 
@@ -435,7 +435,7 @@ macOS uses the four-modifier `Ctrl+Opt+Cmd` set deliberately: `Cmd+Shift+3/4/5` 
 | Library | `F2` | Rename selected |
 | Library | `Arrows` / `Home` / `End` | Move grid selection |
 | Overlay | per §3.5 table | Keyboard region selection |
-| Editor | `A R E T H B N C V` | Select tool |
+| Editor | `V A R E F T H N B P X S M C` | Select tool — see the resolved map and its reasoning in `src/renderer/lib/tools.ts` |
 | Editor | `1`–`8` | Select color swatch |
 | Editor | `[` / `]` | Decrease / increase stroke |
 | Editor | `Ctrl+Z` | Undo |

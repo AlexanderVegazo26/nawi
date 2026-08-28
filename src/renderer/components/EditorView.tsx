@@ -1,27 +1,75 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { mediaKindOf } from '@shared/types'
-import type { AnnotationDoc, LibraryItem, Rect, Shape, ShapeKind } from '@shared/types'
-import { hitTest, normalizeRect, renderDocument } from '../lib/render'
+import type {
+  AnnotationDoc,
+  FreehandShape,
+  LibraryItem,
+  Rect,
+  RedactShape,
+  Shape,
+  TextShape
+} from '@shared/types'
+import {
+  bboxOfPoints,
+  deriveStepIndices,
+  hitTest,
+  normalizeRect,
+  renderDocument,
+  translateShape
+} from '../lib/render'
+import { TOOLS, toolForKey, type ToolId } from '../lib/tools'
+import {
+  DETECTOR_AVAILABLE,
+  detectSensitiveRegions,
+  redactionChipLabel,
+  revertWarning,
+  toRedactions,
+  type DetectionState
+} from '../lib/detect'
+import {
+  averageRgb,
+  formatRatio,
+  luminanceExtremes,
+  pickTextColor,
+  type ContrastChoice
+} from '../lib/contrast'
+import { motionDurationMs, prefersReducedMotion } from '../lib/motion'
 import { Button, Modal, Spinner } from './ui'
 import { cssVar } from '../lib/theme'
 
-type Tool = ShapeKind | 'select' | 'crop'
-
-const TOOLS: Array<{ id: Tool; label: string; key: string; icon: React.JSX.Element }> = [
-  { id: 'select', label: 'Select', key: 'V', icon: <path d="m4 3 7 17 2.5-6.5L20 11 4 3Z" /> },
-  { id: 'arrow', label: 'Arrow', key: 'A', icon: <path d="M5 19 19 5M19 5h-8M19 5v8" /> },
-  { id: 'rect', label: 'Rectangle', key: 'R', icon: <rect x="4" y="6" width="16" height="12" rx="2" /> },
-  { id: 'ellipse', label: 'Ellipse', key: 'E', icon: <ellipse cx="12" cy="12" rx="8" ry="6" /> },
-  { id: 'text', label: 'Text', key: 'T', icon: <path d="M5 6h14M12 6v12M9 18h6" /> },
-  { id: 'highlight', label: 'Highlighter', key: 'H', icon: <path d="M4 20h16M6 16l8-10 4 4-8 10H6v-4Z" /> },
-  { id: 'blur', label: 'Blur / pixelate', key: 'B', icon: <path d="M4 8h4v4H4zM12 8h4v4h-4zM8 12h4v4H8zM16 12h4v4h-4z" /> },
-  { id: 'step', label: 'Step number', key: 'N', icon: <circle cx="12" cy="12" r="7" /> },
-  { id: 'crop', label: 'Crop', key: 'C', icon: <path d="M6 2v16h16M2 6h16v16" /> }
-]
+/**
+ * Tool icons, keyed by the ids in `lib/tools.ts`.
+ *
+ * Kept apart from the tool table so the table itself stays plain data and the
+ * resolved key map can be unit-tested in the node environment, where JSX cannot
+ * go. A missing icon is a type error here rather than a blank button.
+ */
+const TOOL_ICONS: Record<ToolId, React.JSX.Element> = {
+  select: <path d="m4 3 7 17 2.5-6.5L20 11 4 3Z" />,
+  arrow: <path d="M5 19 19 5M19 5h-8M19 5v8" />,
+  rect: <rect x="4" y="6" width="16" height="12" rx="2" />,
+  ellipse: <ellipse cx="12" cy="12" rx="8" ry="6" />,
+  line: <path d="M4 20 20 4" />,
+  freehand: <path d="M3 18c3.5 0 3.5-9 7-9s3.5 9 7 9 4-4 4-4" />,
+  text: <path d="M5 6h14M12 6v12M9 18h6" />,
+  highlight: <path d="M4 20h16M6 16l8-10 4 4-8 10H6v-4Z" />,
+  step: <circle cx="12" cy="12" r="7" />,
+  blur: <path d="M12 3c3.5 4 5.5 6.7 5.5 9a5.5 5.5 0 0 1-11 0c0-2.3 2-5 5.5-9Z" />,
+  pixelate: <path d="M4 8h4v4H4zM12 8h4v4h-4zM8 12h4v4H8zM16 12h4v4h-4z" />,
+  /* UX-ANN.4: the redaction affordance is a shield, matching the glyph drawn on
+     the canvas, so the tool and its result read as the same thing. */
+  redact: <path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z" />,
+  spotlight: <path d="M12 6a6 6 0 1 1 0 12 6 6 0 0 1 0-12ZM3 3l2 2M21 3l-2 2M3 21l2-2M21 21l-2-2" />,
+  magnify: <path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14ZM16 16l4.5 4.5M8.5 11h5M11 8.5v5" />,
+  crop: <path d="M6 2v16h16M2 6h16v16" />
+}
 
 const SWATCHES = ['#ff4d4f', '#ff9f0a', '#ffd60a', '#32d74b', '#4c8dff', '#bf5af2', '#ffffff', '#0a0c10']
 
 const MAX_HISTORY = 50
+
+/** Minimum pointer travel, in image px, before a freehand point is recorded. */
+const FREEHAND_MIN_STEP = 1.5
 
 function emptyDoc(): AnnotationDoc {
   return { version: 1, shapes: [], crop: null }
@@ -29,6 +77,10 @@ function emptyDoc(): AnnotationDoc {
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 10)
+}
+
+function isAutoRedaction(s: Shape): s is RedactShape & { auto: { label: string; confidence: number } } {
+  return s.kind === 'redact' && s.auto !== undefined
 }
 
 export function EditorView({
@@ -62,7 +114,7 @@ export function EditorView({
   const doc = hist.present
   const history = hist.past
   const future = hist.future
-  const [tool, setTool] = useState<Tool>('select')
+  const [tool, setTool] = useState<ToolId>('select')
   const [color, setColor] = useState(SWATCHES[0])
   const [stroke, setStroke] = useState(4)
   const [zoom, setZoom] = useState(1)
@@ -71,6 +123,24 @@ export function EditorView({
   const [confirmClose, setConfirmClose] = useState(false)
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; value: string } | null>(null)
   const [cropDraft, setCropDraft] = useState<Rect | null>(null)
+
+  /* Per-tool parameters. Applied at creation time. */
+  const [intensity, setIntensity] = useState(14)
+  const [dim, setDim] = useState(0.55)
+  const [magFactor, setMagFactor] = useState(2)
+  const [autoContrast, setAutoContrast] = useState(true)
+
+  /* UX-ANN.2 renumber transition, and UX-A11Y.8 announcements. */
+  const [renumber, setRenumber] = useState<{ from: Record<string, number>; progress: number } | null>(
+    null
+  )
+  const rafRef = useRef<number | null>(null)
+  const [announcement, setAnnouncement] = useState('')
+
+  /* UX-ANN.3 pre-redaction. */
+  const [detection, setDetection] = useState<DetectionState>({ status: 'idle' })
+  const [redactionPanelOpen, setRedactionPanelOpen] = useState(false)
+  const [revertTarget, setRevertTarget] = useState<RedactShape | null>(null)
 
   const draggingRef = useRef<{
     start: { x: number; y: number }
@@ -142,6 +212,106 @@ export function EditorView({
     }
   }, [item.id, isVideo])
 
+  /* ---------------- history ---------------- */
+  const commit = useCallback((next: AnnotationDoc) => {
+    setHist((h) => ({
+      past: [...h.past.slice(-(MAX_HISTORY - 1)), h.present],
+      present: next,
+      future: []
+    }))
+    setDirty(true)
+  }, [])
+
+  /** Updates the document without creating a history entry (live drag feedback). */
+  const setPresent = useCallback((fn: (d: AnnotationDoc) => AnnotationDoc) => {
+    setHist((h) => ({ ...h, present: fn(h.present) }))
+  }, [])
+
+  /** Pushes an explicit before-state, for gestures whose start we snapshotted. */
+  const pushHistory = useCallback((before: AnnotationDoc) => {
+    setHist((h) => ({
+      past: [...h.past.slice(-(MAX_HISTORY - 1)), before],
+      present: h.present,
+      future: []
+    }))
+    setDirty(true)
+  }, [])
+
+  /* ---------------- UX-ANN.3: pre-redaction on open ---------------- */
+  useEffect(() => {
+    if (isVideo) return
+    let cancelled = false
+    setDetection({ status: 'loading' })
+    detectSensitiveRegions({ itemId: item.id, width: item.width, height: item.height })
+      .then((regions) => {
+        if (cancelled) return
+        setDetection({ status: 'ready', regions })
+        if (regions.length === 0) return
+        setPresent((d) => {
+          // Reopening an item whose auto-redactions were already saved must not
+          // stack a second copy on top of the first.
+          const known = new Set(d.shapes.map((s) => s.id))
+          const fresh = toRedactions(regions).filter((s) => !known.has(s.id))
+          if (fresh.length === 0) return d
+          // Prepended, so later user annotations paint on top of a redaction
+          // rather than under it.
+          return { ...d, shapes: [...fresh, ...d.shapes] }
+        })
+        setDirty(true)
+        setAnnouncement(redactionChipLabel(regions.length))
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setDetection({
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err)
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [item.id, item.width, item.height, isVideo, setPresent])
+
+  const autoRedactions = useMemo(() => doc.shapes.filter(isAutoRedaction), [doc.shapes])
+
+  /* ---------------- UX-ANN.2 renumber transition ---------------- */
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
+
+  /**
+   * Runs the 200 ms badge cross-fade.
+   *
+   * UX-A11Y.7 requires a static variant, and CSS cannot deliver it here: the
+   * badges are canvas pixels, so `@media (prefers-reduced-motion)` in
+   * styles.css has no reach. The branch is therefore in JS, and the reduced
+   * path is not "no feedback" — the live region still announces the renumber,
+   * which is the accessible equivalent of watching it happen.
+   */
+  const startRenumber = useCallback((from: Record<string, number>) => {
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+    if (prefersReducedMotion()) {
+      setRenumber(null)
+      return
+    }
+    const duration = motionDurationMs('--motion-panel', 200)
+    const t0 = performance.now()
+    setRenumber({ from, progress: 0 })
+    const tick = (): void => {
+      const p = Math.min(1, (performance.now() - t0) / duration)
+      if (p >= 1) {
+        rafRef.current = null
+        setRenumber(null)
+        return
+      }
+      setRenumber({ from, progress: p })
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+  }, [])
+
   /* ---------------- redraw ---------------- */
   const redraw = useCallback(() => {
     const canvas = canvasRef.current
@@ -150,7 +320,9 @@ export function EditorView({
     const working: AnnotationDoc = preview
       ? { ...doc, shapes: [...doc.shapes, preview] }
       : doc
-    renderDocument(canvas, img, { width: item.width, height: item.height }, working)
+    renderDocument(canvas, img, { width: item.width, height: item.height }, working, {
+      renumber
+    })
 
     // Selection affordance draws on top and is never part of the document.
     if (selectedId) {
@@ -198,36 +370,11 @@ export function EditorView({
         ctx.restore()
       }
     }
-  }, [doc, preview, selectedId, cropDraft, item.width, item.height, zoom])
+  }, [doc, preview, selectedId, cropDraft, item.width, item.height, zoom, renumber])
 
   useEffect(() => {
     if (!loading && !loadError) redraw()
   }, [redraw, loading, loadError])
-
-  /* ---------------- history ---------------- */
-  const commit = useCallback((next: AnnotationDoc) => {
-    setHist((h) => ({
-      past: [...h.past.slice(-(MAX_HISTORY - 1)), h.present],
-      present: next,
-      future: []
-    }))
-    setDirty(true)
-  }, [])
-
-  /** Updates the document without creating a history entry (live drag feedback). */
-  const setPresent = useCallback((fn: (d: AnnotationDoc) => AnnotationDoc) => {
-    setHist((h) => ({ ...h, present: fn(h.present) }))
-  }, [])
-
-  /** Pushes an explicit before-state, for gestures whose start we snapshotted. */
-  const pushHistory = useCallback((before: AnnotationDoc) => {
-    setHist((h) => ({
-      past: [...h.past.slice(-(MAX_HISTORY - 1)), before],
-      present: h.present,
-      future: []
-    }))
-    setDirty(true)
-  }, [])
 
   const undo = useCallback(() => {
     setHist((h) =>
@@ -265,21 +412,97 @@ export function EditorView({
     [doc.crop]
   )
 
-  const makeShape = (kind: ShapeKind, p: { x: number; y: number }): Shape => {
-    const base = {
-      id: uid(),
-      x: p.x,
-      y: p.y,
-      width: 0,
-      height: 0,
-      color,
-      strokeWidth: stroke
-    }
-    if (kind === 'text') return { ...base, kind: 'text', text: '', fontSize: Math.max(16, stroke * 6) }
-    if (kind === 'step') return { ...base, kind: 'step' }
-    if (kind === 'blur') return { ...base, kind: 'blur', mode: 'pixelate', intensity: Math.max(6, stroke * 3) }
-    return { ...base, kind } as Shape
-  }
+  /* ---------------- FR-ANN.4 / UX-ANN.5 auto-contrast ---------------- */
+  /**
+   * Measures the pixels a text callout will sit on and picks a fill that clears
+   * WCAG AA against them.
+   *
+   * Samples the *composited* canvas rather than the pristine image on purpose:
+   * what the text has to be readable against is whatever is actually beneath
+   * it, including a highlight wash or a redaction placed earlier.
+   */
+  const measureContrast = useCallback(
+    (x: number, y: number, text: string, fontSize: number): ContrastChoice | null => {
+      const canvas = canvasRef.current
+      const ctx = canvas?.getContext('2d')
+      if (!canvas || !ctx) return null
+
+      ctx.save()
+      ctx.font = `600 ${fontSize}px 'Segoe UI', system-ui, sans-serif`
+      const lines = text.split('\n')
+      const textWidth = Math.max(fontSize, ...lines.map((l) => ctx.measureText(l).width))
+      ctx.restore()
+
+      const off = doc.crop ? normalizeRect(doc.crop) : { x: 0, y: 0 }
+      const sx = Math.max(0, Math.floor(x - off.x))
+      const sy = Math.max(0, Math.floor(y - off.y))
+      if (sx >= canvas.width || sy >= canvas.height) return null
+      const sw = Math.max(1, Math.min(Math.ceil(textWidth), canvas.width - sx))
+      const sh = Math.max(1, Math.min(Math.ceil(lines.length * fontSize * 1.3), canvas.height - sy))
+
+      let pixels: ImageData
+      try {
+        pixels = ctx.getImageData(sx, sy, sw, sh)
+      } catch {
+        // The only way this throws is a tainted canvas (SecurityError). The
+        // editor loads its image over IPC as a same-origin blob precisely so
+        // that cannot happen, but if it ever does, the correct behaviour is to
+        // leave the user's chosen colour alone rather than to fail the edit.
+        return null
+      }
+
+      const mean = averageRgb(pixels.data)
+      if (!mean) return null
+      return pickTextColor(mean, fontSize, luminanceExtremes(pixels.data))
+    },
+    [doc.crop]
+  )
+
+  const makeShape = useCallback(
+    (t: ToolId, p: { x: number; y: number }): Shape | null => {
+      const base = {
+        id: uid(),
+        x: p.x,
+        y: p.y,
+        width: 0,
+        height: 0,
+        color,
+        strokeWidth: stroke
+      }
+      switch (t) {
+        case 'text':
+          return { ...base, kind: 'text', text: '', fontSize: Math.max(16, stroke * 6) }
+        case 'step':
+          return { ...base, kind: 'step' }
+        case 'freehand':
+          return { ...base, kind: 'freehand', points: [p] }
+        case 'blur':
+          return { ...base, kind: 'blur', mode: 'blur', intensity }
+        case 'pixelate':
+          return { ...base, kind: 'blur', mode: 'pixelate', intensity }
+        case 'redact':
+          return { ...base, kind: 'redact', mode: 'solid' }
+        case 'spotlight':
+          return { ...base, kind: 'spotlight', dim }
+        case 'magnify':
+          return { ...base, kind: 'magnify', factor: magFactor }
+        case 'arrow':
+        case 'rect':
+        case 'ellipse':
+        case 'line':
+        case 'highlight':
+          return { ...base, kind: t }
+        case 'select':
+        case 'crop':
+          return null
+        default: {
+          const unhandled: never = t
+          throw new Error(`unhandled tool: ${String(unhandled)}`)
+        }
+      }
+    },
+    [color, stroke, intensity, dim, magFactor]
+  )
 
   const onPointerDown = (e: React.PointerEvent): void => {
     if (isVideo || loading || loadError) return
@@ -307,12 +530,15 @@ export function EditorView({
     }
 
     if (tool === 'step') {
-      commit({ ...doc, shapes: [...doc.shapes, makeShape('step', p)] })
+      const shape = makeShape('step', p)
+      if (shape) commit({ ...doc, shapes: [...doc.shapes, shape] })
       return
     }
 
-    draggingRef.current = { start: p, shape: makeShape(tool as ShapeKind, p) }
-    setPreview(makeShape(tool as ShapeKind, p))
+    const created = makeShape(tool, p)
+    if (!created) return
+    draggingRef.current = { start: p, shape: created }
+    setPreview(created)
   }
 
   const onPointerMove = (e: React.PointerEvent): void => {
@@ -331,15 +557,34 @@ export function EditorView({
       setPresent((d) => ({
         ...d,
         shapes: d.shapes.map((s) =>
-          s.id === drag.shape!.id ? { ...s, x: drag.shape!.x + dx, y: drag.shape!.y + dy } : s
+          // translateShape, not an inline {...s, x, y}: freehand carries its
+          // geometry in `points`, and moving only the bbox would leave the
+          // stroke behind while its selection ring walked away.
+          s.id === drag.shape!.id ? translateShape(drag.shape!, dx, dy) : s
         )
       }))
       return
     }
 
-    if (drag.shape) {
-      setPreview({ ...drag.shape, width: p.x - drag.start.x, height: p.y - drag.start.y })
+    if (!drag.shape) return
+
+    if (drag.shape.kind === 'freehand') {
+      setPreview((prev) => {
+        const cur = (prev && prev.kind === 'freehand' ? prev : drag.shape) as FreehandShape
+        const last = cur.points[cur.points.length - 1]
+        // Thin the sample stream: a raw pointermove firehose bloats the
+        // document and the undo snapshots for no visible gain.
+        if (last && Math.hypot(p.x - last.x, p.y - last.y) < FREEHAND_MIN_STEP) return cur
+        const points = [...cur.points, p]
+        // The bbox is what hit-testing and the selection ring read, so it has
+        // to stay in step with the points as they are added.
+        const bb = bboxOfPoints(points)
+        return { ...cur, points, x: bb.x, y: bb.y, width: bb.width, height: bb.height }
+      })
+      return
     }
+
+    setPreview({ ...drag.shape, width: p.x - drag.start.x, height: p.y - drag.start.y })
   }
 
   const onPointerUp = (): void => {
@@ -368,9 +613,16 @@ export function EditorView({
     }
 
     if (preview) {
-      const r = normalizeRect(preview)
-      // Discard accidental click-sized shapes.
-      if (r.width > 3 || r.height > 3) commit({ ...doc, shapes: [...doc.shapes, preview] })
+      if (preview.kind === 'freehand') {
+        // A stroke is real once it has a second point; its bbox may legitimately
+        // be near-zero (a short vertical tick), so the extent test below would
+        // discard perfectly deliberate marks.
+        if (preview.points.length >= 2) commit({ ...doc, shapes: [...doc.shapes, preview] })
+      } else {
+        const r = normalizeRect(preview)
+        // Discard accidental click-sized shapes.
+        if (r.width > 3 || r.height > 3) commit({ ...doc, shapes: [...doc.shapes, preview] })
+      }
       setPreview(null)
     }
   }
@@ -379,23 +631,104 @@ export function EditorView({
     if (!textDraft) return
     const value = textDraft.value.trim()
     if (value) {
-      const shape = makeShape('text', { x: textDraft.x, y: textDraft.y })
-      commit({ ...doc, shapes: [...doc.shapes, { ...shape, kind: 'text', text: value, fontSize: Math.max(16, stroke * 6) } as Shape] })
+      const fontSize = Math.max(16, stroke * 6)
+      const choice = autoContrast ? measureContrast(textDraft.x, textDraft.y, value, fontSize) : null
+      const shape: TextShape = {
+        id: uid(),
+        kind: 'text',
+        x: textDraft.x,
+        y: textDraft.y,
+        width: 0,
+        height: 0,
+        color: choice ? choice.color : color,
+        strokeWidth: stroke,
+        text: value,
+        fontSize,
+        autoContrast: choice !== null,
+        contrastRatio: choice?.worstRatio
+      }
+      commit({ ...doc, shapes: [...doc.shapes, shape] })
+      if (choice) {
+        setAnnouncement(
+          choice.meetsAA
+            ? `Text colour set automatically for contrast, ${formatRatio(choice.worstRatio)}.`
+            : `Text placed at ${formatRatio(choice.worstRatio)} contrast, below the ${formatRatio(choice.required)} minimum. Move it or change its colour.`
+        )
+      }
     }
     setTextDraft(null)
   }
 
+  /** Re-runs the contrast check for the selected callout, or hands it back to the user. */
+  const setSelectedTextContrast = useCallback(
+    (auto: boolean) => {
+      const target = doc.shapes.find((s) => s.id === selectedId)
+      if (!target || target.kind !== 'text') return
+      if (!auto) {
+        commit({
+          ...doc,
+          shapes: doc.shapes.map((s) =>
+            s.id === target.id ? { ...s, color, autoContrast: false, contrastRatio: undefined } : s
+          )
+        })
+        setAnnouncement('Text colour is now yours to set.')
+        return
+      }
+      const choice = measureContrast(target.x, target.y, target.text, target.fontSize)
+      if (!choice) return
+      commit({
+        ...doc,
+        shapes: doc.shapes.map((s) =>
+          s.id === target.id
+            ? { ...s, color: choice.color, autoContrast: true, contrastRatio: choice.worstRatio }
+            : s
+        )
+      })
+      setAnnouncement(`Text colour set automatically for contrast, ${formatRatio(choice.worstRatio)}.`)
+    },
+    [doc, selectedId, color, commit, measureContrast]
+  )
+
+  const removeShape = useCallback(
+    (id: string) => {
+      const target = doc.shapes.find((s) => s.id === id)
+      if (!target) return
+      // Snapshot the numbers the badges are showing right now. After the delete
+      // they are derived afresh, and the difference between the two is exactly
+      // what UX-ANN.2 wants the user to see happen.
+      const before = deriveStepIndices(doc.shapes)
+      const next = { ...doc, shapes: doc.shapes.filter((s) => s.id !== id) }
+      commit(next)
+      if (selectedId === id) setSelectedId(null)
+      if (target.kind === 'step') {
+        const after = deriveStepIndices(next.shapes)
+        const changed = Object.keys(after).some((k) => after[k] !== before[k])
+        if (changed) {
+          startRenumber(before)
+          const total = Object.keys(after).length
+          setAnnouncement(
+            `Step badge removed. Remaining badges renumbered; ${total} ${total === 1 ? 'badge' : 'badges'} now.`
+          )
+        }
+      }
+    },
+    [doc, commit, selectedId, startRenumber]
+  )
+
   const deleteSelected = useCallback(() => {
     if (!selectedId) return
-    commit({ ...doc, shapes: doc.shapes.filter((s) => s.id !== selectedId) })
-    setSelectedId(null)
-  }, [selectedId, doc, commit])
+    removeShape(selectedId)
+  }, [selectedId, removeShape])
 
   /* ---------------- flatten for save/export ---------------- */
   const flatten = useCallback(async (type: 'image/png' | 'image/jpeg'): Promise<Uint8Array> => {
     const img = imageRef.current
     if (!img) throw new Error('Image not loaded')
     const out = document.createElement('canvas')
+    // A fresh canvas re-rendered from the pristine source, with no renumber
+    // animation and no selection chrome. This is what makes FR-ANN.3 hold: the
+    // redacted region is painted over during this render, so the original
+    // values are never present in the bitmap that gets encoded.
     renderDocument(out, img, { width: item.width, height: item.height }, doc)
     const blob = await new Promise<Blob | null>((r) => out.toBlob(r, type, 0.92))
     if (!blob) throw new Error('Could not encode image')
@@ -492,6 +825,8 @@ export function EditorView({
 
       if (e.key === 'Escape') {
         if (textDraft) setTextDraft(null)
+        else if (revertTarget) setRevertTarget(null)
+        else if (redactionPanelOpen) setRedactionPanelOpen(false)
         else if (selectedId) setSelectedId(null)
         else requestClose()
         return
@@ -509,21 +844,47 @@ export function EditorView({
         setColor(SWATCHES[digit - 1])
         return
       }
-      const match = TOOLS.find((t) => t.key.toLowerCase() === e.key.toLowerCase())
-      if (match) setTool(match.id)
+      const match = toolForKey(e.key)
+      if (match) setTool(match)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [undo, redo, save, copy, exportAs, requestClose, deleteSelected, selectedId, textDraft])
+  }, [
+    undo,
+    redo,
+    save,
+    copy,
+    exportAs,
+    requestClose,
+    deleteSelected,
+    selectedId,
+    textDraft,
+    revertTarget,
+    redactionPanelOpen
+  ])
 
   const displaySize = useMemo(() => {
     const c = doc.crop ? normalizeRect(doc.crop) : null
     return { width: c ? c.width : item.width, height: c ? c.height : item.height }
   }, [doc.crop, item.width, item.height])
 
+  const selectedShape = useMemo(
+    () => doc.shapes.find((s) => s.id === selectedId) ?? null,
+    [doc.shapes, selectedId]
+  )
+
   /* ---------------- render ---------------- */
   return (
     <div className="flex h-full flex-col bg-surface-0">
+      {/*
+       * UX-A11Y.8 — one polite live region for outcomes a sighted user reads
+       * off the canvas: the renumber, the contrast decision, the auto-redaction
+       * count. Visually hidden, never focusable.
+       */}
+      <div aria-live="polite" role="status" className="sr-only">
+        {announcement}
+      </div>
+
       {/* header */}
       <header className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-1 px-3 py-2">
         <Button variant="subtle" onClick={requestClose} title="Close (Ctrl+W)">
@@ -563,23 +924,34 @@ export function EditorView({
         {!isVideo && (
           <nav
             aria-label="Annotation tools"
-            className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-border bg-surface-1 py-2"
+            className="flex w-14 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-border bg-surface-1 py-2"
           >
             {TOOLS.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTool(t.id)}
-                title={`${t.label} (${t.key})`}
+                /* The accessible NAME stays the bare label — short names are
+                   what makes a tool rail navigable by voice and by screen
+                   reader. The shortcut and the hint ride on `title`, which is
+                   announced as the accessible description. */
+                title={`${t.label} (${t.key}) — ${t.hint}`}
                 aria-label={t.label}
                 aria-pressed={tool === t.id}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors motion-tool ${
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors motion-tool ${
                   tool === t.id
-                    ? 'bg-accent text-accent-fg'
-                    : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary'
+                    ? /* UX-ANN.4: the redaction tool never shares the decorative
+                         tools' active styling — the affordance itself has to say
+                         "this is the security one". */
+                      t.id === 'redact'
+                      ? 'bg-danger-fill text-white ring-2 ring-danger'
+                      : 'bg-accent text-accent-fg'
+                    : t.id === 'redact'
+                      ? 'text-danger hover:bg-danger-surface'
+                      : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary'
                 }`}
               >
                 <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                  {t.icon}
+                  {TOOL_ICONS[t.id]}
                 </svg>
               </button>
             ))}
@@ -662,12 +1034,94 @@ export function EditorView({
               </div>
             </div>
           )}
+
+          {/* ---- UX-ANN.3: pre-redaction chip, list, and states ---- */}
+          {!isVideo && !loading && !loadError && (
+            <div className="pointer-events-none absolute left-8 top-8 flex max-w-sm flex-col gap-2">
+              {/*
+               * The loading indicator is gated on DETECTOR_AVAILABLE, not on the
+               * promise: with no detector behind the seam this would otherwise
+               * flash "Checking…" on every open for a call that can only ever
+               * return []. The state is implemented and becomes visible the
+               * moment a detector is wired in — see lib/detect.ts.
+               */}
+              {DETECTOR_AVAILABLE && detection.status === 'loading' && (
+                <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-surface-2 px-3 py-1.5 text-xs text-text-secondary shadow-lg ring-1 ring-border-strong">
+                  <span
+                    aria-hidden="true"
+                    className="h-3 w-3 motion-spin animate-spin rounded-full border-2 border-border border-t-accent-hover"
+                  />
+                  Checking for sensitive content…
+                </div>
+              )}
+
+              {detection.status === 'error' && (
+                <div
+                  role="alert"
+                  className="pointer-events-auto rounded-xl bg-danger-surface px-3 py-2 text-xs text-danger shadow-lg ring-1 ring-danger/50"
+                >
+                  <p className="font-semibold">Couldn’t check this capture for sensitive content.</p>
+                  <p className="mt-1">
+                    Nothing was redacted automatically. Review the image yourself before sharing it.
+                  </p>
+                </div>
+              )}
+
+              {autoRedactions.length > 0 && (
+                <>
+                  <button
+                    onClick={() => setRedactionPanelOpen((v) => !v)}
+                    aria-expanded={redactionPanelOpen}
+                    className="pointer-events-auto flex min-h-9 items-center gap-2 self-start rounded-full bg-danger-surface px-3 py-1.5 text-xs font-semibold text-danger shadow-lg ring-1 ring-danger/50 transition-colors motion-tool hover:bg-danger-surface/80"
+                  >
+                    {/* UX-A11Y.4: the shield glyph carries the meaning alongside
+                        the colour, and matches what is drawn on the canvas. */}
+                    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z" />
+                      <path d="m9 12 2 2 4-4" />
+                    </svg>
+                    {redactionChipLabel(autoRedactions.length)}
+                  </button>
+
+                  {redactionPanelOpen && (
+                    <div className="pointer-events-auto surface motion-panel rounded-xl p-3 shadow-2xl">
+                      <h2 className="text-xs font-semibold text-text-primary">
+                        Redacted before you saw it
+                      </h2>
+                      <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+                        These regions are covered in anything you export or copy. Reverting one puts
+                        it back in the image.
+                      </p>
+                      <ul className="mt-3 flex flex-col gap-1">
+                        {autoRedactions.map((r) => (
+                          <li
+                            key={r.id}
+                            className="flex items-center gap-2 rounded-lg bg-surface-2 px-2 py-1.5"
+                          >
+                            <span className="flex-1 truncate text-xs text-text-primary">
+                              {r.auto.label}
+                            </span>
+                            <span className="font-mono text-[11px] text-text-secondary">
+                              {Math.round(r.auto.confidence * 100)}%
+                            </span>
+                            <Button variant="subtle" onClick={() => setRevertTarget(r)}>
+                              Revert
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </main>
       </div>
 
       {/* properties bar */}
       {!isVideo && (
-        <footer className="flex shrink-0 items-center gap-4 border-t border-border bg-surface-1 px-4 py-2">
+        <footer className="flex shrink-0 flex-wrap items-center gap-4 border-t border-border bg-surface-1 px-4 py-2">
           <div className="flex items-center gap-1.5" role="group" aria-label="Color">
             {SWATCHES.map((c, i) => (
               <button
@@ -681,7 +1135,7 @@ export function EditorView({
                 }`}
               >
                 <span
-                  className="h-5 w-5 rounded-full ring-1 ring-white/25"
+                  className="h-5 w-5 rounded-full ring-1 ring-border-strong"
                   style={{ backgroundColor: c }}
                 />
               </button>
@@ -703,6 +1157,115 @@ export function EditorView({
             />
             <span className="w-6 font-mono text-text-primary">{stroke}</span>
           </label>
+
+          {/* Contextual, per-tool parameters. */}
+          {(tool === 'blur' || tool === 'pixelate') && (
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
+              Strength
+              <input
+                type="range"
+                min={2}
+                max={40}
+                value={intensity}
+                onChange={(e) => setIntensity(Number(e.target.value))}
+                className="w-24 accent-[var(--color-accent)]"
+                aria-label="Blur strength"
+              />
+              <span className="w-6 font-mono text-text-primary">{intensity}</span>
+            </label>
+          )}
+
+          {/*
+            * Redaction has one mode, and the copy says what it does rather than
+            * offering a choice between a real one and two that only look like
+            * it. Blur and pixelate are on their own tools, labelled decorative.
+            */}
+          {tool === 'redact' && (
+            <p className="flex items-center gap-2 text-xs text-danger">
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+              Drag over anything that must not leave this machine. The pixels are
+              replaced, not transformed — they are gone from anything you export or copy.
+            </p>
+          )}
+
+          {tool === 'spotlight' && (
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
+              Dim
+              <input
+                type="range"
+                min={10}
+                max={90}
+                value={Math.round(dim * 100)}
+                onChange={(e) => setDim(Number(e.target.value) / 100)}
+                className="w-24 accent-[var(--color-accent)]"
+                aria-label="Spotlight dim amount"
+              />
+              <span className="w-9 font-mono text-text-primary">{Math.round(dim * 100)}%</span>
+            </label>
+          )}
+
+          {tool === 'magnify' && (
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
+              Zoom
+              <input
+                type="range"
+                min={12}
+                max={50}
+                value={Math.round(magFactor * 10)}
+                onChange={(e) => setMagFactor(Number(e.target.value) / 10)}
+                className="w-24 accent-[var(--color-accent)]"
+                aria-label="Magnifier factor"
+              />
+              <span className="w-9 font-mono text-text-primary">{magFactor.toFixed(1)}×</span>
+            </label>
+          )}
+
+          {tool === 'text' && (
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
+              <input
+                type="checkbox"
+                checked={autoContrast}
+                onChange={(e) => setAutoContrast(e.target.checked)}
+                className="h-4 w-4 accent-[var(--color-accent)]"
+              />
+              Pick a readable colour for me
+            </label>
+          )}
+
+          {/* FR-ANN.4 / UX-ANN.5 — the choice is visible and overridable. */}
+          {selectedShape?.kind === 'text' && (
+            <div className="flex items-center gap-2 text-xs">
+              {selectedShape.autoContrast ? (
+                <>
+                  <span
+                    className={
+                      selectedShape.contrastRatio !== undefined && selectedShape.contrastRatio < 4.5
+                        ? 'text-warning'
+                        : 'text-text-secondary'
+                    }
+                  >
+                    Colour chosen for contrast
+                    {selectedShape.contrastRatio !== undefined
+                      ? ` (${formatRatio(selectedShape.contrastRatio)})`
+                      : ''}
+                  </span>
+                  <Button variant="subtle" onClick={() => setSelectedTextContrast(false)}>
+                    Use my colour
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <span className="text-text-secondary">Colour set by you</span>
+                  <Button variant="subtle" onClick={() => setSelectedTextContrast(true)}>
+                    Pick a readable colour
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
 
           {doc.crop && (
             <>
@@ -737,13 +1300,47 @@ export function EditorView({
         </footer>
       )}
 
+      {/*
+       * UX-ANN.3 / PRD-002 §9 — the revert confirmation names the risk. "Are you
+       * sure?" is explicitly what this must not be, so the label from the
+       * detector is rendered into the sentence rather than summarised away.
+       */}
+      {revertTarget && (
+        <Modal
+          title="Put this back in the image?"
+          onClose={() => setRevertTarget(null)}
+          footer={
+            <>
+              <Button autoFocusInModal onClick={() => setRevertTarget(null)}>
+                Keep it redacted
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  removeShape(revertTarget.id)
+                  setAnnouncement(
+                    `Redaction removed. ${revertTarget.auto?.label ?? 'The region'} is now visible.`
+                  )
+                  setRevertTarget(null)
+                }}
+              >
+                Expose it
+              </Button>
+            </>
+          }
+        >
+          {revertWarning(revertTarget.auto?.label ?? 'a detected region')} You can undo this with
+          Ctrl+Z.
+        </Modal>
+      )}
+
       {confirmClose && (
         <Modal
           title="Discard unsaved changes?"
           onClose={() => setConfirmClose(false)}
           footer={
             <>
-              <Button data-autofocus onClick={() => setConfirmClose(false)}>
+              <Button autoFocusInModal onClick={() => setConfirmClose(false)}>
                 Keep editing
               </Button>
               <Button variant="danger" onClick={onClose}>

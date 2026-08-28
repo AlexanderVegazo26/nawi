@@ -76,9 +76,15 @@ listing the vendor.com URLs. It is not usable as a vendor feature description.
    coclass *does* beyond its name is inference.
 5. **OCR language coverage is partial.** `English/French/German/Spanish/PortugueseBrazilian`
    `.amd/.amt/.lm` files are present; whether more languages download on demand is unknown.
-6. **Video editing depth.** `VideoEditing.dll` is only 58.9 KB — the actual trim/cut/
-   multi-track feature set is not derivable from the install tree.
-7. **Whether the freeze-frame model is used.** No evidence either way in static resources.
+6. *(reduced)* **The Editor's UI was originally unknown.** A second user-supplied
+   screenshot (§2.12) has since established its menu bar, mode tabs, tool rail, property
+   panel, recent tray, and share controls. What remains unknown there: the contents of the
+   `Assets` tab (ED-04), the contents of the `Create` mode (ED-05), the `View`/`Edit`/`Share`
+   menu contents, and the Video-mode tool rail — the screenshot shows an image document.
+7. **Video editing depth.** `VideoEditing.dll` is only 58.9 KB — the actual trim/cut/
+   multi-track feature set is not derivable from the install tree, and the Editor
+   screenshot shows an image document (§2.12), so the Video-mode surface is still unseen.
+8. **Whether the freeze-frame model is used.** No evidence either way in static resources.
 
 ### 1.5 Dead / empty surface found (one line each, as findings not conclusions)
 
@@ -160,13 +166,13 @@ description, plus a demo `.mp4` (two artifacts per tool).
 | ANN-04 | Crop Tool | "Remove unwanted areas from the edges of an image." |
 | ANN-05 | **Cut Out Tool** | "Delete a vertical or horizontal section of an image. Select a Quick Style to determine the direction and edge style of the cut." |
 | ANN-06 | Eraser Tool | "Erase flattened areas in an image to expose the canvas. Right-click the canvas to change its color." |
-| ANN-07 | Favorites | "Save your most frequently used tools and Quick Styles as Favorites." |
+| ANN-07 | Favorites | "Save your most frequently used tools and Quick Styles as Favorites." **ED-07 confirms it is the first tool-rail entry.** |
 | ANN-08 | Fill Tool | "Fill an area with a different color. Use the eyedropper to fill with a specific color from your image." |
 | ANN-09 | Highlighter Tool | "Draw attention to a rectangular area in an image. Specify the highlight color and opacity in the Properties panel." |
 | ANN-10 | Line Tool | "Add a line to an image. For a curved line select Bezier Curve, draw your line, then click and drag to bend it." |
 | ANN-11 | **Magic Wand Tool** | "Select an area in an image based on color. This tool is ideal for selecting areas of a single color that do not include complex backgrounds or patterns." |
 | ANN-12 | **Magnify Tool** | "Enlarge and highlight an area. To view both the magnified image and the original, click to select the magnified area, then click and drag the anchor point to the desired location." |
-| ANN-13 | More Menu | "Access additional tools or customize your toolbar. Rearrange tools and add additional ones for quicker access." |
+| ANN-13 | More Menu | "Access additional tools or customize your toolbar. Rearrange tools and add additional ones for quicker access." **Confirmed live by ED-06** — the rail shows 10 of 22 tools |
 | ANN-14 | Move Tool | "Move existing objects on the canvas, or toggle on **Smart Move** to make static objects editable." |
 | ANN-15 | Pen Tool | "Draw freehand lines. Customize the color, shadow, opacity, and width in the Properties panel." |
 | ANN-16 | Selection Tool | "Select part of an image to cut, copy, move, or delete. **Automatically replace deleted areas with the surrounding color or transparency.**" |
@@ -225,7 +231,7 @@ Supporting capabilities:
 | EFX-01 | Capture-time Effects pipeline | Confirmed | U (`Effects:` dropdown) + `.snagx` `"Effects": []` array (O) |
 | EFX-02 | GPU shader effects (highlight, pixelate) | Confirmed | `HighlightEffect.cso`, `PixelateEffect.cso` compiled shader objects (O) |
 | EFX-03 | Image processing effect library | Confirmed | LEADTOOLS: `LtEfxx.dll`, `LtImgEfxx.dll`, `LtImgClrx.dll`, `LtImgCorx.dll`, `LtClrx.dll` (O) |
-| EFX-04 | **Themes** (shareable brand kit: colors, fonts, QuickStyles, drop shadow) | Confirmed | `Themes/{Basic,Industrial,Starter}.snagtheme` with keys `QuickStyles`, `ThemeColors`, `FontFamily`, `FontEmphasis`, `DropShadow` (O) |
+| EFX-04 | **Themes** (shareable brand kit: colors, fonts, QuickStyles, drop shadow) | Confirmed | `Themes/{Basic,Industrial,Starter}.snagtheme` with keys `QuickStyles`, `ThemeColors`, `FontFamily`, `FontEmphasis`, `DropShadow` (O) + **ED-09 (U): a `Theme:` dropdown sits directly above the Quick Styles gallery in the Editor, so the theme visibly drives the styles you draw with.** This is the decisive evidence for G4. |
 | EFX-05 | **Palettes** (shareable color sets) | Confirmed | `Palettes/{Dark,Light} Grayscale.snagpalette` (O) |
 | EFX-06 | **Templates** — combine captures into a layout/document | Confirmed | `Templates/` with `NoImage.pdf`, `AddIndicator`, `DeleteSection`, `MoreSection`, `DragToSwap`, `DropToSwap`, `ZoomIn/Out` UI assets in dark+light variants (O) + `en-US/TemplateOnboarding.snagx` (O) + `.snagx` `Sections` model (O) |
 | EFX-07 | Templates are localized to de/fr/es/ja/pt | Confirmed | `Templates/Translations.json`, top-level keys `["de","fr","es","ja","pt"]` (O) |
@@ -382,6 +388,38 @@ record shared across all tools — one schema, `ToolMode` discriminates.
 
 ---
 
+### 2.12 Competitor A Editor UI (tier U — user-supplied screenshot)
+
+Source: a second user-supplied screenshot, title bar
+`2026-08-28_15-09-21.snagx - Competitor A Editor`. **Everything in this subsection is tier U**
+unless a corroborating source is named. Until now the Editor was known only from the
+install tree (`Competitor AEditor.exe`, `EditorDotNet.dll`, `EditorInterop.dll`,
+`Competitor AEditorRes.dll`) — i.e. we knew it existed and roughly how big it was, and nothing
+about its surface. This is the single largest reduction in §1.4 uncertainty in the document.
+
+| ID | Observation | Status | Notes / corroboration |
+|---|---|---|---|
+| ED-01 | Menu bar: File, Edit, **Image**, **Video**, Share, View, Help | Confirmed (U) | **Image and Video are separate top-level menus** — the editing surface is mode-dependent on the asset type, not one unified canvas menu |
+| ED-02 | Mode tabs, top-left: **Editor \| Library \| Assets \| Capture \| Create** | Confirmed (U) | Five peer modes in one window |
+| ED-03 | `Capture` is a tab *inside* the Editor | Confirmed (U) | Capture host and Editor are mutually reachable, not a one-way post-capture handoff. Corroborates AUT-06 (both EXEs have their own URL protocol) |
+| ED-04 | **`Assets`** tab carries an external-link glyph | Candidate (U) | Reads as an online/downloadable asset library (stamps, templates, themes) rather than a local panel. Its being external is the observation; what it contains is **inferred** |
+| ED-05 | **`Create`** is its own top-level mode | Confirmed (U) | Almost certainly the combine-images/template surface recorded as ANN-36 / EFX-06 / G2. That mapping is **inferred**; that the mode exists is observed |
+| ED-06 | Tool rail (horizontal, top-centre): Favorites, Arrow, Text, Callout, Shape, Stamp, Fill, Move, Selection, More — then Undo, Redo | Confirmed (U) | Ten visible entries out of the 22 tools in §2.4. **Confirms ANN-13 ("More Menu") is a real overflow affordance, and confirms the §6 handoff note that Competitor A outgrew its own toolbar** |
+| ED-07 | **Favorites is itself a tool-rail entry**, in first position | Confirmed (U + `Favorites.json`, O) | Cross-tool saved-style access is a first-class rail item, not a menu |
+| ED-08 | **Move and Selection are separate tools** | Confirmed (U + ANN-14/ANN-16 vendor descriptions, V) | Move = reposition objects (+ "Smart Move"); Selection = cut/copy/delete regions of the image with auto-infill |
+| ED-09 | Right panel, top: **"Quick Styles"** — a `Theme:` dropdown (value `Basic`) above a gallery of **12 preset arrow styles** | Confirmed (U + `Themes/Basic.snagtheme` `QuickStyles[]`, O) | The gallery is **per-tool** (arrow styles while Arrow is active) and is **bound to the selected theme** |
+| ED-10 | Right panel, middle: **"Tool Properties"** with a `?` help affordance | Confirmed (U) | Contents for Arrow: Color swatch; **Shadow as a direction picker, not a boolean**; line-style dropdown; arrowhead-style dropdown; Width (10), Opacity (100), **Start Size (3)**, **End Size (3)** sliders each with a numeric field; **Bezier Curve** checkbox |
+| ED-11 | Right panel, bottom: **"Select All (Arrow)"** button | Confirmed (U) | Select every object of the *currently active tool type* |
+| ED-12 | Bottom bar: "Hide Recent" toggle, **Tag** button, zoom (100%), canvas dimensions (1467 x 549px), **Effects** and **Properties** panel toggles | Confirmed (U) | Tagging is an editor-level action on the open capture, not only a library-level one |
+| ED-13 | **Persistent recent-captures filmstrip** along the bottom, one thumbnail carrying a video duration badge (`00:06`) | Confirmed (U) | **Images and videos share one tray**, and it is always visible while editing — distinct from the Library grid (ED-02), which is a separate mode |
+| ED-14 | Top-right: **Copy All**, and **Share Link** as a split button with a dropdown | Confirmed (U + ANN-18 vendor description, V) | ANN-18's text — "quickly copies a link… Or click the dropdown for other sharing options" — describes exactly this control |
+| ED-15 | Canvas has eight resize handles and is letterboxed within its frame | Confirmed (U) | The **canvas is resizable independently of the image** — consistent with `.snagx` `CaptureCanvasWidth/Height` being stored separately from the background image (§2.10, O), and with ANN-06's "erase… to expose the canvas" (V) |
+| ED-16 | Title bar shows the open document as `….snagx` | Confirmed (U + AUT-05, O) | **The Editor's document model is the single-file `.snagx` project**, not an opaque library entry — see G16 |
+
+**Effects/Properties as toggleable panels** (ED-12) corroborates EFX-01: `Effects` is a
+persistent panel in the Editor, not only the capture-time dropdown seen in the first
+screenshot.
+
 ## 3. The three-way matrix
 
 Legend for **Nawi today**: a `path` = implemented and cited. `no` = no
@@ -445,10 +483,10 @@ implementation found in `src/`. Column 3 is cited from source, **not** from READ
 | Crop | ANN-04 | FR-ANN.5 P1 `C` | `EditorView.tsx:19`, `:298` |
 | Freehand / pen | ANN-15 | FR-ANN.1 P0 | **no** |
 | **Callout** (shaped speech bubble with tail) | **ANN-03 confirmed** | FR-ANN.1 P0 "text callout" — but no tail/shape model | **no** — plain text only |
-| Line | ANN-10 | not explicitly in PRD | **no** |
+| Line | ANN-10 | not explicitly in PRD | **partial — model only**: `'line'` is in `ShapeKind` (`src/shared/types.ts:132`) and `SimpleShape` (`:174`), but **no line entry exists in the tool rail** (`EditorView.tsx:10-19`). Recorded as a finding in §4.3, not a defect claim. |
 | Fill | ANN-08 | not in PRD | **no** |
 | Eraser | ANN-06 | not in PRD | **no** |
-| Selection / move | ANN-16, ANN-14 | not in PRD | `EditorView.tsx:8` `'select'` (annotation select only, not image-region move) |
+| Selection / move | ANN-16, ANN-14 — **two separate tools, ED-08** | not in PRD | `EditorView.tsx:8` `'select'` (annotation select only; no image-region selection, no object move tool, no auto-infill on delete) |
 | **Magic wand** | ANN-11 | not in PRD | **no** |
 | **Magnify** | ANN-12 | FR-ANN.5 P1 "magnifier inset" | **no** |
 | **Cut Out** | ANN-05 | **not in PRD** — §4 | **no** |
@@ -459,7 +497,13 @@ implementation found in `src/`. Column 3 is cited from source, **not** from READ
 | Non-destructive vector annotations | ANN-26 | FR-ANN.2 P0 | `src/shared/types.ts:180` `AnnotationDoc`; `src/shared/ipc.ts:22` `library:save-annotations` |
 | Destructive redaction on export | ANN-29 (Smart Redact) | FR-ANN.3 P0 / UX-ANN.4 | `src/main/mcp/tools.ts:551` `redact`; `src/main/harvest/snapshot.ts:42` `SNAPSHOT_SENTINEL` |
 | Auto-contrast callout color | ∅ | FR-ANN.4 P1 / UX-ANN.5 | **no** |
-| **Brand kit / theme** | **EFX-04, EFX-05** | FR-ANN.7 P1 | **no** |
+| **Brand kit / theme** | **EFX-04, EFX-05, ED-09** | FR-ANN.7 P1 — **export-only by UX-VIS.5** | **no** |
+| **Per-tool Quick Styles gallery bound to a theme** | **ED-09** | **not in PRD** — §4 (G17) | **no** — `EditorView.tsx` has a flat colour/stroke palette, no named styles |
+| **Annotation drop shadow (with direction)** | **ED-10**; `Favorites.json` `DropShadowEnabled`/`ShadowColor`/`ShadowBlur`/`ShadowOpacity`/`ShadowDirectionX/Y` (O) | **not in PRD** — §4 (G18) | **no** — absent from `src/shared/types.ts` *and* from `ARCHITECTURE.md` §5 |
+| **Bezier-curve arrows** | **ED-10** (checkbox); ANN-10 vendor text (V) | **not in PRD** — §4 (G18) | **no** — `curve?: Point` is in `docs/ARCHITECTURE.md:371` but **not** in the shipped `SimpleShape` (`src/shared/types.ts:174`) |
+| **Independent start/end arrowhead sizes** | **ED-10**; `Favorites.json` `ArrowStartWidth`/`ArrowEndWidth`/`ArrowStart`/`ArrowEnd` (O) | **not in PRD** — §4 (G18) | **no** — `ARCHITECTURE.md:370` has a single `headSize`; shipped model has neither |
+| **Per-annotation opacity and dash style** | ED-10; `Favorites.json` `Opacity`/`DashType` (O) | **not in PRD** | **no** — in `ARCHITECTURE.md:365` `StrokeStyle{opacity, dash}` but **not** in the shipped `BaseShape` (`src/shared/types.ts:149-158`) |
+| **Select all objects of the active tool type** | **ED-11** | **not in PRD** — §4 (G19) | **no** |
 | Undo/redo ≥50 | ANN-34 | UX-ANN.6 P1 | `EditorView.tsx` `commit()` history (depth not asserted) |
 | Video trim/cut/silence removal | REC-07 candidate | FR-ANN.6 P1 | **no** |
 | **Multi-page document** | **ANN-35** | **not in PRD** — §4 | **no** — one asset per library item |
@@ -478,6 +522,8 @@ implementation found in `src/`. Column 3 is cited from source, **not** from READ
 | Document layout reconstruction (tables, paragraphs) | OCR-03 | **not in PRD** — §4 | **no** |
 | Text capture from window objects (non-OCR) | CAP-11 candidate | **not in PRD** — §4 | **no** |
 | Library search | OCR-09 | FR-AI.5 P1 (semantic) | `src/shared/ipc.ts:19` `library:list`; MCP `search_captures` `src/main/mcp/tools.ts:420` |
+| **Capture tagging from the editor** | **ED-12** (Tag button in the bottom bar) | **covered as a concept** — PRD-002 §2 IA "Folders, tags, collections"; FR-SHR.5 P1; FR-AI.4 P1 auto-tagging | **model only** — `LibraryItem.tags?` exists (`src/shared/types.ts:121`) and MCP `search_captures` searches it (`src/main/mcp/tools.ts:435`), but **no UI writes it**. See §4.3. |
+| **Persistent recent-captures tray, images + video, always visible while editing** | **ED-13** | **partially covered** — PRD-002 §2 IA line 50 puts "recent 5" in the **OS menu bar/tray**, a different surface | **no** | 
 | **OS-level search integration (Windows Search)** | **OCR-09 confirmed** | **not in PRD** — §4 | **no** |
 | **OS-level thumbnails for our file type** | **OCR-10 confirmed** | **not in PRD** — §4 | **no** |
 | Transcription | ∅ (no ASR model found; only DeepFilterNet denoiser) | FR-AI.1 P0 | **no** |
@@ -565,6 +611,13 @@ Capabilities Competitor A ships that **PRD-001 and PRD-002 never mention**. Prio
 | G13 | **AI audio noise removal** | REC-05 (DeepFilterNet3 model, 11.8 MB) + `EnableBackgroundNoiseRemoval` as a preset field (§2.8a) | FR-AI.7 covers filler-word and dead-air removal but not denoising. Ships on-device in Competitor A, which also demonstrates FR-AI.9's on-device option is practical. | **P1** |
 | G14 | **Rich raster format matrix and PDF export for images** | SHR-08, SHR-10 | We ship PNG/JPEG (`index.ts:385`). PDF is specified only for *guides* (FR-GDE.3). "Export this screenshot as PDF/TIFF" is a documentation-workflow staple. | **P2** (PDF), format matrix **P2** |
 | G15 | **Cursor include/exclude on a still capture** | CAP-05 (U toggle) + `Presets8.xml` `<CaptureCursor>` (O) | Delay itself *is* covered (FR-CAP.7 P1). The gap is narrower and needs stating precisely: **PRD-001 FR-ANN.7 covers cursor *style* as part of a brand kit, but neither PRD covers cursor *inclusion* on a still capture** — a visible toggle on Competitor A's main window and a near-universal expectation. | **P1** |
+| G16 | **A portable single-file project format** — `.snagx` is one ZIP holding image + vector objects + pages + metadata, is the Editor's titled document (ED-16), is OS-associated (AUT-05), and gets Explorer thumbnails (OCR-10) and Search properties (OCR-09) | ED-16, §2.10, AUT-05 | **The strongest structural gap in this section.** Our storage is a library index plus a DC-4 sidecar directory (`src/main/library.ts`, `src/main/sidecar/paths.ts`) — both machine-facing and neither portable. There is no answer to *"send me your editable capture."* It also affects `product-analyst` directly: DC-6 specifies sidecar revisioning but no export/import envelope. | **P1** |
+| G17 | **Per-tool Quick Styles gallery, bound to a theme** | ED-09, EFX-04 | Distinct from G4 and narrower: G4 is "should a brand kit change authoring defaults at all," G17 is the *mechanism* — a visible gallery of named, themed presets **per tool**. `EditorView.tsx` offers a flat colour + stroke-width palette with no named style concept. This is the highest-frequency interaction in the whole Competitor A editor. | **P1** |
+| G18 | **Annotation property depth: shadow (with direction), Bezier curves, independent start/end arrowhead sizes, per-object opacity and dash** | ED-10; `Favorites.json` (O) | **PRD-002 §2's IA already specifies an "Inspector — properties of the selected annotation", so the *panel* is covered — the gap is its *contents*.** Neither PRD names a single annotation property. Note the drift this exposes: `docs/ARCHITECTURE.md` §5 specified `StrokeStyle{opacity, dash}`, `headSize`, and `curve?: Point`; the shipped `src/shared/types.ts` `BaseShape` carries only `color` and `strokeWidth`. **Shadow appears in neither.** | **P1 for shadow + opacity** (cheap, high visual payoff); **P2 for Bezier and split arrowhead sizes** |
+| G19 | **Select all objects of the active tool type** | ED-11 | A one-line editing affordance with no PRD mention and no equivalent in `EditorView.tsx`. Cheap; matters once a document has 20+ objects. | **P2** |
+| G20 | **Persistent recent-captures tray inside the Editor**, mixing images and video | ED-13 | **Partially covered, and the difference is the point:** PRD-002 §2's IA puts "recent 5" in the **OS menu bar / tray**. Competitor A's is an *in-editor filmstrip*, always visible, that makes moving between recent captures a zero-navigation action — which is a different job from a tray shortcut, and directly serves `UX-IA.1`'s depth limit. Worth an explicit decision rather than assuming the IA line covers it. | **P2** |
+| G21 | **The Editor is a five-mode workspace** (Editor / Library / Assets / Capture / Create), with **Capture reachable from inside it** | ED-02, ED-03, ED-05 | `UX-IA.2` guarantees Editor-from-capture; **nothing specifies capture-from-editor**, and our IA has no `Create` peer mode (that is G2) and no `Assets` concept (that is G5, plus an online asset library we have no analogue for). Recorded so the IA asymmetry is a decision, not an oversight. | **P2** |
+| G22 | **Mode-dependent menus** — `Image` and `Video` are separate top-level menus | ED-01 | Evidence that Competitor A treats image editing and video editing as two distinct surfaces sharing a shell. Our PRDs assume one Editor with one tool rail (`FR-ANN.1-6` mixes still and video operations freely). Not a feature gap — an **information-architecture question** for `ux-designer` that our documents never pose. | **P2 — decide, don't necessarily copy** |
 
 ### 4.2 Legacy surface — deliberately do not copy
 
@@ -587,6 +640,28 @@ Listed so the omission is a decision on record rather than an oversight.
   FR-REC.5-8, FR-AI.1/2/3-full, FR-SHR.*, FR-CLI.*, FR-GDE.* have no implementation trace
   in `src/`. Expected — these are later milestones — but recorded so the matrix's
   "Nawi: no" column isn't mistaken for a defect list.
+- **Spec/implementation drift inside our own repo, surfaced by comparing against Competitor A's
+  property panel (ED-10).** `docs/ARCHITECTURE.md` §5 (`:365-371`) specifies
+  `StrokeStyle{color, width, opacity, dash}`, arrow `head`/`headSize`, `curve?: Point`,
+  and `ShapeBase.rotation`. The shipped `src/shared/types.ts` `BaseShape` (`:149-158`)
+  carries **only `color` and `strokeWidth`**; `SimpleShape` (`:174`) has no `curve`,
+  no `headSize`, no `opacity`, no `dash`, no `rotation`. **This is reported as a
+  documented-design vs. as-built divergence for `solution-architect` and
+  `product-analyst`, not as a defect** — per `qa-engineer`'s Oracle Hierarchy the
+  written architecture doc outranks current implementation behaviour, so the resolution
+  is theirs to make.
+- **`'line'` is in the shipped shape model but has no tool.** `ShapeKind` includes
+  `'line'` (`src/shared/types.ts:132`) and `SimpleShape` accepts it (`:174`), but the
+  tool rail defines eight tools and none is line (`EditorView.tsx:10-19`). A `'line'`
+  shape can therefore exist in an `AnnotationDoc` and render, but no UI creates one.
+  **Flagged as a possible gap-or-defect hypothesis for `qa-engineer` to triage, not
+  asserted as either.**
+- **`LibraryItem.tags?` is written by nothing.** The field exists
+  (`src/shared/types.ts:121`) and `search_captures` reads it
+  (`src/main/mcp/tools.ts:435`, which advertises search over "names and tags"), but no
+  code path sets it. Competitor A exposes tagging as a bottom-bar button in the Editor
+  (ED-12). Finding for `product-analyst`: FR-SHR.5 and FR-AI.4 both assume tags exist;
+  today the search feature advertises a facet that is always empty.
 - **Implementation with no requirement:** none found. Every `src/shared/ipc.ts` channel maps
   to an FR or UX id, and `src/shared/ipc.ts:34-37` is explicitly commented `UX-AGT.3`.
 - **PRD-002 `UX-ANN.1` specifies `P` for pixelate and `S` for spotlight**; `EditorView.tsx:10-19`
@@ -721,6 +796,8 @@ All paths relative to `C:\Program Files\the vendor\Competitor A\` unless noted.
 | E16a | `%LOCALAPPDATA%\the vendor\Competitor A\Presets8.xml` (44.7 KB `Presets7.xml` also present), plus sibling `Tools2.xml`, `ImageQuickStylesV2.xml`, `GifExportOptions.xml`, `ProgramOutputs.xml`, `AppSettings.json` | §2.8a preset schema; CAP-18, CAP-19, CAP-20, REC-11, REC-12, REC-13, SHR-13, SHR-14, SHR-15, ANN-37, AUT-01a; promotion of AUT-08 |
 | E16b | `EnhancedTooltips/*/ENU/index.html` `<div class="tpot-text">` extracted for all 22 tools | The verbatim vendor descriptions in §2.4 |
 | E17 | `en-US/Competitor AHelpOffline.pdf`, text-extracted | **Contains no feature documentation** — offline-resources leaflet only (§1.2) |
+| E17a | **Second user-supplied screenshot: Competitor A Editor**, title bar `2026-08-28_15-09-21.snagx - Competitor A Editor` | All of §2.12 (ED-01…ED-16); gaps G16–G22; the EFX-04 and ANN-07/ANN-13 confirmations |
 | E18 | User-supplied screenshot of the Competitor A capture window | Tier U throughout: modes, toggles, Selection/Effects/Share dropdowns, 6 presets and their hotkeys, "Open in Competitor B Editor (New!)" |
 | E19 | Nawi `src/shared/ipc.ts`, `src/main/mcp/tools.ts`, `src/renderer/components/EditorView.tsx`, `src/main/capture.ts`, `src/main/index.ts`, `src/shared/settings.ts`, `src/main/harvest/*`, `src/main/cdp/*`, `src/main/sidecar/*` | Column 3 of §3 throughout |
-| E20 | Nawi `docs/PRD-001-core-capture-platform.md`, `docs/PRD-002-user-experience.md` | Column 2 of §3 throughout |
+| E20 | Nawi `docs/PRD-001-core-capture-platform.md`, `docs/PRD-002-user-experience.md` | Column 2 of §3 throughout; PRD-002 §2 IA (`:43-90`) for the Inspector and "recent 5" reconciliations in G18/G20 |
+| E21 | Nawi `docs/ARCHITECTURE.md:360-380` (shape model) vs. `src/shared/types.ts:125-190` | The spec/as-built annotation-property drift in §4.3 and G18 |

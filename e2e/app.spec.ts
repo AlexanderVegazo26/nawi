@@ -253,9 +253,15 @@ test('blur renders correctly over a cropped document', async () => {
 
   await expect.poll(async () => (await canvas.boundingBox())!.width < box.width).toBe(true)
 
-  // Draw a blur inside the cropped view. Before the fix this read pixels from
-  // the wrong part of the image — a redaction tool showing unrelated content.
-  await win.getByRole('button', { name: 'Blur / pixelate' }).click()
+  // Draw a pixelation inside the cropped view. Before the fix this read pixels
+  // from the wrong part of the image — an obscure tool showing unrelated content.
+  //
+  // The single "Blur / pixelate" tool this test was written against was split
+  // into separate Blur and Pixelate tools (UX-ANN.1 binds `B` and `P`
+  // independently). `Pixelate` is the faithful successor: the old tool created
+  // shapes with `mode: 'pixelate'`, so this exercises exactly the same
+  // crop-origin readback path in `drawObscure` that it always did.
+  await win.getByRole('button', { name: 'Pixelate' }).click()
   const b = (await canvas.boundingBox())!
   await win.mouse.move(b.x + 30, b.y + 30)
   await win.mouse.down()

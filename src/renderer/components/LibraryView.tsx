@@ -281,7 +281,7 @@ export function LibraryView({
           onClose={() => setConfirmDelete(null)}
           footer={
             <>
-              <Button data-autofocus onClick={() => setConfirmDelete(null)}>
+              <Button autoFocusInModal onClick={() => setConfirmDelete(null)}>
                 Cancel
               </Button>
               <Button
