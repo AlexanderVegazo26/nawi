@@ -1,28 +1,65 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CaptureSource, LibraryItem } from '@shared/types'
-import { Button, ErrorState, Spinner, formatDuration } from './ui'
-import { ScreenRecorder, blobToBytes } from '../lib/recorder'
+import type { RecordingStatus, TrackSelection } from '@shared/recording'
+import { Button, ErrorState, Spinner } from './ui'
 
 type Busy = null | 'fullscreen' | 'region' | 'window'
+
+/**
+ * FR-REC.1 — the four tracks, chosen independently before recording starts.
+ *
+ * Screen is not in this list because it is not optional; a recording with no
+ * video track is not a recording. Mic and camera permission are requested by
+ * the recorder window at the moment the track is first enabled (UX-PRM.4), not
+ * here and not up front, so ticking a box never prompts.
+ */
+const TRACK_TOGGLES: Array<{ key: keyof TrackSelection; label: string; hint: string }> = [
+  { key: 'system', label: 'System audio', hint: 'Sound coming out of this computer' },
+  { key: 'mic', label: 'Microphone', hint: 'Asks for permission the first time' },
+  // Honest label: the camera is opened, permission-gated and reported in the
+  // HUD, but its pixels are not composited into the video yet. Saying "recorded"
+  // would promise a capability nothing produces.
+  {
+    key: 'camera',
+    label: 'Webcam (preview only)',
+    hint: 'Opens the camera and reports its state; not yet included in the recorded video'
+  }
+]
 
 export function CaptureView({
   onCaptured,
   notify,
-  recorder,
-  recording,
-  setRecording
+  recording
 }: {
   onCaptured: (item: LibraryItem, openEditor: boolean) => void
   notify: (msg: string, tone?: 'ok' | 'err') => void
-  recorder: ScreenRecorder
-  recording: { elapsedMs: number } | null
-  setRecording: (v: { elapsedMs: number } | null) => void
+  recording: RecordingStatus
 }): React.JSX.Element {
   const [busy, setBusy] = useState<Busy>(null)
   const [picker, setPicker] = useState<'window' | 'record' | null>(null)
   const [sources, setSources] = useState<CaptureSource[] | null>(null)
   const [sourceError, setSourceError] = useState<string | null>(null)
-  const [withAudio, setWithAudio] = useState(true)
+  const [tracks, setTracks] = useState<TrackSelection>({ system: true, mic: false, camera: false })
+  const [countdown, setCountdown] = useState(true)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
+
+  // Track choices and the countdown are remembered per user through the M0
+  // settings layer, so the picker opens where the user left it.
+  useEffect(() => {
+    void window.api.getSettings().then((res) => {
+      if (res.ok) {
+        setTracks({
+          system: res.value.captureDefaults.recordAudio,
+          mic: res.value.captureDefaults.recordMicrophone,
+          camera: res.value.captureDefaults.recordWebcam
+        })
+        setCountdown(res.value.captureDefaults.recordCountdown)
+      }
+      // Either way the picker becomes usable: a settings read that failed must
+      // not leave the user unable to record.
+      setSettingsLoaded(true)
+    })
+  }, [])
 
   const loadSources = useCallback(async (kinds: Array<'screen' | 'window'>) => {
     setSources(null)
@@ -72,14 +109,23 @@ export function CaptureView({
   const startRecording = useCallback(
     async (sourceId: string) => {
       setPicker(null)
-      try {
-        await recorder.start(sourceId, withAudio)
-        setRecording({ elapsedMs: 0 })
-      } catch (err) {
-        notify(err instanceof Error ? err.message : String(err), 'err')
-      }
+      // Persist the choice before starting, so it survives even if the
+      // recording itself fails — the user should not have to re-tick after an
+      // error.
+      void window.api.updateSettings({
+        captureDefaults: {
+          recordAudio: tracks.system,
+          recordMicrophone: tracks.mic,
+          recordWebcam: tracks.camera,
+          recordCountdown: countdown
+        }
+      })
+      const res = await window.api.startRecording({ sourceId, tracks, countdown })
+      // Failures after this point arrive through `onRecordingFailed` in App;
+      // this only reports a request main refused outright.
+      if (!res.ok) notify(res.error, 'err')
     },
-    [recorder, withAudio, notify, setRecording]
+    [tracks, countdown, notify]
   )
 
   const cards: Array<{
@@ -124,31 +170,7 @@ export function CaptureView({
     }
   ]
 
-  if (recording) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-6">
-        <div className="relative flex h-24 w-24 items-center justify-center">
-          <span className="absolute inline-flex h-full w-full motion-ping animate-ping rounded-full bg-danger/20" />
-          <span className="relative inline-flex h-16 w-16 items-center justify-center rounded-full bg-danger-fill">
-            <span className="h-6 w-6 rounded-sm bg-white" />
-          </span>
-        </div>
-        <div className="text-center">
-          <p className="font-mono text-3xl font-semibold tabular-nums text-text-primary">
-            {formatDuration(recording.elapsedMs)}
-          </p>
-          <p className="mt-1 text-sm text-text-secondary">Recording in progress</p>
-        </div>
-        <Button
-          variant="danger"
-          onClick={() => window.dispatchEvent(new CustomEvent('nawi:stop-recording'))}
-          className="px-6"
-        >
-          Stop recording (Ctrl+Shift+S)
-        </Button>
-      </div>
-    )
-  }
+  const isRecording = recording.phase !== 'idle' && recording.phase !== 'error'
 
   return (
     <div className="h-full overflow-auto p-8">
@@ -157,6 +179,43 @@ export function CaptureView({
         <p className="mt-1.5 text-sm text-text-secondary">
           Grab a still or record your screen. Everything lands in your library.
         </p>
+
+        {/* The recording itself lives in the floating HUD now, so this window is
+            free to be used during a recording. All this needs to do is say so
+            and offer the way out. */}
+        {isRecording && (
+          <div
+            className="surface mt-5 flex flex-wrap items-center gap-3 rounded-xl px-4 py-3"
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className={`h-2.5 w-2.5 rounded-full bg-danger ${
+                recording.phase === 'paused' ? '' : 'motion-pulse animate-pulse'
+              }`}
+              aria-hidden="true"
+            />
+            <p className="min-w-0 flex-1 text-sm text-text-secondary">
+              {recording.phase === 'paused'
+                ? 'Recording paused. Use the floating controls to resume.'
+                : 'Recording. The floating controls stay on top of every window.'}
+            </p>
+            <Button
+              variant="ghost"
+              onClick={() =>
+                void window.api.sendRecordCommand(recording.phase === 'paused' ? 'resume' : 'pause')
+              }
+            >
+              {recording.phase === 'paused' ? 'Resume' : 'Pause'}
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => window.dispatchEvent(new CustomEvent('nawi:stop-recording'))}
+            >
+              Stop recording
+            </Button>
+          </div>
+        )}
 
         <div className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {cards.map((c) => (
@@ -253,17 +312,40 @@ export function CaptureView({
             </div>
 
             {picker === 'record' && (
-              <div className="border-t border-border px-5 py-3">
-                <label className="flex items-center gap-2.5 text-sm text-text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={withAudio}
-                    onChange={(e) => setWithAudio(e.target.checked)}
-                    className="h-4 w-4 accent-[var(--color-accent)]"
-                  />
-                  Record system audio when available
-                </label>
-              </div>
+              <fieldset className="border-t border-border px-5 py-3">
+                <legend className="sr-only">Tracks to record</legend>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                  {TRACK_TOGGLES.map((t) => (
+                    <label
+                      key={t.key}
+                      title={t.hint}
+                      className="flex items-center gap-2.5 text-sm text-text-secondary"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={tracks[t.key]}
+                        disabled={!settingsLoaded}
+                        onChange={(e) =>
+                          setTracks((prev) => ({ ...prev, [t.key]: e.target.checked }))
+                        }
+                        className="h-4 w-4 accent-[var(--color-accent)]"
+                      />
+                      {t.label}
+                    </label>
+                  ))}
+                  <span className="flex-1" />
+                  <label className="flex items-center gap-2.5 text-sm text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={countdown}
+                      disabled={!settingsLoaded}
+                      onChange={(e) => setCountdown(e.target.checked)}
+                      className="h-4 w-4 accent-[var(--color-accent)]"
+                    />
+                    3-2-1 countdown
+                  </label>
+                </div>
+              </fieldset>
             )}
           </div>
         </div>
@@ -271,5 +353,3 @@ export function CaptureView({
     </div>
   )
 }
-
-export { ScreenRecorder, blobToBytes }

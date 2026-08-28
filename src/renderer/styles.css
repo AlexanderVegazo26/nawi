@@ -265,3 +265,28 @@
     animation: none !important;
   }
 }
+
+/*
+ * Recording HUD (UX-REC.1). Its window is transparent and frameless, so the
+ * page must not paint the app surface behind the rounded panel — otherwise the
+ * HUD is a 220x64 opaque rectangle with a card drawn inside it.
+ *
+ * `-webkit-app-region: drag` is what makes the window draggable by its body;
+ * every interactive control has to opt back out or it never receives a click.
+ * Edge snapping is main's job (it is the only side that knows where the screen
+ * edges are) and runs off the window's `moved` event.
+ */
+@layer utilities {
+  .hud-drag {
+    -webkit-app-region: drag;
+  }
+  .hud-no-drag {
+    -webkit-app-region: no-drag;
+  }
+}
+
+body.hud-body,
+body.hud-body #root {
+  background-color: transparent;
+  overflow: hidden;
+}

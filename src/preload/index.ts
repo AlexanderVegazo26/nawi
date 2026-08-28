@@ -1,6 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '@shared/ipc'
-import type { AgentAccessState, Settings, NawiApi } from '@shared/types'
+import type { AgentAccessState, LibraryItem, Settings, NawiApi } from '@shared/types'
+import type { RecordingStatus, StartRecordingOptions } from '@shared/recording'
+
+/**
+ * One place that turns a main→renderer broadcast into a subscription.
+ *
+ * The listener receives the payload only, never the `IpcRendererEvent` — that
+ * object carries `sender`, and handing it to renderer code would leak a live
+ * IPC handle straight through the contextBridge the rest of this file exists to
+ * keep closed.
+ */
+function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
+  const listener = (_e: unknown, payload: T): void => cb(payload)
+  ipcRenderer.on(channel, listener)
+  return () => {
+    ipcRenderer.removeListener(channel, listener)
+  }
+}
 
 /**
  * The entire privileged surface available to the renderer.
@@ -20,9 +37,33 @@ const api: NawiApi = {
   commitRegion: (displayId, rect) => ipcRenderer.send(IPC.commitRegion, displayId, rect),
   cancelRegion: () => ipcRenderer.send(IPC.cancelRegion),
 
+  /* recording — control plane */
+  startRecording: (options) => ipcRenderer.invoke(IPC.startRecording, options),
+  sendRecordCommand: (command) => ipcRenderer.invoke(IPC.recordCommand, command),
+  getRecordingStatus: () => ipcRenderer.invoke(IPC.getRecordingStatus),
+  onRecordingStatus: (cb) => subscribe<RecordingStatus>(IPC.recordingStatus, cb),
+  onRecordingFinished: (cb) => subscribe<LibraryItem>(IPC.recordingFinished, cb),
+  onRecordingFailed: (cb) => subscribe<string>(IPC.recordingFailed, cb),
+  listAudioInputs: () => ipcRenderer.invoke(IPC.listAudioInputs),
+  moveHud: (dx, dy) => ipcRenderer.invoke(IPC.moveHud, dx, dy),
+
+  /* recording — data plane, answered by main only for the recorder window */
   prepareRecording: (sourceId, withAudio) =>
     ipcRenderer.invoke(IPC.prepareRecording, sourceId, withAudio),
-  saveRecording: (req) => ipcRenderer.invoke(IPC.saveRecording, req),
+  beginRecording: (req) => ipcRenderer.invoke(IPC.beginRecording, req),
+  appendRecordingChunk: (recordingId, chunk) =>
+    ipcRenderer.invoke(IPC.recordChunk, recordingId, chunk),
+  markChapter: (recordingId, atMs) => ipcRenderer.invoke(IPC.markChapter, recordingId, atMs),
+  finalizeRecording: (req) => ipcRenderer.invoke(IPC.finalizeRecording, req),
+  abortRecording: (recordingId) => ipcRenderer.invoke(IPC.abortRecording, recordingId),
+  publishRecordingStatus: (status) => ipcRenderer.invoke(IPC.publishRecordingStatus, status),
+  onRecordCommand: (cb) => subscribe<string>(IPC.recordDispatch, cb),
+  onRecordRequest: (cb) => subscribe<StartRecordingOptions>(IPC.recordRequest, cb),
+
+  /* recording — recovery */
+  listRecoverableRecordings: () => ipcRenderer.invoke(IPC.listRecoverableRecordings),
+  recoverRecording: (id) => ipcRenderer.invoke(IPC.recoverRecording, id),
+  discardRecoverableRecording: (id) => ipcRenderer.invoke(IPC.discardRecoverableRecording, id),
 
   listLibrary: () => ipcRenderer.invoke(IPC.listLibrary),
   deleteLibraryItem: (id) => ipcRenderer.invoke(IPC.deleteLibraryItem, id),

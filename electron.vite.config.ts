@@ -39,7 +39,11 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
-          overlay: resolve(__dirname, 'src/renderer/overlay.html')
+          overlay: resolve(__dirname, 'src/renderer/overlay.html'),
+          // ARCHITECTURE.md §1.1's third renderer entry: the hidden window that
+          // owns MediaRecorder, plus the always-on-top recording HUD.
+          recorder: resolve(__dirname, 'src/renderer/recorder.html'),
+          hud: resolve(__dirname, 'src/renderer/hud.html')
         }
       }
     },

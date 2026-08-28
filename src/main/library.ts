@@ -2,8 +2,9 @@ import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { mediaFormat } from '@shared/types'
+import { formatOf, mediaFormat } from '@shared/types'
 import type { AnnotationDoc, CaptureKind, LibraryItem, MediaKind } from '@shared/types'
+import type { RecordingContainer } from '@shared/recording'
 import type { Sidecar, SidecarRead } from '@shared/sidecar/types'
 import {
   listRevisionsOnDisk,
@@ -82,11 +83,24 @@ function defaultName(kind: MediaKind, when: Date): string {
 export interface SaveArgs {
   kind: MediaKind
   captureKind: CaptureKind
-  bytes: Buffer
+  /** Bytes to write. Mutually exclusive with `adoptFile`. */
+  bytes?: Buffer
+  /**
+   * An existing file to take ownership of, renamed into the assets directory.
+   *
+   * Recordings arrive this way: a ten-minute capture already exists on disk in
+   * its entirety, and reading it into a Buffer only to write it back out again
+   * would cost hundreds of megabytes of resident memory for no benefit.
+   */
+  adoptFile?: string
   width: number
   height: number
   durationMs?: number
   name?: string
+  /** Real container of a video's bytes. Required for video; the extension comes from it. */
+  container?: RecordingContainer
+  chapters?: number[]
+  recovered?: boolean
 }
 
 export async function listItems(): Promise<LibraryItem[]> {
@@ -98,9 +112,29 @@ export async function save(args: SaveArgs): Promise<LibraryItem> {
   await ensureDirs()
   const id = randomUUID()
   const now = new Date()
-  const ext = mediaFormat(args.kind).ext
+  // The extension comes from the *real* container, never from the kind alone —
+  // that assumption is what wrote MP4 bytes into a `.webm` name.
+  const ext = mediaFormat(args.kind, args.container).ext
   const filePath = join(assetsDir(), `${id}.${ext}`)
-  await fs.writeFile(filePath, args.bytes)
+
+  let size: number
+  if (args.adoptFile) {
+    try {
+      await fs.rename(args.adoptFile, filePath)
+    } catch {
+      // A rename across devices fails with EXDEV; copy-then-unlink is the
+      // portable fallback, and userData and the recording dir are normally the
+      // same volume so this is the rare path.
+      await fs.copyFile(args.adoptFile, filePath)
+      await fs.rm(args.adoptFile, { force: true }).catch(() => undefined)
+    }
+    size = (await fs.stat(filePath)).size
+  } else if (args.bytes) {
+    await fs.writeFile(filePath, args.bytes)
+    size = args.bytes.byteLength
+  } else {
+    throw new Error('library.save needs either bytes or a file to adopt')
+  }
 
   const item: LibraryItem = {
     id,
@@ -110,10 +144,15 @@ export async function save(args: SaveArgs): Promise<LibraryItem> {
     filePath,
     width: args.width,
     height: args.height,
-    size: args.bytes.byteLength,
+    size,
     durationMs: args.durationMs ?? null,
     createdAt: now.toISOString(),
-    annotations: null
+    annotations: null,
+    // Only recorded for video; an image has no container and carrying one would
+    // make `formatOf` answer 'mp4' for a PNG.
+    ...(args.kind === 'video' && args.container ? { container: args.container } : {}),
+    ...(args.chapters?.length ? { chapters: [...args.chapters] } : {}),
+    ...(args.recovered ? { recovered: true } : {})
   }
 
   const items = await readIndex()
@@ -166,7 +205,7 @@ export async function saveAnnotations(id: string, doc: AnnotationDoc): Promise<L
 export async function readItemBytes(id: string): Promise<{ bytes: Buffer; mime: string }> {
   const item = await requireItem(id)
   const bytes = await fs.readFile(item.filePath)
-  return { bytes, mime: mediaFormat(item.kind).mime }
+  return { bytes, mime: formatOf(item).mime }
 }
 
 /* ------------------------------------------------------------------ *

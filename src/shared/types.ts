@@ -4,6 +4,12 @@
  */
 
 import type { Settings, SettingsPatch } from './settings'
+import { CONTAINERS, type RecordingContainer } from './recording'
+import type {
+  RecordingStatus,
+  StartRecordingOptions,
+  TrackSelection
+} from './recording'
 
 export type { Settings, SettingsPatch }
 
@@ -43,8 +49,8 @@ export function mediaKindOf(kind: LibraryItemKind): MediaKind | null {
 }
 
 export interface MediaFormat {
-  ext: 'png' | 'webm'
-  mime: 'image/png' | 'video/webm'
+  ext: 'png' | 'webm' | 'mp4'
+  mime: 'image/png' | 'video/webm' | 'video/mp4'
 }
 
 /**
@@ -54,14 +60,27 @@ export interface MediaFormat {
  * exact bug this function exists to remove — it would hand a caller a guide
  * labelled as an image and let it reach the clipboard or the filesystem.
  */
-export function mediaFormat(kind: LibraryItemKind): MediaFormat {
+export function mediaFormat(kind: LibraryItemKind, container?: RecordingContainer): MediaFormat {
   const media = mediaKindOf(kind)
   if (media === null) {
     throw new Error(`a ${kind} has no media bytes; it cannot be exported or read as a file`)
   }
-  return media === 'video'
-    ? { ext: 'webm', mime: 'video/webm' }
-    : { ext: 'png', mime: 'image/png' }
+  if (media !== 'video') return { ext: 'png', mime: 'image/png' }
+  // WebM is the fallback only because it is what every video written before the
+  // MP4 switch actually is. New recordings always carry their container
+  // explicitly; this branch exists for those older index records.
+  return CONTAINERS[container ?? 'webm']
+}
+
+/**
+ * The format of an item as it really exists on disk.
+ *
+ * Prefer this over `mediaFormat(item.kind)` anywhere an item is in hand: the
+ * kind alone cannot tell MP4 from WebM, and assuming from it is how a recording
+ * gets served, exported, and named as the wrong container.
+ */
+export function formatOf(item: Pick<LibraryItem, 'kind' | 'container'>): MediaFormat {
+  return mediaFormat(item.kind, item.container)
 }
 
 /** A selectable capture source, as surfaced by desktopCapturer. */
@@ -123,6 +142,20 @@ export interface LibraryItem {
   thumbnailPath?: string
   /** Who created this item. Absent means 'user' — the only producer before agents existed. */
   source?: 'user' | 'agent'
+  /**
+   * Container of a video item's bytes. Absent means WebM — every recording
+   * written before FR-REC.4 landed was WebM, so an old index record still
+   * resolves correctly with no migration.
+   */
+  container?: RecordingContainer
+  /** Milliseconds from the start of a recording, one per FR-REC.8 chapter marker. */
+  chapters?: number[]
+  /**
+   * True when this item came out of the crash-recovery path (FR-REC.3). Its
+   * duration is an estimate and its tail may be truncated, so the UI says so
+   * rather than presenting it as an ordinary recording.
+   */
+  recovered?: boolean
 }
 
 /* ------------------------------------------------------------------ *
@@ -136,8 +169,18 @@ export type ShapeKind =
   | 'line'
   | 'text'
   | 'highlight'
+  | 'freehand'
   | 'blur'
+  | 'redact'
+  | 'spotlight'
+  | 'magnify'
   | 'step'
+
+/** A point in image-pixel space. */
+export interface Point {
+  x: number
+  y: number
+}
 
 /**
  * Shapes live in image-pixel space, so a document is independent of the zoom
@@ -158,12 +201,34 @@ export interface TextShape extends BaseShape {
   kind: 'text'
   text: string
   fontSize: number
+  /**
+   * FR-ANN.4 / UX-ANN.5. True while the fill is the one the contrast check
+   * chose from the pixels underneath; false once the user has overridden it.
+   * Stored so reopening a document shows the same "automatic vs. yours" state
+   * rather than silently re-deriving and appearing to change the user's choice.
+   */
+  autoContrast?: boolean
+  /** The measured ratio behind `color`, so the UI can show the number it acted on. */
+  contrastRatio?: number
 }
 
 export interface StepShape extends BaseShape {
   kind: 'step'
 }
 
+/**
+ * How a region is obscured.
+ *
+ * 'solid' is the redaction mode FR-ANN.3 requires alongside the two decorative
+ * ones: it replaces the region outright rather than transforming it, so nothing
+ * of the original survives the render.
+ */
+export type ObscureMode = 'blur' | 'pixelate' | 'solid'
+
+/**
+ * A DECORATIVE obscure. Aesthetic only — it carries no security claim, and
+ * UX-ANN.4 requires it to look nothing like a redaction.
+ */
 export interface BlurShape extends BaseShape {
   kind: 'blur'
   /** 'blur' softens, 'pixelate' blocks. */
@@ -171,11 +236,68 @@ export interface BlurShape extends BaseShape {
   intensity: number
 }
 
+/**
+ * A REDACTION — the security-bearing sibling of `BlurShape` (FR-ANN.3, UX-ANN.4).
+ *
+ * Deliberately a separate `kind` rather than a flag on `BlurShape`. The two have
+ * different meanings to the person reading the exported image, so a reader of
+ * this model cannot accidentally treat one as the other, and `render.ts` cannot
+ * paint one with the other's chrome.
+ */
+export interface RedactShape extends BaseShape {
+  kind: 'redact'
+  /**
+   * Always 'solid', and modelled as a one-member union rather than dropped, so
+   * the field still reads as "which obscure mode" alongside `BlurShape.mode`.
+   *
+   * FR-ANN.3 defines redaction as *destructive on export* — "the underlying
+   * pixels must not exist in the exported artifact". Blur and pixelate are
+   * transforms of the original values, so a redaction in either mode would be a
+   * security affordance that does not do what its shield glyph promises. Those
+   * two modes already exist, honestly labelled, on the decorative `BlurShape`.
+   */
+  mode: 'solid'
+  /**
+   * Present only when a detector placed this, not the user (UX-ANN.3).
+   * `label` is the concrete noun phrase the revert confirmation names, per
+   * PRD-002 §9: "This will expose an API key in the shared image."
+   */
+  auto?: { label: string; confidence: number }
+}
+
+/** FR-ANN.1 freehand / pen. The bbox in `BaseShape` is kept in sync with `points`. */
+export interface FreehandShape extends BaseShape {
+  kind: 'freehand'
+  points: Point[]
+}
+
+/** FR-ANN.5 spotlight: everything OUTSIDE the rect is dimmed. */
+export interface SpotlightShape extends BaseShape {
+  kind: 'spotlight'
+  /** Dim opacity applied outside the rect, 0..1. */
+  dim: number
+}
+
+/** FR-ANN.5 magnifier inset: the rect's content redrawn enlarged, in place. */
+export interface MagnifyShape extends BaseShape {
+  kind: 'magnify'
+  /** Enlargement factor, > 1. */
+  factor: number
+}
+
 export type SimpleShape = BaseShape & {
   kind: 'arrow' | 'rect' | 'ellipse' | 'line' | 'highlight'
 }
 
-export type Shape = SimpleShape | TextShape | StepShape | BlurShape
+export type Shape =
+  | SimpleShape
+  | TextShape
+  | StepShape
+  | BlurShape
+  | RedactShape
+  | FreehandShape
+  | SpotlightShape
+  | MagnifyShape
 
 export interface AnnotationDoc {
   version: 1
@@ -206,16 +328,46 @@ export interface AgentAccessState {
  * IPC payloads
  * ------------------------------------------------------------------ */
 
-export interface SaveRecordingRequest {
-  data: Uint8Array
+/**
+ * Opens a crash-safe recording on disk (FR-REC.3).
+ *
+ * `mimeType` is whatever `MediaRecorder` actually negotiated, not what was
+ * asked for — main derives the container and the file extension from it, so the
+ * bytes and the name can never disagree.
+ */
+export interface BeginRecordingRequest {
+  mimeType: string
+  width: number
+  height: number
+  tracks: TrackSelection
+}
+
+/** Closes an open recording and hands the file to the library. */
+export interface FinalizeRecordingRequest {
+  recordingId: string
   width: number
   height: number
   durationMs: number
 }
 
+/** An interrupted recording found on disk at launch. */
+export interface RecoverableRecordingInfo {
+  id: string
+  startedAt: string
+  container: RecordingContainer
+  /** Bytes written before the process died. */
+  size: number
+  /**
+   * Inferred from the file's mtime, because an interrupted container has no
+   * trailing index to read a real duration from. Presented as an estimate.
+   */
+  estimatedDurationMs: number
+  chapters: number[]
+}
+
 export interface ExportRequest {
   itemId: string
-  format: 'png' | 'jpg' | 'webm'
+  format: 'png' | 'jpg' | 'webm' | 'mp4'
   /** Flattened bytes rendered by the renderer, including annotations. */
   data: Uint8Array
 }
@@ -237,14 +389,64 @@ export interface NawiApi {
   commitRegion(displayId: number, rect: Rect): void
   cancelRegion(): void
 
-  /* recording */
+  /* recording — control plane (main window / HUD) */
+  /**
+   * Asks main to run a recording: it shows the HUD, arms the display-media
+   * handler, and tells the hidden recorder window to start. Resolves as soon as
+   * the request is accepted, not when the recording ends — the outcome arrives
+   * through `onRecordingStatus` and `onRecordingFinished`.
+   */
+  startRecording(options: StartRecordingOptions): Promise<IpcResult<null>>
+  /** Sends a HUD/hotkey command (pause, resume, stop, chapter, …) to the recorder. */
+  sendRecordCommand(command: string): Promise<IpcResult<null>>
+  /** Latest status, for a window that just opened and missed the broadcasts. */
+  getRecordingStatus(): Promise<IpcResult<RecordingStatus>>
+  /** Live recorder state. Returns an unsubscribe function. */
+  onRecordingStatus(cb: (status: RecordingStatus) => void): () => void
+  /** Fires once a finished recording has landed in the library. */
+  onRecordingFinished(cb: (item: LibraryItem) => void): () => void
+  /** Fires when a recording ends without producing an item, with the reason. */
+  onRecordingFailed(cb: (error: string) => void): () => void
+  /** Available input devices for the mic switcher (UX-REC.5). */
+  listAudioInputs(): Promise<IpcResult<Array<{ deviceId: string; label: string }>>>
+  /** HUD geometry: move by a delta, snapping to the nearest screen edge (UX-REC.1). */
+  moveHud(dx: number, dy: number): Promise<IpcResult<null>>
+
+  /* recording — data plane (hidden recorder window only) */
   /**
    * Arms main's display-media handler. `withAudio` must match what the renderer is
    * about to ask `getDisplayMedia` for: main has to answer with an explicit audio
    * key, and a request whose audio the handler ignores yields a silent recording.
    */
   prepareRecording(sourceId: string, withAudio: boolean): Promise<IpcResult<null>>
-  saveRecording(req: SaveRecordingRequest): Promise<IpcResult<LibraryItem>>
+  /** Opens the on-disk recording. Must succeed before MediaRecorder is started. */
+  beginRecording(req: BeginRecordingRequest): Promise<IpcResult<{ recordingId: string }>>
+  /**
+   * Appends one MediaRecorder chunk.
+   *
+   * One of the three buffer-over-IPC exceptions ARCHITECTURE.md §1.3 sanctions:
+   * only the renderer can produce these bytes, and holding them in memory until
+   * stop is precisely the FR-REC.3 failure this replaces.
+   */
+  appendRecordingChunk(recordingId: string, chunk: Uint8Array): Promise<IpcResult<number>>
+  /** Records a chapter marker at `atMs` into the manifest, so it survives a crash. */
+  markChapter(recordingId: string, atMs: number): Promise<IpcResult<number[]>>
+  /** Closes the file and creates the library item. */
+  finalizeRecording(req: FinalizeRecordingRequest): Promise<IpcResult<LibraryItem>>
+  /** Abandons an open recording and deletes its bytes. */
+  abortRecording(recordingId: string): Promise<IpcResult<null>>
+  /** Recorder → main: publishes the status the HUD and main window render. */
+  publishRecordingStatus(status: RecordingStatus): Promise<IpcResult<null>>
+  /** Recorder → main: the command queue it should act on. Returns an unsubscribe function. */
+  onRecordCommand(cb: (command: string) => void): () => void
+  /** Recorder → main: the request to begin, delivered when main is ready. */
+  onRecordRequest(cb: (options: StartRecordingOptions) => void): () => void
+
+  /* recording — recovery (FR-REC.3) */
+  listRecoverableRecordings(): Promise<IpcResult<RecoverableRecordingInfo[]>>
+  /** Adopts an interrupted recording into the library. */
+  recoverRecording(id: string): Promise<IpcResult<LibraryItem>>
+  discardRecoverableRecording(id: string): Promise<IpcResult<null>>
 
   /* library */
   listLibrary(): Promise<IpcResult<LibraryItem[]>>

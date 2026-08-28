@@ -31,6 +31,18 @@ export interface CaptureDefaults {
   openEditorAfterCapture: boolean
   /** Include an audio track when starting a recording. */
   recordAudio: boolean
+  /**
+   * FR-REC.1 per-track defaults. Each is remembered independently, because the
+   * tracks are independently toggleable — one `recordAudio` boolean cannot
+   * express "system audio yes, microphone no".
+   *
+   * `recordAudio` is kept as the system-audio default so a settings file written
+   * before these fields existed still means what it meant.
+   */
+  recordMicrophone: boolean
+  recordWebcam: boolean
+  /** PRD-002 Flow B: show the skippable 3-2-1 pre-roll. Remembered per user. */
+  recordCountdown: boolean
   /** Hide the main window before a fullscreen/region capture. */
   hideAppDuringCapture: boolean
 }
@@ -87,6 +99,9 @@ export function defaultSettings(): Settings {
       copyToClipboard: true,
       openEditorAfterCapture: true,
       recordAudio: false,
+      recordMicrophone: false,
+      recordWebcam: false,
+      recordCountdown: true,
       hideAppDuringCapture: true
     },
     maskedApps: [],

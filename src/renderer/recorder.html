@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      The hidden recording engine. It is never shown, so it has no styles and no
+      UI; the visible surface is hud.html. It exists as its own window purely so
+      MediaRecorder runs with backgroundThrottling disabled.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: capture:; media-src 'self' blob: capture:; connect-src 'self'"
+    />
+    <title>Nawi recorder</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./recorder.tsx"></script>
+  </body>
+</html>

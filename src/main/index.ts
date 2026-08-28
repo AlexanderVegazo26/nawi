@@ -19,19 +19,19 @@ import { join } from 'node:path'
 import { promises as fs } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { CAPTURE_SCHEME, IPC } from '@shared/ipc'
-import { mediaFormat } from '@shared/types'
+import { formatOf } from '@shared/types'
 import type {
   AgentAccessState,
   AnnotationDoc,
   ExportRequest,
   IpcResult,
   LibraryItem,
-  Rect,
-  SaveRecordingRequest
+  Rect
 } from '@shared/types'
 import * as library from './library'
 import * as capture from './capture'
 import * as settings from './settings'
+import * as recording from './recording/orchestrator'
 import { startMcpServer, type McpServerHandle } from './mcp/server'
 import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
@@ -131,6 +131,29 @@ function handle<T>(channel: string, fn: (...args: never[]) => Promise<T> | T): v
   })
 }
 
+/**
+ * As `handle`, but the handler also sees the sender.
+ *
+ * Needed for the recording data plane: `record:chunk` and friends open file
+ * handles and append bytes, so they are answered only for the hidden recorder
+ * window. Identity has to come from the event, never from a payload field the
+ * caller controls.
+ */
+function handleWithSender<T>(
+  channel: string,
+  fn: (sender: Electron.WebContents, ...args: never[]) => Promise<T> | T
+): void {
+  ipcMain.handle(channel, async (event, ...args): Promise<IpcResult<T>> => {
+    try {
+      return { ok: true, value: await fn(event.sender, ...(args as never[])) }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      console.error(`[ipc:${channel}]`, error)
+      return { ok: false, error }
+    }
+  })
+}
+
 const webPreferences = {
   preload: join(__dirname, '../preload/index.js'),
   contextIsolation: true,
@@ -142,7 +165,11 @@ const webPreferences = {
   allowRunningInsecureContent: false
 } as const
 
-function loadPage(win: BrowserWindow, page: 'index' | 'overlay', query = ''): void {
+function loadPage(
+  win: BrowserWindow,
+  page: 'index' | 'overlay' | 'recorder' | 'hud',
+  query = ''
+): void {
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (isDev && devServer) void win.loadURL(`${devServer}/${page}.html${query}`)
   else void win.loadFile(join(__dirname, `../renderer/${page}.html`), { search: query.replace(/^\?/, '') })
@@ -200,6 +227,10 @@ function createMainWindow(): void {
   mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.on('closed', () => {
     mainWindow = null
+    // The hidden recorder window is still a window, so `window-all-closed`
+    // would never fire and the app would linger with no visible UI. A live
+    // recording keeps its windows; see `shutdownWindows`.
+    recording.shutdownWindows()
   })
   hardenWindow(mainWindow)
   attachDiagnostics(mainWindow, 'main-window')
@@ -382,17 +413,19 @@ async function commitRegion(senderWcId: number, claimedDisplayId: number, rect: 
 /** Shows the save dialog for an item, returning the chosen path or null on cancel. */
 async function askSavePath(
   itemId: string,
-  format: 'png' | 'jpg' | 'webm'
+  format: 'png' | 'jpg' | 'webm' | 'mp4'
 ): Promise<string | null> {
   const item = await library.getItem(itemId)
   // Strip characters Windows rejects in filenames.
   const base = (item?.name ?? 'export').replace(/[\\/:*?"<>|]/g, '-')
   const filters =
-    format === 'webm'
-      ? [{ name: 'WebM Video', extensions: ['webm'] }]
-      : format === 'jpg'
-        ? [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }]
-        : [{ name: 'PNG Image', extensions: ['png'] }]
+    format === 'mp4'
+      ? [{ name: 'MP4 Video', extensions: ['mp4'] }]
+      : format === 'webm'
+        ? [{ name: 'WebM Video', extensions: ['webm'] }]
+        : format === 'jpg'
+          ? [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }]
+          : [{ name: 'PNG Image', extensions: ['png'] }]
 
   const opts = { defaultPath: `${base}.${format}`, filters }
   const result = mainWindow
@@ -455,22 +488,43 @@ function registerIpc(): void {
     if (s.claim()) s.finish(null)
   })
 
-  handle(IPC.prepareRecording, (sourceId: string, withAudio: boolean) => {
-    pendingRecordingSourceId = sourceId
-    pendingRecordingAudio = withAudio === true
-    return null
-  })
-
-  handle(IPC.saveRecording, (req: SaveRecordingRequest) =>
-    library.save({
-      kind: 'video',
-      captureKind: 'fullscreen',
-      bytes: Buffer.from(req.data),
-      width: req.width,
-      height: req.height,
-      durationMs: req.durationMs
-    })
+  /**
+   * Recording lives in `./recording/orchestrator`, which owns the hidden
+   * recorder window, the HUD, the tray indicator and the crash-recovery path.
+   * It is handed only what it needs from here, so neither module imports the
+   * other.
+   */
+  recording.install(
+    {
+      createWindow: (options, label) => {
+        const win = new BrowserWindow({
+          ...options,
+          webPreferences: { ...webPreferences, ...(options.webPreferences ?? {}) }
+        })
+        hardenWindow(win)
+        attachDiagnostics(win, label)
+        if (label === 'recorder') {
+          win.webContents.on('render-process-gone', (_e, details) =>
+            recording.onRecorderGone(details.reason)
+          )
+        }
+        return win
+      },
+      loadPage,
+      armDisplayMedia: (sourceId, withAudio) => {
+        pendingRecordingSourceId = sourceId
+        pendingRecordingAudio = withAudio
+      },
+      mainWindow: () => mainWindow
+    },
+    handle,
+    handleWithSender
   )
+
+  // The mic switcher (UX-REC.5) needs device labels, which only a renderer can
+  // enumerate — and only after permission. The recorder window is the one with
+  // permission, so main asks it rather than the main window.
+  handle(IPC.listAudioInputs, () => recording.listAudioInputs())
 
   handle(IPC.listLibrary, () => library.listItems())
   handle(IPC.deleteLibraryItem, async (id: string) => {
@@ -486,6 +540,11 @@ function registerIpc(): void {
   })
 
   handle(IPC.exportAs, async (req: ExportRequest) => {
+    // The format decides the dialog's filters and the default extension, so a
+    // value outside the closed set is a refusal rather than a coercion.
+    if (!['png', 'jpg', 'webm', 'mp4'].includes(req.format)) {
+      throw new Error(`unsupported export format: ${String(req.format)}`)
+    }
     const target = await askSavePath(req.itemId, req.format)
     if (!target) return null
     await fs.writeFile(target, Buffer.from(req.data))
@@ -500,7 +559,9 @@ function registerIpc(): void {
   handle(IPC.exportOriginal, async (itemId: string) => {
     const item = await library.getItem(itemId)
     if (!item) throw new Error('That capture no longer exists')
-    const format = mediaFormat(item.kind).ext
+    // From the item's real container, not from its kind: an MP4 recording
+    // offered as `.webm` produces a file the OS cannot open.
+    const format = formatOf(item).ext
     const target = await askSavePath(itemId, format)
     if (!target) return null
     await fs.copyFile(item.filePath, target)

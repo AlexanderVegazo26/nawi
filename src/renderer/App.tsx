@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { LibraryItem } from '@shared/types'
+import type { LibraryItem, RecoverableRecordingInfo } from '@shared/types'
+import { idleStatus, type RecordingStatus } from '@shared/recording'
 import { CaptureView } from './components/CaptureView'
 import { LibraryView } from './components/LibraryView'
 import { EditorView } from './components/EditorView'
+import { RecoveryBanner } from './components/RecoveryBanner'
 import { Toast } from './components/ui'
 import { ThemeToggle } from './components/ThemeToggle'
 import { AgentAccessToggle } from './components/AgentAccessToggle'
-import { ScreenRecorder, blobToBytes, type RecordingResult } from './lib/recorder'
 
 type View = 'capture' | 'library'
 interface ToastMsg {
@@ -48,12 +49,13 @@ export function App(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [toasts, setToasts] = useState<ToastMsg[]>([])
-  const [recording, setRecording] = useState<{ elapsedMs: number } | null>(null)
-
-  // Lazily constructed: `useRef(new ScreenRecorder())` would build and discard a
-  // recorder on every render, and this object owns a MediaStream.
-  const recorderRef = useRef<ScreenRecorder | null>(null)
-  if (recorderRef.current === null) recorderRef.current = new ScreenRecorder()
+  /**
+   * Mirrored from the hidden recorder window via main. This window no longer
+   * owns a MediaRecorder at all — it only renders what the engine reports, so
+   * minimising or backgrounding it cannot affect a recording.
+   */
+  const [recording, setRecording] = useState<RecordingStatus>(idleStatus())
+  const [recoverable, setRecoverable] = useState<RecoverableRecordingInfo[]>([])
   const toastId = useRef(0)
 
   const notify = useCallback((message: string, tone: 'ok' | 'err' = 'ok') => {
@@ -74,85 +76,79 @@ export function App(): React.JSX.Element {
     void reload()
   }, [reload])
 
-  /* ---------------- recording timer ---------------- */
+  /* ---------------- recording (mirrored from the recorder window) ---------------- */
   useEffect(() => {
-    if (!recording) return
-    const started = Date.now()
-    const t = setInterval(() => setRecording({ elapsedMs: Date.now() - started }), 250)
-    return () => clearInterval(t)
-    // Restarting the timer on every tick would reset it, so this depends only on
-    // whether a recording is active, not on the elapsed value.
-  }, [recording !== null]) // eslint-disable-line react-hooks/exhaustive-deps
+    // Ask once as well as subscribing: a recording started before this window
+    // opened would otherwise show as idle until the next broadcast.
+    void window.api.getRecordingStatus().then((res) => {
+      if (res.ok) setRecording(res.value)
+    })
+    const offStatus = window.api.onRecordingStatus(setRecording)
+    const offFinished = window.api.onRecordingFinished((item) => {
+      setItems((prev) => [item, ...prev])
+      setView('library')
+      notify('Recording saved to library')
+    })
+    const offFailed = window.api.onRecordingFailed((error) => notify(error, 'err'))
+    return () => {
+      offStatus()
+      offFinished()
+      offFailed()
+    }
+  }, [notify])
 
-  /** Writes a finished recording to the library. Shared by the explicit and OS-initiated stop paths. */
-  const persistRecording = useCallback(
-    async (result: RecordingResult) => {
-      const bytes = await blobToBytes(result.blob)
-      const res = await window.api.saveRecording({
-        data: bytes,
-        width: result.width,
-        height: result.height,
-        durationMs: result.durationMs
-      })
+  const stopRecording = useCallback(() => {
+    void window.api.sendRecordCommand('stop')
+  }, [])
+
+  /* ---------------- FR-REC.3 recovery on launch ---------------- */
+  const refreshRecoverable = useCallback(async () => {
+    const res = await window.api.listRecoverableRecordings()
+    if (res.ok) setRecoverable(res.value)
+    // A failed scan is not worth a toast on launch: it means nothing was
+    // offered, and the recording — if there is one — is still on disk for the
+    // next attempt. It is logged in main.
+  }, [])
+
+  useEffect(() => {
+    void refreshRecoverable()
+  }, [refreshRecoverable])
+
+  // Rescan once a recording ends, so a file left behind by a *previous* crash
+  // does not reappear as an offer in the middle of a live recording.
+  useEffect(() => {
+    if (recording.phase === 'idle') void refreshRecoverable()
+  }, [recording.phase, refreshRecoverable])
+
+  const onRecover = useCallback(
+    async (id: string) => {
+      const res = await window.api.recoverRecording(id)
       if (!res.ok) {
         notify(res.error, 'err')
         return
       }
       setItems((prev) => [res.value, ...prev])
+      setRecoverable((prev) => prev.filter((r) => r.id !== id))
       setView('library')
-      notify('Recording saved to library')
+      notify('Recovered recording added to your library')
     },
     [notify]
   )
 
-  const stopRecording = useCallback(async () => {
-    const rec = recorderRef.current!
-    // Clear the banner even when the recorder is already inactive, so the UI can
-    // never be stuck showing "recording in progress" with a dead recorder.
-    if (!rec.active) {
-      setRecording(null)
-      return
-    }
-    try {
-      const result = await rec.stop()
-      setRecording(null)
-      await persistRecording(result)
-    } catch (err) {
-      setRecording(null)
-      notify(err instanceof Error ? err.message : String(err), 'err')
-    }
-  }, [notify, persistRecording])
-
-  // The user can stop a recording from the OS's own "stop sharing" bar. Without
-  // this the finished blob is discarded and the app stays stuck mid-recording.
-  useEffect(() => {
-    const rec = recorderRef.current!
-    rec.onAutoStop = () => {
-      void (async () => {
-        try {
-          const result = await rec.result
-          setRecording(null)
-          if (result) await persistRecording(result)
-          else notify('Recording stopped before anything was captured', 'err')
-        } catch (err) {
-          setRecording(null)
-          notify(err instanceof Error ? err.message : String(err), 'err')
-        }
-      })()
-    }
-    return () => {
-      rec.onAutoStop = null
-    }
-  }, [persistRecording, notify])
-
-  // Never leave a capture stream running behind a closed window.
-  useEffect(() => {
-    const rec = recorderRef.current!
-    return () => rec.cancel()
-  }, [])
+  const onDiscardRecoverable = useCallback(
+    async (id: string) => {
+      const res = await window.api.discardRecoverableRecording(id)
+      if (!res.ok) {
+        notify(res.error, 'err')
+        return
+      }
+      setRecoverable((prev) => prev.filter((r) => r.id !== id))
+    },
+    [notify]
+  )
 
   useEffect(() => {
-    const handler = (): void => void stopRecording()
+    const handler = (): void => stopRecording()
     window.addEventListener('nawi:stop-recording', handler)
     return () => window.removeEventListener('nawi:stop-recording', handler)
   }, [stopRecording])
@@ -171,8 +167,9 @@ export function App(): React.JSX.Element {
   /* ---------------- global shortcuts from main ---------------- */
   useEffect(() => {
     return window.api.onShortcut((action) => {
+      const isRecording = recording.phase !== 'idle' && recording.phase !== 'error'
       // A capture during recording would dim the recorded frames; refuse it.
-      if (recorderRef.current!.active && action !== 'record-stop') {
+      if (isRecording && action !== 'record-stop') {
         notify('Stop the recording before starting a new capture', 'err')
         return
       }
@@ -204,13 +201,13 @@ export function App(): React.JSX.Element {
           setView('capture')
           break
         case 'record-stop':
-          void stopRecording()
+          stopRecording()
           break
         case 'show-main':
           break
       }
     })
-  }, [editing, onCaptured, notify, stopRecording])
+  }, [editing, onCaptured, notify, stopRecording, recording.phase])
 
   const onDelete = useCallback(
     async (item: LibraryItem) => {
@@ -292,36 +289,44 @@ export function App(): React.JSX.Element {
         <div className="flex-1" />
         <AgentAccessToggle />
         <ThemeToggle />
-        {recording && (
-          <div className="flex flex-col items-center gap-1 text-[10px] text-danger">
-            <span className="h-2.5 w-2.5 motion-pulse animate-pulse rounded-full bg-danger" />
-            REC
+        {recording.phase !== 'idle' && recording.phase !== 'error' && (
+          <div className="flex flex-col items-center gap-1 text-[10px] text-danger" role="status">
+            <span
+              className={`h-2.5 w-2.5 rounded-full bg-danger ${
+                recording.phase === 'paused' ? '' : 'motion-pulse animate-pulse'
+              }`}
+              aria-hidden="true"
+            />
+            {recording.phase === 'paused' ? 'PAUSED' : 'REC'}
           </div>
         )}
       </nav>
 
-      <main className="min-w-0 flex-1">
-        {view === 'capture' ? (
-          <CaptureView
-            onCaptured={onCaptured}
-            notify={notify}
-            recorder={recorderRef.current!}
-            recording={recording}
-            setRecording={setRecording}
-          />
-        ) : (
-          <LibraryView
-            items={items}
-            loading={loading}
-            error={error}
-            onReload={reload}
-            onOpen={setEditing}
-            onDelete={onDelete}
-            onRename={onRename}
-            notify={notify}
-            onNewCapture={() => setView('capture')}
-          />
-        )}
+      <main className="flex min-w-0 flex-1 flex-col">
+        <RecoveryBanner
+          items={recoverable}
+          onRecover={(id) => void onRecover(id)}
+          onDiscard={(id) => void onDiscardRecoverable(id)}
+        />
+        {/* min-h-0 so the scrolling view shrinks under the banner instead of
+            pushing the layout past the viewport. */}
+        <div className="min-h-0 flex-1">
+          {view === 'capture' ? (
+            <CaptureView onCaptured={onCaptured} notify={notify} recording={recording} />
+          ) : (
+            <LibraryView
+              items={items}
+              loading={loading}
+              error={error}
+              onReload={reload}
+              onOpen={setEditing}
+              onDelete={onDelete}
+              onRename={onRename}
+              notify={notify}
+              onNewCapture={() => setView('capture')}
+            />
+          )}
+        </div>
       </main>
 
       <ToastStack toasts={toasts} dismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />

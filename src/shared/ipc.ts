@@ -10,8 +10,34 @@ export const IPC = {
   commitRegion: 'overlay:commit-region',
   cancelRegion: 'overlay:cancel-region',
 
+  /* --- recording control plane (main window / HUD -> main) --- */
+  startRecording: 'record:start',
+  recordCommand: 'record:command',
+  getRecordingStatus: 'record:get-status',
+  /** main -> every window, so the HUD, the rail and the tray never disagree. */
+  recordingStatus: 'record:status',
+  recordingFinished: 'record:finished',
+  recordingFailed: 'record:failed',
+  listAudioInputs: 'record:list-inputs',
+  moveHud: 'record:move-hud',
+
+  /* --- recording data plane (hidden recorder window <-> main) --- */
   prepareRecording: 'record:prepare',
-  saveRecording: 'record:save',
+  beginRecording: 'record:begin',
+  /** The sanctioned buffer-over-IPC exception; see ARCHITECTURE.md §1.3. */
+  recordChunk: 'record:chunk',
+  markChapter: 'record:chapter',
+  finalizeRecording: 'record:finalize',
+  abortRecording: 'record:abort',
+  publishRecordingStatus: 'record:publish-status',
+  /** main -> recorder window. */
+  recordRequest: 'record:request',
+  recordDispatch: 'record:dispatch',
+
+  /* --- recording recovery (FR-REC.3) --- */
+  listRecoverableRecordings: 'record:list-recoverable',
+  recoverRecording: 'record:recover',
+  discardRecoverableRecording: 'record:discard-recoverable',
 
   listLibrary: 'library:list',
   deleteLibraryItem: 'library:delete',
