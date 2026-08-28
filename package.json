@@ -1,7 +1,7 @@
 {
   "name": "nawi",
   "version": "0.1.0",
-  "description": "Nawi \u00e2\u20ac\u201d a modern screen capture, recording and annotation studio.",
+  "description": "Nawi â€” a modern screen capture, recording and annotation studio.",
   "main": "./out/main/index.js",
   "author": "Alexander Rodriguez",
   "license": "MIT",
@@ -16,6 +16,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "package": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
+    "test:unit": "vitest run",
     "test:e2e": "npm run build && playwright test"
   },
   "dependencies": {
@@ -35,7 +36,8 @@
     "react-dom": "19.2.8",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
-    "vite": "7.3.6"
+    "vite": "7.3.6",
+    "vitest": "^3.2.7"
   },
   "allowScripts": {
     "esbuild@0.25.12": true,

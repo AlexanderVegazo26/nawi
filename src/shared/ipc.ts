@@ -24,6 +24,11 @@ export const IPC = {
   copyImageToClipboard: 'export:clipboard',
   revealInFolder: 'export:reveal',
 
+  getSettings: 'settings:get',
+  updateSettings: 'settings:update',
+  /** main -> renderer broadcast, fired after a settings write lands on disk. */
+  settingsChanged: 'settings:changed',
+
   shortcut: 'app:shortcut'
 } as const
 

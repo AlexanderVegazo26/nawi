@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '@shared/ipc'
-import type { NawiApi } from '@shared/types'
+import type { Settings, NawiApi } from '@shared/types'
 
 /**
  * The entire privileged surface available to the renderer.
@@ -20,7 +20,8 @@ const api: NawiApi = {
   commitRegion: (displayId, rect) => ipcRenderer.send(IPC.commitRegion, displayId, rect),
   cancelRegion: () => ipcRenderer.send(IPC.cancelRegion),
 
-  prepareRecording: (sourceId) => ipcRenderer.invoke(IPC.prepareRecording, sourceId),
+  prepareRecording: (sourceId, withAudio) =>
+    ipcRenderer.invoke(IPC.prepareRecording, sourceId, withAudio),
   saveRecording: (req) => ipcRenderer.invoke(IPC.saveRecording, req),
 
   listLibrary: () => ipcRenderer.invoke(IPC.listLibrary),
@@ -33,6 +34,16 @@ const api: NawiApi = {
   exportOriginal: (itemId) => ipcRenderer.invoke(IPC.exportOriginal, itemId),
   copyImageToClipboard: (data) => ipcRenderer.invoke(IPC.copyImageToClipboard, data),
   revealInFolder: (id) => ipcRenderer.invoke(IPC.revealInFolder, id),
+
+  getSettings: () => ipcRenderer.invoke(IPC.getSettings),
+  updateSettings: (patch) => ipcRenderer.invoke(IPC.updateSettings, patch),
+  onSettingsChanged: (cb) => {
+    const listener = (_e: unknown, settings: Settings): void => cb(settings)
+    ipcRenderer.on(IPC.settingsChanged, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.settingsChanged, listener)
+    }
+  },
 
   onShortcut: (cb) => {
     // The listener receives the payload only, never the IpcRendererEvent.

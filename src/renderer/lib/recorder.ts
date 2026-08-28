@@ -61,8 +61,10 @@ export class ScreenRecorder {
   async start(sourceId: string, withAudio: boolean): Promise<void> {
     if (this.active) throw new Error('A recording is already in progress')
 
-    // Tell main which source to answer the upcoming request with.
-    const prep = await window.api.prepareRecording(sourceId)
+    // Tell main which source to answer the upcoming request with, and whether the
+    // request will ask for audio — main has to answer with an explicit audio key,
+    // so it cannot infer this from the source alone.
+    const prep = await window.api.prepareRecording(sourceId, withAudio)
     if (!prep.ok) throw new Error(prep.error)
 
     let stream: MediaStream

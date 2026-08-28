@@ -3,8 +3,19 @@
  * Anything crossing the contextBridge is defined here so both sides stay in sync.
  */
 
+import type { Settings, SettingsPatch } from './settings'
+
+export type { Settings, SettingsPatch }
+
 export type CaptureKind = 'fullscreen' | 'window' | 'region'
 export type MediaKind = 'image' | 'video'
+
+/**
+ * What a library row represents. Deliberately wider than `MediaKind`: a guide is a
+ * library item but is never something `library.save()` writes bytes for, and the
+ * capture/export paths key their file extension and MIME off `MediaKind`.
+ */
+export type LibraryItemKind = MediaKind | 'guide'
 
 /** A selectable capture source, as surfaced by desktopCapturer. */
 export interface CaptureSource {
@@ -38,7 +49,7 @@ export interface LibraryItem {
   id: string
   /** User-editable display name. */
   name: string
-  kind: MediaKind
+  kind: LibraryItemKind
   captureKind: CaptureKind
   /** Absolute path on disk of the full-resolution asset. */
   filePath: string
@@ -52,6 +63,19 @@ export interface LibraryItem {
   createdAt: string
   /** Serialized annotation document, when the user has annotated this item. */
   annotations: AnnotationDoc | null
+
+  /* --- Additive fields. Every one is optional, so an index.json written by an
+     earlier build loads unchanged and needs no migration. --- */
+
+  /** Absolute path of this item's sidecar directory, once one has been harvested. */
+  sidecarDir?: string
+  /** Revision marker of the current sidecar, e.g. `v2`. Sidecar files are never edited in place. */
+  sidecarRevision?: string
+  tags?: string[]
+  /** Absolute path of a generated thumbnail, when one exists. */
+  thumbnailPath?: string
+  /** Who created this item. Absent means 'user' — the only producer before agents existed. */
+  source?: 'user' | 'agent'
 }
 
 /* ------------------------------------------------------------------ *
@@ -149,7 +173,12 @@ export interface NawiApi {
   cancelRegion(): void
 
   /* recording */
-  prepareRecording(sourceId: string): Promise<IpcResult<null>>
+  /**
+   * Arms main's display-media handler. `withAudio` must match what the renderer is
+   * about to ask `getDisplayMedia` for: main has to answer with an explicit audio
+   * key, and a request whose audio the handler ignores yields a silent recording.
+   */
+  prepareRecording(sourceId: string, withAudio: boolean): Promise<IpcResult<null>>
   saveRecording(req: SaveRecordingRequest): Promise<IpcResult<LibraryItem>>
 
   /* library */
@@ -171,6 +200,13 @@ export interface NawiApi {
   exportOriginal(itemId: string): Promise<IpcResult<string | null>>
   copyImageToClipboard(data: Uint8Array): Promise<IpcResult<null>>
   revealInFolder(id: string): Promise<IpcResult<null>>
+
+  /* settings */
+  getSettings(): Promise<IpcResult<Settings>>
+  /** Applies a partial patch. Main validates and merges; the returned value is the new full state. */
+  updateSettings(patch: SettingsPatch): Promise<IpcResult<Settings>>
+  /** Fires after a settings write lands on disk. Returns an unsubscribe function. */
+  onSettingsChanged(cb: (settings: Settings) => void): () => void
 
   /* app */
   onShortcut(cb: (action: string) => void): () => void

@@ -272,3 +272,50 @@ test('blur renders correctly over a cropped document', async () => {
   })
   expect(alpha).toBe(255)
 })
+
+/**
+ * Runs last: it is the only test that mutates app-wide settings, and a theme
+ * broadcast could otherwise change what earlier assertions are looking at.
+ *
+ * This exercises the whole settings chain in a real Electron process — preload
+ * method, channel name, main handler, disk write, and the main->renderer
+ * broadcast. Unit tests cover the store with `electron` mocked, which proves
+ * nothing about whether the two sides agree on a channel.
+ */
+test('settings round-trip across the real IPC boundary and broadcast a change', async () => {
+  const initial = await win.evaluate(() => window.api.getSettings())
+  expect(initial.ok).toBe(true)
+  if (!initial.ok) return
+  // The defaults are the accelerators main used to hardcode.
+  expect(initial.value.hotkeys['capture-region']).toBe('CommandOrControl+Shift+1')
+  expect(initial.value.theme).toBe('system')
+
+  // Arm the listener before the update, then apply it and wait for the broadcast.
+  const broadcast = await win.evaluate(async () => {
+    const seen = new Promise<string>((resolve) => {
+      const off = window.api.onSettingsChanged((s) => {
+        off()
+        resolve(s.theme)
+      })
+    })
+    const updated = await window.api.updateSettings({ theme: 'light' })
+    return { updated, broadcastTheme: await seen }
+  })
+
+  expect(broadcast.updated.ok).toBe(true)
+  if (!broadcast.updated.ok) return
+  expect(broadcast.updated.value.theme).toBe('light')
+  // Untouched fields survive a partial patch.
+  expect(broadcast.updated.value.hotkeys).toEqual(initial.value.hotkeys)
+  expect(broadcast.broadcastTheme).toBe('light')
+
+  // Re-read: the value came off the store, not just back out of the patch.
+  const reread = await win.evaluate(() => window.api.getSettings())
+  expect(reread.ok && reread.value.theme).toBe('light')
+
+  // And it is genuinely on disk under this run's userData.
+  const onDisk = JSON.parse(await fs.readFile(join(userDataDir, 'settings.json'), 'utf-8'))
+  expect(onDisk.theme).toBe('light')
+
+  await win.evaluate(() => window.api.updateSettings({ theme: 'system' }))
+})

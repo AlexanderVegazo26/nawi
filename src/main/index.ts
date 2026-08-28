@@ -29,6 +29,8 @@ import type {
 } from '@shared/types'
 import * as library from './library'
 import * as capture from './capture'
+import * as settings from './settings'
+import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
 const isDev = !app.isPackaged
 
@@ -51,6 +53,12 @@ const REGION_TIMEOUT_MS = 120_000
 
 /** The source the renderer is about to record; consumed by the display-media handler. */
 let pendingRecordingSourceId: string | null = null
+/**
+ * Whether that pending request asked for audio. Kept alongside the source id and
+ * cleared with it — a stale `true` would silently add a loopback track to the next
+ * recording the user asked to be silent.
+ */
+let pendingRecordingAudio = false
 
 /* ------------------------------------------------------------------ *
  * Protocol — file:// is unusable under webSecurity against a dev-server
@@ -435,8 +443,9 @@ function registerIpc(): void {
     if (s.claim()) s.finish(null)
   })
 
-  handle(IPC.prepareRecording, (sourceId: string) => {
+  handle(IPC.prepareRecording, (sourceId: string, withAudio: boolean) => {
     pendingRecordingSourceId = sourceId
+    pendingRecordingAudio = withAudio === true
     return null
   })
 
@@ -504,24 +513,48 @@ function registerIpc(): void {
     shell.showItemInFolder(item.filePath)
     return null
   })
+
+  handle(IPC.getSettings, () => settings.getSettings())
+  // The patch is untrusted; `updateSettings` validates and merges it in main.
+  handle(IPC.updateSettings, (patch: unknown) => settings.updateSettings(patch))
 }
 
-function registerShortcuts(): void {
-  // Best-effort: another app may already own these chords.
-  const bind = (accel: string, action: string): void => {
-    const ok = globalShortcut.register(accel, () => {
-      mainWindow?.show()
-      mainWindow?.focus()
-      mainWindow?.webContents.send(IPC.shortcut, action)
-    })
-    if (!ok) console.warn(`[shortcut] could not register ${accel}`)
+/**
+ * Broadcasts to every window rather than just the main one: overlays share the
+ * same preload, and a theme change that never reaches them is exactly the kind of
+ * bug that only shows up on a second monitor.
+ */
+function broadcastSettings(next: Settings): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.settingsChanged, next)
   }
-  bind('CommandOrControl+Shift+1', 'capture-region')
-  bind('CommandOrControl+Shift+2', 'capture-fullscreen')
-  bind('CommandOrControl+Shift+3', 'capture-window')
-  bind('CommandOrControl+Shift+4', 'record-start')
-  bind('CommandOrControl+Shift+S', 'record-stop')
-  bind('CommandOrControl+Shift+0', 'show-main')
+}
+
+/**
+ * Binds the accelerators currently in settings, replacing whatever was bound
+ * before. Still best-effort — another app may already own a chord — but now the
+ * strings come from a user-editable file, so a malformed accelerator (which
+ * `globalShortcut.register` throws on, rather than returning false) must not abort
+ * the loop and silently cost the user their remaining hotkeys.
+ */
+async function registerShortcuts(): Promise<void> {
+  const current = await settings.getSettings()
+  globalShortcut.unregisterAll()
+
+  const bind = (accel: string, action: string): void => {
+    try {
+      const ok = globalShortcut.register(accel, () => {
+        mainWindow?.show()
+        mainWindow?.focus()
+        mainWindow?.webContents.send(IPC.shortcut, action)
+      })
+      if (!ok) console.warn(`[shortcut] could not register ${accel} for ${action}`)
+    } catch (err) {
+      console.warn(`[shortcut] could not register ${accel} for ${action}:`, err)
+    }
+  }
+
+  for (const action of HOTKEY_ACTIONS) bind(current.hotkeys[action], action)
 }
 
 app.whenReady().then(() => {
@@ -534,7 +567,9 @@ app.whenReady().then(() => {
         try {
           // The handler needs the real Electron source object, not our DTO.
           const wanted = pendingRecordingSourceId
+          const wantsAudio = pendingRecordingAudio
           pendingRecordingSourceId = null
+          pendingRecordingAudio = false
           const real = await desktopCapturer.getSources({ types: ['screen', 'window'] })
           const match = real.find((s) => s.id === wanted)
           // Deliberately no `?? real[0]` fallback: silently recording a
@@ -545,7 +580,22 @@ app.whenReady().then(() => {
             callback({})
             return
           }
-          callback({ video: match })
+          // System audio needs an explicit `audio` key. Omitting it — as this
+          // handler used to — means the renderer's `audio: true` request is
+          // answered video-only and every recording is silent, with nothing
+          // anywhere reporting a problem. `'loopback'` is Windows-only; on other
+          // platforms we degrade to video rather than passing a value Electron
+          // does not support there.
+          if (wantsAudio && process.platform === 'win32') {
+            callback({ video: match, audio: 'loopback' })
+          } else {
+            if (wantsAudio) {
+              console.warn(
+                `[displayMedia] system audio is not supported on ${process.platform}; recording video only`
+              )
+            }
+            callback({ video: match })
+          }
         } catch (err) {
           console.error('[displayMedia]', err)
           callback({})
@@ -579,7 +629,22 @@ app.whenReady().then(() => {
   })
 
   createMainWindow()
-  registerShortcuts()
+
+  // Subscribed synchronously: an update landing before the first read resolved
+  // would otherwise persist with nothing broadcast and no rebind.
+  let bound: Record<HotkeyAction, string> | null = null
+  settings.onSettingsChanged((next) => {
+    broadcastSettings(next)
+    // Re-binding tears down every chord, so only do it when a binding actually
+    // moved — an unrelated theme change must not blink the hotkeys off.
+    if (bound && !hotkeysDiffer(bound, next.hotkeys)) return
+    bound = next.hotkeys
+    void registerShortcuts()
+  })
+  void settings.getSettings().then((initial) => {
+    bound ??= initial.hotkeys
+    return registerShortcuts()
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
