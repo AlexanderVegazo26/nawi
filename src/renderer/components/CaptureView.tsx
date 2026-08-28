@@ -168,7 +168,7 @@ export function CaptureView({
             >
               <span className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-accent-hover ring-1 ring-border-strong group-hover:bg-accent/15">
                 {busy === c.id ? (
-                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-accent-hover" />
+                  <span className="h-5 w-5 motion-spin animate-spin rounded-full border-2 border-border border-t-accent-hover" />
                 ) : (
                   <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                     {c.icon}
