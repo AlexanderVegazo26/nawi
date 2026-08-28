@@ -24,6 +24,13 @@
   'use strict'
 
   var BINDING = '__NAWI_BINDING__'
+  /**
+   * Stamped on every payload; the main side drops anything without it. Both the
+   * binding name and this value are generated per session by `harvest.ts` — see
+   * the note there for exactly how much this is worth, which is "raises the cost
+   * of forgery", not "authenticates the sender".
+   */
+  var NONCE = '__NAWI_NONCE__'
   if (window.__nawiListener) return
   window.__nawiListener = { version: 1 }
 
@@ -31,6 +38,7 @@
     try {
       var fn = window[BINDING]
       if (typeof fn !== 'function') return
+      payload.nonce = NONCE
       fn(JSON.stringify(payload))
     } catch (e) {
       /* A page that broke JSON.stringify must not break the page itself. */

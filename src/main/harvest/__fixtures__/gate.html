@@ -30,8 +30,61 @@
       <button data-testid="submit" id="submit-btn" class="btn btn-primary">Sign in</button>
     </form>
 
+    <!--
+      F1 — the body that gets SUBMITTED. Separate from the form above so the
+      existing sentinels and their assertions are untouched. `name="recovery"`
+      is deliberately a word no static secret-name list would ever contain: the
+      only thing that can redact it is the probe reporting it, because
+      `#configured-secret` above is matched by a workspace-configured selector.
+    -->
+    <form id="submitted-form" onsubmit="return false">
+      <input type="password" id="form-pw" name="password" autocomplete="current-password" />
+      <input type="text" id="form-user" name="username" />
+    </form>
+
+    <!--
+      F2 — a secret whose value is RENDERED TEXT rather than an input value.
+      An <input>'s value lives in the UA shadow tree, which `captureSnapshot` is
+      not asked for, so an input-only fixture cannot exercise `layout.text` at
+      all. This div can: it has a real text node and a real layout box. The
+      sentinel is written in by the test, never by this file.
+    -->
+    <div id="secret-text" data-nawi-secret></div>
+
+    <!-- F3 — a secret behind a shadow boundary and one behind a frame boundary. -->
+    <div id="shadow-host"></div>
+    <iframe id="same-origin-frame" title="embedded auth widget"></iframe>
+
     <script>
       console.error('gate fixture console marker')
+
+      /*
+       * Both boundaries are built here, in script, rather than declared in
+       * markup — and that is not a stylistic choice:
+       *
+       *  - a shadow root has no HTML syntax we can rely on across Chromium
+       *    versions, so `attachShadow` is the only honest way to make one;
+       *  - an iframe pointed at a `file://` sibling would be a CROSS-origin
+       *    frame in Chromium (file URLs get opaque origins), which is the case
+       *    that is already fail-closed and therefore proves nothing. An
+       *    `about:blank` frame populated in place inherits this document's
+       *    origin, which is the case F3 is actually about.
+       */
+      var shadow = document.getElementById('shadow-host').attachShadow({ mode: 'open' })
+      shadow.innerHTML =
+        '<label for="shadow-otp">Shadow one-time code</label>' +
+        '<input type="text" id="shadow-otp" name="shadowOtp" autocomplete="one-time-code" />'
+
+      var frame = document.getElementById('same-origin-frame')
+      var frameDoc = frame.contentDocument
+      frameDoc.open()
+      frameDoc.write(
+        '<!doctype html><html><body>' +
+          '<label for="frame-pw">Framed password</label>' +
+          '<input type="password" id="frame-pw" name="framePassword" />' +
+          '</body></html>'
+      )
+      frameDoc.close()
     </script>
   </body>
 </html>

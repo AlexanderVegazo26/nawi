@@ -136,3 +136,167 @@ describe('HarBuilder', () => {
     expect(builder.build((s) => s).har.log.entries).toHaveLength(0)
   })
 })
+
+/* ------------------------------------------------------------------------- *
+ * FR-SEC.2 — the request-body control.
+ *
+ * The release gate exercises this against a real browser and a real form
+ * submission. These cover what a browser fixture cannot make deterministic:
+ * layer 1's default-deny, which fires on body types the gate never produces.
+ * ------------------------------------------------------------------------- */
+
+const SECRET = 'ZZQUNITSENTINEL "hunter!2"'
+
+/**
+ * The renderings one value takes on the wire. Mirrors the release gate's helper
+ * deliberately: a sentinel containing a space, a `!` and a `"` makes the
+ * urlencoded, form-encoded, JSON-escaped and base64 forms four distinct byte
+ * strings, so these assertions cannot pass by accident.
+ */
+function renderings(value: string): Array<{ label: string; bytes: Buffer }> {
+  return [
+    { label: 'literal', bytes: Buffer.from(value, 'utf8') },
+    { label: 'encodeURIComponent', bytes: Buffer.from(encodeURIComponent(value), 'utf8') },
+    {
+      label: 'form-urlencoded',
+      bytes: Buffer.from(new URLSearchParams([['v', value]]).toString().slice(2), 'utf8')
+    },
+    { label: 'JSON-escaped', bytes: Buffer.from(JSON.stringify(value).slice(1, -1), 'utf8') },
+    { label: 'base64', bytes: Buffer.from(Buffer.from(value, 'utf8').toString('base64'), 'utf8') }
+  ]
+}
+
+function post(
+  id: string,
+  contentType: string | null,
+  body: string
+): Record<string, unknown> {
+  return {
+    requestId: id,
+    timestamp: 1000,
+    wallTime: 1787944238.21,
+    request: {
+      url: 'https://example.test/login',
+      method: 'POST',
+      headers: contentType === null ? {} : { 'Content-Type': contentType },
+      postData: body
+    }
+  }
+}
+
+function harOf(builder: HarBuilder): string {
+  return JSON.stringify(builder.build((s) => s).har)
+}
+
+describe('FR-SEC.2 — request bodies', () => {
+  it('redacts a urlencoded password by field name, whatever its encoding', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(
+      post('1', 'application/x-www-form-urlencoded', new URLSearchParams({ user: 'alice', password: SECRET }).toString())
+    )
+    const har = harOf(builder)
+    // Every rendering, because redaction is by key and never looks at the value.
+    // The form-encoded one is the load-bearing entry here: `URLSearchParams`
+    // writes a space as `+`, so a test that only checked the literal and
+    // `encodeURIComponent` would pass even with redaction disabled.
+    for (const rendering of renderings(SECRET)) {
+      expect(har, rendering.label).not.toContain(rendering.bytes.toString('utf8'))
+    }
+    // Targeted, not blanket: the non-secret field survives.
+    expect(har).toContain('alice')
+  })
+
+  it('redacts a nested JSON password and a base64 value under a secret-ish key', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(
+      post('1', 'application/json', JSON.stringify({
+        account: { user: 'alice', password: SECRET },
+        otp_b64: Buffer.from(SECRET, 'utf8').toString('base64')
+      }))
+    )
+    const har = harOf(builder)
+    expect(har).not.toContain(SECRET)
+    expect(har).not.toContain(Buffer.from(SECRET, 'utf8').toString('base64'))
+    expect(har).toContain('alice')
+  })
+
+  it('redacts a field named only by the probe, which no static list would guess', () => {
+    const builder = new HarBuilder()
+    builder.addSecretFieldNames(['recovery'])
+    builder.requestWillBeSent(
+      post('1', 'application/x-www-form-urlencoded', new URLSearchParams({ recovery: SECRET }).toString())
+    )
+    const har = harOf(builder)
+    for (const r of renderings(SECRET)) expect(har, r.label).not.toContain(r.bytes.toString('utf8'))
+  })
+
+  it('applies probe names learned AFTER the request was observed', () => {
+    // The ordering seam the control documents: marking is per document and can
+    // land after a request. Without the second pass this leaks.
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(
+      post('1', 'application/x-www-form-urlencoded', new URLSearchParams({ recovery: SECRET }).toString())
+    )
+    builder.addSecretFieldNames(['recovery'])
+    const har = harOf(builder)
+    for (const r of renderings(SECRET)) expect(har, r.label).not.toContain(r.bytes.toString('utf8'))
+  })
+
+  it('drops a multipart body wholesale, because it cannot be decomposed', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(
+      post('1', 'multipart/form-data; boundary=xyz', `--xyz\r\nContent-Disposition: form-data; name="password"\r\n\r\n${SECRET}\r\n--xyz--`)
+    )
+    const har = harOf(builder)
+    expect(har).not.toContain(SECRET)
+    // Dropped visibly, never silently: the reason and the real size are recorded.
+    expect(har).toContain('not field-decomposable')
+    expect(har).toContain('"bodySize"')
+  })
+
+  it('drops a body with no declared content type', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(post('1', null, `password=${SECRET}`))
+    const har = harOf(builder)
+    expect(har).not.toContain(SECRET)
+    expect(har).toContain('(absent)')
+  })
+
+  it('drops an oversized body rather than truncating it', () => {
+    // A truncated body cannot be parsed into fields, so a kept prefix would be
+    // an unredacted prefix.
+    const builder = new HarBuilder({ postDataCapBytes: 64 })
+    builder.requestWillBeSent(
+      post('1', 'application/json', JSON.stringify({ padding: 'x'.repeat(500), password: SECRET }))
+    )
+    const har = harOf(builder)
+    expect(har).not.toContain(SECRET)
+    expect(har).toContain('exceeds the 64 byte request-body cap')
+  })
+
+  it('drops a body that claims JSON but does not parse', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(post('1', 'application/json', `{not json, password=${SECRET}`))
+    const har = harOf(builder)
+    expect(har).not.toContain(SECRET)
+    expect(har).toContain('did not parse')
+  })
+
+  it('carries a __proto__ key through as data without polluting anything', () => {
+    // Honest about what this does and does not prove: `JSON.parse` already
+    // creates `__proto__` as an OWN property rather than performing a prototype
+    // write, so this would pass without the null-prototype object in
+    // `redactJsonByKey`. That choice is defence in depth for the copy step, and
+    // this test is a regression guard on the end-to-end behaviour, not evidence
+    // that the guard is what prevents pollution.
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(post('1', 'application/json', '{"__proto__":{"polluted":true},"a":1}'))
+    const har = harOf(builder)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    // The body is embedded in the HAR as a JSON *string*, so its own quotes are
+    // escaped one level. Asserting the escaped form is asserting what is really
+    // on disk rather than what the shape looks like in the abstract.
+    expect(har).toContain('\\"a\\":1')
+    expect(har).toContain('\\"__proto__\\"')
+  })
+})

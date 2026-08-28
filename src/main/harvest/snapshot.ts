@@ -210,6 +210,37 @@ export function filterSecretsFromSnapshot(
         }
       }
     }
+
+    // `layout.text` — the *rendered* text of a layout box, which is a separate
+    // string reference from the text node's `nodeValue`.
+    //
+    // This is not redundant with the `nodeValue` pass above, and leaving it out
+    // was a real leak. Two facts combine:
+    //
+    //  1. `collectReferencedStringIndices` counts `layout.text` as a reference,
+    //     so as long as a secret node's layout box still points at the original
+    //     string, the second-mechanism blanking pass below sees the entry as
+    //     *live* and refuses to blank it. The bytes stay in `strings[]`.
+    //  2. An `<input>`'s value renders in the UA shadow tree, which
+    //     `captureSnapshot` is not asked for — so inputs never populate
+    //     `layout.text` and the gap is invisible to an input-only fixture.
+    //
+    // The exposure is therefore every *non-input* secret: a
+    // `<div data-nawi-secret>` showing an OTP, or a `contenteditable`
+    // matching a workspace-configured selector. Redirect here, and the blanking
+    // pass then finds the original entry genuinely unreferenced.
+    const layoutText = doc.layout?.text
+    const layoutNodeIndex = doc.layout?.nodeIndex
+    if (layoutText && layoutNodeIndex) {
+      for (let k = 0; k < layoutText.length; k++) {
+        const nodeIdx = layoutNodeIndex[k]
+        if (nodeIdx === undefined || !secretNodeIndices.has(nodeIdx)) continue
+        if (layoutText[k]! >= 0) {
+          layoutText[k] = sentinelIndex
+          redirected++
+        }
+      }
+    }
   }
 
   // Second mechanism: anything now unreferenced is blanked in place. Indices

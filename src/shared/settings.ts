@@ -233,6 +233,38 @@ export function sanitizeSettings(raw: unknown): Settings {
 }
 
 /**
+ * The settings to use when the settings file could not be read or parsed.
+ *
+ * `defaultSettings()` is the wrong answer there, and that was a real fail-open:
+ * a user who pauses agent access and then loses the file to a crash mid-write or
+ * a disk error silently gets agent access back, with no UI event to notice. The
+ * kill switch has to survive the loss of the thing recording it, so "the file is
+ * there but we could not read it" resolves to paused.
+ *
+ * **Exactly two things are narrower than they look, both deliberate.**
+ *
+ *  1. A file that parses and simply has no `agentAccessPaused` key still
+ *     resolves to `false` via `mergeSettings`. That preserves the upgrade
+ *     property the field was named for: a settings file written before the flag
+ *     existed must not read as "paused" and break a working agent setup.
+ *  2. A *missing* file (ENOENT) also resolves to `false`, because it is
+ *     indistinguishable from a first run. This does mean **deletion is not
+ *     covered** — see the read path in `src/main/settings.ts` for why covering
+ *     it would buy almost nothing (delete-capability implies write-capability)
+ *     and cost every new install its out-of-box agent access.
+ *
+ * So this closes accidental corruption and truncation, not deletion. Closing
+ * deletion needs a durable marker or an OS-level ACL, which is a separate
+ * decision and is recorded as such rather than implied away here.
+ *
+ * The read path in `src/main/settings.ts` is the only place that can tell these
+ * cases apart, because it is the only place that sees the error code.
+ */
+export function failClosedSettings(): Settings {
+  return { ...defaultSettings(), agentAccessPaused: true }
+}
+
+/**
  * Applies a partial patch over a known-good base.
  *
  * Top level is a shallow replace per field; `hotkeys` and `captureDefaults` merge

@@ -64,12 +64,58 @@ const USERNAME_VALUE = 'ordinary-username-not-a-secret'
  */
 const PASSWORD_SENTINEL_2 = 'ZZQSECONDDOCSENTINELplughplover'
 
+/**
+ * F1 — typed into a password field and then SUBMITTED in a request body.
+ *
+ * The characters are chosen, not decorative. A sentinel of plain letters and
+ * digits is its own URL encoding and its own JSON encoding, so the "no encoded
+ * rendering survives" assertions below would be searching for bytes identical to
+ * the literal and would prove nothing. The space, the `!` and the `"` guarantee
+ * that the urlencoded, form-encoded, JSON-escaped and base64 renderings are four
+ * genuinely different byte strings — which is the entire reason a literal
+ * `suppressedValues` scan is not an adequate fix for F1.
+ */
+const FORM_SENTINEL = 'ZZQFORM "hunter!2" plugh'
+/** F2 — rendered text of a `<div data-nawi-secret>`, never an input value. */
+const LAYOUT_SENTINEL = 'ZZQLAYOUTSENTINEL271828xyzzy'
+/** F3 — a `one-time-code` field inside an open shadow root. */
+const SHADOW_SENTINEL = 'ZZQSHADOWSENTINEL161803plugh'
+/** F3 — a password field inside a same-origin iframe. */
+const FRAME_SENTINEL = 'ZZQFRAMESENTINEL141421plover'
+
 const ALL_SENTINELS = [
   PASSWORD_SENTINEL,
   OTP_SENTINEL,
   CONFIGURED_SENTINEL,
-  PASSWORD_SENTINEL_2
+  PASSWORD_SENTINEL_2,
+  FORM_SENTINEL,
+  LAYOUT_SENTINEL,
+  SHADOW_SENTINEL,
+  FRAME_SENTINEL
 ]
+
+/**
+ * Every byte string one value can turn into on the way to a request body.
+ *
+ * F1's mitigation is field-name redaction, which never looks at the value — so
+ * it is encoding-agnostic by construction, and this is how that gets proven
+ * rather than asserted. A fix built on literal matching would clean the first
+ * entry and leave the rest.
+ */
+function renderings(value: string): Array<{ label: string; bytes: Buffer }> {
+  const formEncoded = new URLSearchParams([['v', value]]).toString().slice(2)
+  return [
+    { label: 'literal (utf8)', bytes: Buffer.from(value, 'utf8') },
+    { label: 'literal (utf16le)', bytes: Buffer.from(value, 'utf16le') },
+    { label: 'encodeURIComponent', bytes: Buffer.from(encodeURIComponent(value), 'utf8') },
+    { label: 'form-urlencoded', bytes: Buffer.from(formEncoded, 'utf8') },
+    { label: 'JSON-escaped', bytes: Buffer.from(JSON.stringify(value).slice(1, -1), 'utf8') },
+    {
+      label: 'base64',
+      bytes: Buffer.from(Buffer.from(value, 'utf8').toString('base64'), 'utf8')
+    }
+  ]
+}
 
 const SURFACE: Surface = {
   type: 'browser',
@@ -118,7 +164,9 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
   let sealReport: ReturnType<typeof seal>['report']
   let typedBack: Record<string, number>
   let rawSnapshotLeaked: boolean
+  let rawBoundaryLeaked: Record<string, boolean>
   let secondDocTypedLength: number
+  let boundaryLengths: Record<string, number>
   let harvestResult: Awaited<ReturnType<Harvester['finish']>>
 
   beforeAll(async () => {
@@ -170,6 +218,70 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
     await client.once('Page.loadEventFired', 15_000)
     await delay(300)
 
+    /**
+     * Plant the F2 and F3 secrets in the CURRENT document and read back their
+     * lengths.
+     *
+     * Called once per document. That is not incidental: `captureDom()` replaces
+     * the harvester's snapshot, so the DOM/AX files that reach disk describe the
+     * LAST document. A first-document-only version of this setup made every F2
+     * and F3 assertion vacuous — they inspected a snapshot of a page where the
+     * secret div was empty and the shadow/frame fields had never been typed
+     * into. Planting per document also makes these cases inherit the existing
+     * post-navigation guarantee: marking is per document, and a harvester that
+     * marked only once leaks here.
+     */
+    const plantBoundarySecrets = async (): Promise<Record<string, number>> => {
+      // F2: a secret rendered as real text with a real layout box. Written from
+      // here so the sentinel never sits in the fixture file, matching the rule
+      // the rest of this test follows.
+      await client.send(
+        'Runtime.evaluate',
+        {
+          expression: `document.querySelector('#secret-text').textContent = ${JSON.stringify(
+            LAYOUT_SENTINEL
+          )}`
+        },
+        sessionId
+      )
+
+      // F3: focus across a shadow boundary, then across a frame boundary.
+      // `Input.insertText` follows focus, including into a child frame.
+      const focusAndType = async (expression: string, text: string): Promise<void> => {
+        await client.send('Runtime.evaluate', { expression }, sessionId)
+        await client.send('Input.insertText', { text }, sessionId)
+        await delay(80)
+      }
+      await focusAndType(
+        "document.querySelector('#shadow-host').shadowRoot.querySelector('#shadow-otp').focus()",
+        SHADOW_SENTINEL
+      )
+      await focusAndType(
+        `(() => { const f = document.querySelector('#same-origin-frame');
+          f.contentWindow.focus();
+          f.contentDocument.querySelector('#frame-pw').focus() })()`,
+        FRAME_SENTINEL
+      )
+      await delay(200)
+
+      // NON-VACUITY: the values really are where the assertions assume. Lengths
+      // only, never the values.
+      return (
+        await client.send<{ result: { value: Record<string, number> } }>(
+          'Runtime.evaluate',
+          {
+            expression: `(() => ({
+              layout: document.querySelector('#secret-text').textContent.length,
+              shadow: document.querySelector('#shadow-host').shadowRoot.querySelector('#shadow-otp').value.length,
+              frame: document.querySelector('#same-origin-frame').contentDocument.querySelector('#frame-pw').value.length
+            }))()`,
+            returnByValue: true
+          },
+          sessionId
+        )
+      ).result.value
+    }
+
     // --- type the sentinels ------------------------------------------------
     // Typed, not baked into the fixture, and typed BEFORE marking/snapshotting.
     // Marking stamps attributes; it does not retroactively filter a value that
@@ -187,7 +299,62 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
     await type('#otp', OTP_SENTINEL)
     await type('#configured-secret', CONFIGURED_SENTINEL)
     await type('#username', USERNAME_VALUE)
-    await delay(200)
+
+    // --- F1/F2/F3 sinks ----------------------------------------------------
+    // The form whose body is actually submitted.
+    await type('#form-pw', FORM_SENTINEL)
+    await type('#form-user', USERNAME_VALUE)
+
+    // F2/F3 are planted by a helper because they must be planted TWICE — see
+    // the second-document leg below. A fresh document has a fresh (empty) secret
+    // div and fresh, unmarked shadow/frame fields.
+    boundaryLengths = await plantBoundarySecrets()
+
+    // --- F1: SUBMIT the credentials --------------------------------------
+    // Two bodies, both read out of the live fields rather than restated here.
+    //
+    //  - urlencoded, carrying `password` (caught by the static name set) and
+    //    `recovery` (caught ONLY if the probe reported that name, because
+    //    `#configured-secret` is a workspace-configured secret and no static
+    //    list would guess the word "recovery");
+    //  - JSON, carrying a nested `account.password` and an `otp_b64` whose value
+    //    is base64 — the rendering a literal scanner cannot see.
+    //
+    // 127.0.0.1:9 is the discard port: the connection is refused, which is
+    // irrelevant. `Network.requestWillBeSent` fires with the body regardless,
+    // and that is the ingest point under test.
+    await client.send(
+      'Runtime.evaluate',
+      {
+        expression: `(async () => {
+          const pw = document.querySelector('#form-pw').value
+          const user = document.querySelector('#form-user').value
+          const recovery = document.querySelector('#configured-secret').value
+          try {
+            await fetch('http://127.0.0.1:9/collect-form', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({ username: user, password: pw, recovery: recovery }).toString()
+            })
+          } catch (e) {}
+          try {
+            await fetch('http://127.0.0.1:9/collect-json', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                account: { username: user, password: pw },
+                otp_b64: btoa(pw)
+              })
+            })
+          } catch (e) {}
+          return true
+        })()`,
+        awaitPromise: true,
+        returnByValue: true
+      },
+      sessionId
+    )
+    await delay(400)
 
     // NON-VACUITY: the values genuinely reached the fields. Lengths only — this
     // test must not itself echo the secrets into anything.
@@ -198,7 +365,8 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
           pw: document.querySelector('#pw').value.length,
           otp: document.querySelector('#otp').value.length,
           configured: document.querySelector('#configured-secret').value.length,
-          username: document.querySelector('#username').value.length
+          username: document.querySelector('#username').value.length,
+          formPw: document.querySelector('#form-pw').value.length
         }))()`,
         returnByValue: true
       },
@@ -217,6 +385,14 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
       sessionId
     )
     rawSnapshotLeaked = rawSnapshot.strings.some((s) => s.includes(PASSWORD_SENTINEL))
+    // The same control for the boundary-crossing cases. If Chromium ever stops
+    // serializing shadow / same-origin-frame content into the snapshot, F3's
+    // assertions become vacuous — this makes that change fail loudly instead.
+    rawBoundaryLeaked = {
+      layout: rawSnapshot.strings.some((s) => s.includes(LAYOUT_SENTINEL)),
+      shadow: rawSnapshot.strings.some((s) => s.includes(SHADOW_SENTINEL)),
+      frame: rawSnapshot.strings.some((s) => s.includes(FRAME_SENTINEL))
+    }
 
     // --- the real capture: mark → snapshot → AX, in that order -------------
     await harvester.captureDom()
@@ -234,6 +410,11 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
     await client.once('Page.loadEventFired', 15_000)
     await delay(400)
     await type('#pw', PASSWORD_SENTINEL_2)
+    // Re-plant F2/F3 in the SECOND document, and keep *these* lengths as the
+    // non-vacuity control: `captureDom()` below replaces the harvester's
+    // snapshot, so the DOM and AX files that actually reach disk describe this
+    // document, and the assertions must be controlled against it.
+    boundaryLengths = await plantBoundarySecrets()
     await delay(200)
 
     secondDocTypedLength = (
@@ -330,7 +511,11 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
       ['password', PASSWORD_SENTINEL],
       ['one-time-code', OTP_SENTINEL],
       ['configured-secret', CONFIGURED_SENTINEL],
-      ['password typed after a navigation (second document)', PASSWORD_SENTINEL_2]
+      ['password typed after a navigation (second document)', PASSWORD_SENTINEL_2],
+      ['submitted form password (F1)', FORM_SENTINEL],
+      ['rendered secret text (F2)', LAYOUT_SENTINEL],
+      ['one-time-code inside a shadow root (F3)', SHADOW_SENTINEL],
+      ['password inside a same-origin iframe (F3)', FRAME_SENTINEL]
     ] as const) {
       it(`the ${name} value is absent from every byte of every file`, () => {
         const offenders: string[] = []
@@ -350,6 +535,146 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
     it('every file was actually scanned', () => {
       expect(written.length).toBeGreaterThanOrEqual(6)
       for (const file of written) expect(file.bytes.byteLength).toBeGreaterThanOrEqual(0)
+    })
+  })
+
+  /* ---------------- F1 / F2 / F3 ------------------------------------------ *
+   *
+   * These assert against `harvestResult.files` — Tier A's OUTPUT, before
+   * `seal()` runs — as well as against the bytes on disk. That is deliberate.
+   * The sentinels are handed to `seal()` as `suppressedValues`, so Tier B would
+   * scrub a literal leak from the written bytes and the on-disk assertion would
+   * pass while Tier A was broken. Asserting on the pre-seal files is what makes
+   * these genuinely fail when the ingest control is removed, which is the only
+   * property that makes a regression test worth having.
+   * ------------------------------------------------------------------------ */
+
+  const tierAFile = (path: string): string => {
+    const file = harvestResult.files.find((f) => f.path === path)
+    if (!file) throw new Error(`harvest produced no ${path}`)
+    return file.contents as string
+  }
+
+  describe('F1 — a submitted request body does not carry the typed password', () => {
+    it('the sentinel really does have distinct encoded renderings', () => {
+      // Without this, three of the assertions below would be searching for
+      // bytes identical to the literal and would be tautologies.
+      const labels = new Map(renderings(FORM_SENTINEL).map((r) => [r.label, r.bytes.toString()]))
+      const literal = labels.get('literal (utf8)')!
+      expect(labels.get('encodeURIComponent')).not.toBe(literal)
+      expect(labels.get('form-urlencoded')).not.toBe(literal)
+      expect(labels.get('JSON-escaped')).not.toBe(literal)
+      expect(labels.get('base64')).not.toBe(literal)
+    })
+
+    it('the form was really submitted and its body really was retained', () => {
+      // NON-VACUITY, and the sharpest control in this file. If the body had
+      // simply been dropped wholesale, every absence assertion below would pass
+      // while proving nothing about field-wise redaction. The ordinary username
+      // surviving in the same body is what proves the body is there and that
+      // suppression is targeted.
+      expect(typedBack.formPw).toBe(FORM_SENTINEL.length)
+      const har = tierAFile(FILE_PATHS.har)
+      expect(har).toContain('/collect-form')
+      expect(har).toContain('/collect-json')
+      expect(har).toContain(USERNAME_VALUE)
+    })
+
+    it('no rendering of the password survives in the Tier A HAR', () => {
+      const har = Buffer.from(tierAFile(FILE_PATHS.har), 'utf8')
+      const offenders = renderings(FORM_SENTINEL)
+        .filter((r) => har.includes(r.bytes))
+        .map((r) => r.label)
+      expect(offenders).toEqual([])
+    })
+
+    it('no rendering of the password survives in any written byte', () => {
+      const offenders: string[] = []
+      for (const file of written) {
+        for (const r of renderings(FORM_SENTINEL)) {
+          if (file.bytes.includes(r.bytes)) offenders.push(`${file.relative} [${r.label}]`)
+        }
+      }
+      expect(offenders).toEqual([])
+    })
+
+    it('redacts a field the probe named, which no static list could have guessed', () => {
+      // `recovery` is the parameter name of `#configured-secret`, a
+      // workspace-configured secret. Nothing but the probe reporting that name
+      // can redact this — it is the layer that the review said was missing.
+      const har = Buffer.from(tierAFile(FILE_PATHS.har), 'utf8')
+      const offenders = renderings(CONFIGURED_SENTINEL)
+        .filter((r) => har.includes(r.bytes))
+        .map((r) => r.label)
+      expect(offenders).toEqual([])
+      // …and the parameter is still *present*, redacted rather than deleted, so
+      // the HAR still says a recovery phrase was submitted.
+      expect(har.toString('utf8')).toContain('recovery')
+    })
+  })
+
+  describe('F2 — layout.text does not carry a rendered secret', () => {
+    it('the secret div really rendered the sentinel, and an unfiltered snapshot leaks it', () => {
+      expect(boundaryLengths.layout).toBe(LAYOUT_SENTINEL.length)
+      expect(rawBoundaryLeaked.layout).toBe(true)
+    })
+
+    it('no string reachable from layout.text contains the sentinel', () => {
+      const snapshot = JSON.parse(tierAFile(FILE_PATHS.dom)) as {
+        documents?: Array<{ layout?: { text?: number[] } }>
+        strings?: string[]
+      }
+      const strings = snapshot.strings ?? []
+
+      let layoutTextEntries = 0
+      const offenders: string[] = []
+      for (const doc of snapshot.documents ?? []) {
+        for (const index of doc.layout?.text ?? []) {
+          if (index < 0) continue
+          layoutTextEntries++
+          if ((strings[index] ?? '').includes(LAYOUT_SENTINEL)) offenders.push(`strings[${index}]`)
+        }
+      }
+
+      // NON-VACUITY: a snapshot with no layout text at all would pass trivially.
+      expect(layoutTextEntries).toBeGreaterThan(0)
+      expect(offenders).toEqual([])
+    })
+
+    it('the sentinel is absent from the whole Tier A snapshot, not just from layout.text', () => {
+      // The string table is the other half: redirecting the reference while
+      // leaving the bytes interned in `strings[]` would fail here.
+      expect(tierAFile(FILE_PATHS.dom)).not.toContain(LAYOUT_SENTINEL)
+    })
+  })
+
+  describe('F3 — secrets behind a shadow and a frame boundary are marked and filtered', () => {
+    it('both boundary secrets really exist and an unfiltered snapshot leaks both', () => {
+      expect(boundaryLengths.shadow).toBe(SHADOW_SENTINEL.length)
+      expect(boundaryLengths.frame).toBe(FRAME_SENTINEL.length)
+      // If either of these goes false, the fix is not proven unnecessary — the
+      // vector moved, and this test needs rewriting against the new one.
+      expect(rawBoundaryLeaked.shadow).toBe(true)
+      expect(rawBoundaryLeaked.frame).toBe(true)
+    })
+
+    it('marking AND resolution both reached across the boundaries', () => {
+      // The discriminating assertion. Marking alone is not the fix: if
+      // `markSecrets` stamps a shadow/frame element but the main side cannot
+      // resolve it to a backendNodeId, the counter climbs, nothing is filtered,
+      // and the leak persists. The three original fields plus these two is five.
+      expect(harvestResult.secretBackendNodeIds.length).toBeGreaterThanOrEqual(5)
+      expect(harvestResult.domFilter!.unmatched).toEqual([])
+    })
+
+    it('neither boundary secret appears in the Tier A snapshot or AX tree', () => {
+      for (const [label, sentinel] of [
+        ['shadow root', SHADOW_SENTINEL],
+        ['same-origin iframe', FRAME_SENTINEL]
+      ] as const) {
+        expect(`${label}: ${tierAFile(FILE_PATHS.dom)}`).not.toContain(sentinel)
+        expect(`${label}: ${tierAFile(FILE_PATHS.ax)}`).not.toContain(sentinel)
+      }
     })
   })
 

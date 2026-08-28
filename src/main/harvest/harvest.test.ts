@@ -3,7 +3,7 @@ import { createDraft, finalize, markUnavailable, missingDc2Reasons } from '@shar
 import type { Surface } from '@shared/sidecar/types'
 import { CaptureClock } from '../cdp/clock'
 import { seal } from '../sidecar/seal'
-import { BINDING_NAME, FILE_PATHS, Harvester, type HarvestClient } from './harvest'
+import { FILE_PATHS, Harvester, type HarvestClient } from './harvest'
 
 const SURFACE: Surface = {
   type: 'browser',
@@ -82,6 +82,27 @@ async function startHarvester(client: FakeClient, clock: CaptureClock) {
   return { harvester, draft }
 }
 
+/**
+ * Emit a binding call the way the injected listener would.
+ *
+ * The binding name and the nonce are per-session (F8), so a test cannot name
+ * either as a constant any more — it has to ask the harvester. A payload without
+ * the nonce is dropped on purpose, which is what `forgesWithout` below exercises.
+ */
+function emitBinding(
+  client: FakeClient,
+  harvester: Harvester,
+  payload: Record<string, unknown> | string
+): void {
+  client.emit('Runtime.bindingCalled', {
+    name: harvester.bindingName,
+    payload:
+      typeof payload === 'string'
+        ? payload
+        : JSON.stringify({ ...payload, nonce: harvester.bindingNonce })
+  })
+}
+
 function fileContents(files: Array<{ path: string; contents: string | Uint8Array }>, path: string): string {
   const file = files.find((f) => f.path === path)
   if (!file) throw new Error(`no file at ${path}`)
@@ -95,7 +116,11 @@ describe('Harvester — setup', () => {
     const methods = client.sent.map((s) => s.method)
 
     expect(methods).toContain('Runtime.addBinding')
-    expect(client.sent.find((s) => s.method === 'Runtime.addBinding')!.params.name).toBe(BINDING_NAME)
+    expect(client.sent.find((s) => s.method === 'Runtime.addBinding')!.params.name).toBe(
+      harvester.bindingName
+    )
+    // Per-session and unguessable, not the old fixed `__nawiEmit`.
+    expect(harvester.bindingName).toMatch(/^__nawiEmit_[0-9a-f]{32}$/)
     // The already-parsed document needs an explicit evaluate; the
     // add-on-new-document call alone silently does nothing for it.
     expect(methods.filter((m) => m === 'Page.addScriptToEvaluateOnNewDocument').length).toBeGreaterThanOrEqual(2)
@@ -177,10 +202,8 @@ describe('DC-1 — an unresolvable timestamp means the event is absent, not zero
   it('drops an input event with an unresolvable timestamp', async () => {
     const client = new FakeClient(false)
     const { harvester, draft } = await startHarvester(client, new CaptureClock())
-    client.emit('Runtime.bindingCalled', {
-      name: BINDING_NAME,
-      payload: JSON.stringify({ type: 'click', at: Date.now(), target_role: 'button', selectors: [] })
-    })
+    emitBinding(client, harvester, ({ type: 'click', at: Date.now(), target_role: 'button', selectors: [] })
+    )
     const result = await harvester.finish()
     expect(result.droppedForTimestamp.input).toBe(1)
     expect(draft.state_layer.input_events!.count).toBe(0)
@@ -189,7 +212,7 @@ describe('DC-1 — an unresolvable timestamp means the event is absent, not zero
   it('ignores a junk binding payload without taking the harvest down', async () => {
     const client = new FakeClient(true)
     const { harvester, draft } = await startHarvester(client, new CaptureClock())
-    client.emit('Runtime.bindingCalled', { name: BINDING_NAME, payload: 'not json{' })
+    emitBinding(client, harvester, 'not json{')
     client.emit('Runtime.bindingCalled', { name: 'someone-elses-binding', payload: '{}' })
     const result = await harvester.finish()
     expect(draft.state_layer.input_events!.count).toBe(0)
@@ -201,9 +224,7 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
   it('emits the acceptance shape and never invents a value for a redacted field', async () => {
     const client = new FakeClient(true)
     const { harvester } = await startHarvester(client, new CaptureClock())
-    client.emit('Runtime.bindingCalled', {
-      name: BINDING_NAME,
-      payload: JSON.stringify({
+    emitBinding(client, harvester, ({
         type: 'input',
         target_role: 'textbox',
         target_name: null,
@@ -212,7 +233,7 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
         coordinates: null,
         selectors: [{ strategy: 'id', selector: '#pw', unique: true, id: 'pw' }]
       })
-    })
+    )
     const result = await harvester.finish()
     const line = JSON.parse(fileContents(result.files, FILE_PATHS.input).trim())
 
@@ -226,9 +247,7 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
   it('converts hyphenated selector strategies to DC-4 underscored ones', async () => {
     const client = new FakeClient(true)
     const { harvester } = await startHarvester(client, new CaptureClock())
-    client.emit('Runtime.bindingCalled', {
-      name: BINDING_NAME,
-      payload: JSON.stringify({
+    emitBinding(client, harvester, ({
         type: 'click',
         target_role: 'button',
         value_redacted: false,
@@ -238,7 +257,7 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
           { strategy: 'nth-child', selector: 'div:nth-of-type(1)', unique: true }
         ]
       })
-    })
+    )
     const result = await harvester.finish()
     const line = JSON.parse(fileContents(result.files, FILE_PATHS.input).trim())
     const strategies = line.target.selectors.map((s: { strategy: string }) => s.strategy)
@@ -251,9 +270,7 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
   it('keeps a value for a non-secret field, so suppression is targeted not blanket', async () => {
     const client = new FakeClient(true)
     const { harvester } = await startHarvester(client, new CaptureClock())
-    client.emit('Runtime.bindingCalled', {
-      name: BINDING_NAME,
-      payload: JSON.stringify({
+    emitBinding(client, harvester, ({
         type: 'input',
         target_role: 'textbox',
         value_redacted: false,
@@ -261,7 +278,7 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
         at: Date.now(),
         selectors: []
       })
-    })
+    )
     const result = await harvester.finish()
     const line = JSON.parse(fileContents(result.files, FILE_PATHS.input).trim())
     expect(line.target.text).toBe('ordinary text')
@@ -324,5 +341,75 @@ describe('DC-2 — an unsupported surface yields null AND a reason', () => {
     harvester.markUnavailable('accessibility_tree', 'capture_failed')
     expect(() => seal(draft, [])).not.toThrow()
     expect(draft.state_layer.dom_snapshot).toBeNull()
+  })
+})
+
+/* ------------------------------------------------------------------------- *
+ * F8 — the page can call the binding, so raise the cost of forging entries.
+ *
+ * This is agent-context poisoning, not disclosure: the state layer is built to
+ * be read by an agent, so a forged `input_events` line is an indirect
+ * prompt-injection channel. It cannot be fully closed page-side — the binding
+ * must be callable from the page — so these assert blast-radius reduction, not
+ * authentication.
+ * ------------------------------------------------------------------------- */
+
+describe('F8 — state-layer entries cannot be forged against a known binding name', () => {
+  it('uses a different binding name and nonce for every session', async () => {
+    const a = await startHarvester(new FakeClient(true), new CaptureClock())
+    const b = await startHarvester(new FakeClient(true), new CaptureClock())
+    expect(a.harvester.bindingName).not.toBe(b.harvester.bindingName)
+    expect(a.harvester.bindingNonce).not.toBe(b.harvester.bindingNonce)
+    await a.harvester.finish()
+    await b.harvester.finish()
+  })
+
+  it('rejects a payload that does not carry this session‘s nonce', async () => {
+    const client = new FakeClient(true)
+    const { harvester, draft } = await startHarvester(client, new CaptureClock())
+
+    // A page that discovered the binding name but not the nonce.
+    client.emit('Runtime.bindingCalled', {
+      name: harvester.bindingName,
+      payload: JSON.stringify({
+        type: 'input',
+        target_role: 'textbox',
+        value: 'FORGED-BY-THE-PAGE',
+        value_redacted: false,
+        at: Date.now(),
+        selectors: []
+      })
+    })
+    // …and one with a guessed-wrong nonce.
+    client.emit('Runtime.bindingCalled', {
+      name: harvester.bindingName,
+      payload: JSON.stringify({ type: 'input', nonce: 'not-the-nonce', at: Date.now(), selectors: [] })
+    })
+
+    const result = await harvester.finish()
+    expect(fileContents(result.files, FILE_PATHS.input)).not.toContain('FORGED-BY-THE-PAGE')
+    expect(draft.state_layer.input_events!.count).toBe(0)
+  })
+
+  it('still accepts a genuine payload, and does not leak the nonce into the file', async () => {
+    // The other half: a nonce check that is too strict silently empties
+    // input_events, which would look like a passing security test.
+    const client = new FakeClient(true)
+    const { harvester, draft } = await startHarvester(client, new CaptureClock())
+    emitBinding(client, harvester, {
+      type: 'input',
+      target_role: 'textbox',
+      value: 'GENUINE-ENTRY',
+      value_redacted: false,
+      at: Date.now(),
+      selectors: []
+    })
+    const result = await harvester.finish()
+    const contents = fileContents(result.files, FILE_PATHS.input)
+    expect(contents).toContain('GENUINE-ENTRY')
+    expect(draft.state_layer.input_events!.count).toBe(1)
+    // The nonce is a transport detail; writing it to disk would publish it.
+    expect(contents).not.toContain(harvester.bindingNonce)
+    expect(contents).not.toContain('nonce')
   })
 })

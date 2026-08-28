@@ -47,6 +47,7 @@
  * only what genuinely cannot be placed.
  */
 
+import { randomBytes } from 'node:crypto'
 import { markUnavailable, setSource, type SidecarDraft } from '@shared/sidecar/draft'
 import type {
   ConsoleLevel,
@@ -77,7 +78,29 @@ export interface HarvestClient {
   on(method: string, listener: (event: { method: string; params: Record<string, unknown>; sessionId?: string }) => void): () => void
 }
 
-export const BINDING_NAME = '__nawiEmit'
+/**
+ * The binding the page-side listener calls, and the nonce every payload must
+ * carry.
+ *
+ * **What this defends against, and what it does not.** `Runtime.addBinding`
+ * installs a real function on the page's `window`, so the page can always call
+ * it — that is the mechanism, not a flaw in it. The risk is not disclosure (the
+ * page already has its own secrets); it is **agent-context poisoning**: the
+ * state layer is built to be fed to an agent, so a page that can write
+ * `input_events.ndjson` has an indirect prompt-injection channel into whatever
+ * later reads `get_state_layer`.
+ *
+ * With a fixed name, forging an entry was a one-liner against a constant any
+ * page author could read out of this repository. A per-session random name and
+ * nonce mean a page must first *discover* both by scraping its own injected
+ * script — still possible, and honestly so. This is blast-radius reduction, not
+ * closure. **Anything downstream must keep treating the state layer as
+ * untrusted input**; the nonce raises the cost of forgery, it does not
+ * authenticate the source.
+ */
+function randomToken(): string {
+  return randomBytes(16).toString('hex')
+}
 
 export const FILE_PATHS = Object.freeze({
   dom: 'dom/snapshot.json',
@@ -210,6 +233,9 @@ export class Harvester {
   private domCaptureTMs = 0
   private axCaptureTMs = 0
   private stopped = false
+  /** Per-session, unguessable before injection. See `randomToken`. */
+  readonly bindingName = `__nawiEmit_${randomToken()}`
+  readonly bindingNonce = randomToken()
 
   private constructor(private readonly options: HarvestOptions) {
     const preambleMs = options.preambleMs ?? 30_000
@@ -239,9 +265,11 @@ export class Harvester {
     }
 
     await injectProbe(client, options.probe ?? {}, sessionId)
-    await client.send('Runtime.addBinding', { name: BINDING_NAME }, sessionId)
+    await client.send('Runtime.addBinding', { name: harvester.bindingName }, sessionId)
 
-    const source = listenerSource.replace('__NAWI_BINDING__', BINDING_NAME)
+    const source = listenerSource
+      .replace('__NAWI_BINDING__', harvester.bindingName)
+      .replace('__NAWI_NONCE__', harvester.bindingNonce)
     await client.send('Page.addScriptToEvaluateOnNewDocument', { source }, sessionId)
     // `addScriptToEvaluateOnNewDocument` does nothing for the document that is
     // already parsed — the classic "it silently did not run" trap.
@@ -303,7 +331,7 @@ export class Harvester {
 
     this.unsubscribes.push(
       client.on('Runtime.bindingCalled', (event) => {
-        if (event.params.name !== BINDING_NAME) return
+        if (event.params.name !== this.bindingName) return
         const payload = event.params.payload
         if (typeof payload !== 'string') return
         let parsed: Record<string, unknown>
@@ -314,6 +342,11 @@ export class Harvester {
           // never let it reach the read loop as a throw.
           return
         }
+        // F8: a payload that does not carry this session's nonce did not come
+        // from our injected listener. Rejected rather than recorded — see
+        // `randomToken` for what this does and does not prove.
+        if (parsed.nonce !== this.bindingNonce) return
+        delete parsed.nonce
         const at = parsed.at
         if (typeof at !== 'number') return
         this.input.push(clock.nowTMs(), { at, payload: parsed })
@@ -396,6 +429,9 @@ export class Harvester {
 
     const marking = await markAndResolveSecrets(client, sessionId)
     this.secretBackendNodeIds = marking.backendNodeIds
+    // FR-SEC.2: the parameter names of the fields we just marked become
+    // redaction keys for the HAR request-body control. Names, never values.
+    this.har.addSecretFieldNames(marking.fieldNames)
 
     this.domCaptureTMs = clock.nowTMs()
     const raw = await client.send<CapturedSnapshot>(

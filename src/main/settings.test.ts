@@ -295,3 +295,63 @@ describe('regressions found in M0 review', () => {
     expect(new Set(chords).size).toBe(chords.length)
   })
 })
+
+/* ------------------------------------------------------------------------- *
+ * F6 — the UX-AGT.3 kill switch must survive the loss of the file recording it.
+ * ------------------------------------------------------------------------- */
+
+describe('agent access pause is fail-closed against settings loss', () => {
+  it('reads as NOT paused when no settings file exists, because that is first run', async () => {
+    // Deliberately NOT fail-closed: a missing file is indistinguishable from a
+    // first run, and pausing here would disable agent access for every new
+    // install. It would also buy little — a process that can delete the file can
+    // equally write `paused: false` into it. See the read path's comment.
+    const settings = await loadModule()
+    expect((await settings.getSettings()).agentAccessPaused).toBe(false)
+  })
+
+  it('reads as PAUSED when the file is unparseable', async () => {
+    await fs.writeFile(settingsFile(), '{ this is not json', 'utf-8')
+    const settings = await loadModule()
+    expect((await settings.getSettings()).agentAccessPaused).toBe(true)
+  })
+
+  it('reads as PAUSED when the file is truncated to nothing', async () => {
+    await fs.writeFile(settingsFile(), '', 'utf-8')
+    const settings = await loadModule()
+    expect((await settings.getSettings()).agentAccessPaused).toBe(true)
+  })
+
+  it('reads as PAUSED on an I/O failure that is not a parse failure', async () => {
+    // A directory where the file should be gives EISDIR. This proves the branch
+    // is on the error CODE and not merely on "JSON.parse threw" — EACCES and a
+    // decode failure take the same path.
+    await fs.mkdir(settingsFile())
+    const settings = await loadModule()
+    expect((await settings.getSettings()).agentAccessPaused).toBe(true)
+  })
+
+  it('still reads as NOT paused for a file predating the field', async () => {
+    // The upgrade property the flag was named for: a settings file written
+    // before `agentAccessPaused` existed must not read as paused and silently
+    // break a working agent setup. Only *unreadability* fails closed.
+    await fs.writeFile(settingsFile(), JSON.stringify({ version: 1, theme: 'dark' }), 'utf-8')
+    const settings = await loadModule()
+    const s = await settings.getSettings()
+    expect(s.agentAccessPaused).toBe(false)
+    // …and the rest of the file was still honoured, so this is not a wholesale
+    // fallback masquerading as a merge.
+    expect(s.theme).toBe('dark')
+  })
+
+  it('honours a legitimately written false', async () => {
+    await fs.writeFile(
+      settingsFile(),
+      JSON.stringify({ version: 1, agentAccessPaused: false }),
+      'utf-8'
+    )
+    const settings = await loadModule()
+    expect((await settings.getSettings()).agentAccessPaused).toBe(false)
+  })
+
+})

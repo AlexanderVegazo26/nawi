@@ -1,7 +1,13 @@
 import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import { defaultSettings, mergeSettings, sanitizeSettings, type Settings } from '@shared/settings'
+import {
+  defaultSettings,
+  failClosedSettings,
+  mergeSettings,
+  sanitizeSettings,
+  type Settings
+} from '@shared/settings'
 
 /**
  * Settings store — one JSON file under userData.
@@ -51,11 +57,31 @@ export async function getSettings(): Promise<Settings> {
       // Unknown/absent/malformed fields fall back to defaults field-by-field, so a
       // hand-edited file loses only what it actually broke.
       return sanitizeSettings(JSON.parse(raw) as unknown)
-    } catch {
-      // Missing file is the normal first-run case; a corrupt one is recovered the
-      // same way. The bad file is left untouched rather than silently overwritten —
-      // it is the only copy of whatever the user meant to write.
-      return defaultSettings()
+    } catch (err) {
+      // The bad file is left untouched rather than silently overwritten — it is
+      // the only copy of whatever the user meant to write.
+      //
+      // Which fallback we use depends on *why* the read failed, and the two
+      // cases are genuinely different:
+      //
+      //  - **No file at all (ENOENT).** Indistinguishable from a first run, so
+      //    this stays `defaultSettings()` — unpaused. Failing closed here would
+      //    pause agent access out of the box for every new install, and it would
+      //    buy almost nothing: a process that can delete `settings.json` can
+      //    equally write `{"agentAccessPaused": false}` into it, so the deletion
+      //    attack is not actually closed by pausing on ENOENT. Closing that one
+      //    needs a durable marker or an OS-level ACL — a separate decision.
+      //  - **The file exists but could not be read or parsed** — truncated,
+      //    corrupt, EACCES, EISDIR. Nobody needs to attack anything for this:
+      //    a crash mid-write or a disk error leaves exactly a zero-byte or
+      //    half-written file. Falling back to `defaultSettings()` here made the
+      //    UX-AGT.3 kill switch fail *open* on the accident it most needs to
+      //    survive, so this resolves to paused.
+      //
+      // Branching on the error code rather than on a separate `stat()`, which
+      // would be a TOCTOU race against the very corruption we are handling.
+      const code = (err as NodeJS.ErrnoException | null)?.code
+      return code === 'ENOENT' ? defaultSettings() : failClosedSettings()
     }
   })()
 

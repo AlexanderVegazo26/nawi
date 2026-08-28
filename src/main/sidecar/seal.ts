@@ -21,11 +21,14 @@
  * suppressed values in via `policy.suppressedValues` — without that input the
  * distinction is not constructible.
  *
- * **The type system is the enforcement.** `SealedSidecar` carries a branding
- * symbol no other module can name, so it is constructible only here, and
- * `writer.ts` accepts only a `SealedRevision`. "Unsealed data cannot reach a
- * capture directory" is therefore a compile-time property rather than a
- * convention someone has to remember.
+ * **The type system is the enforcement, on the path that uses it.**
+ * `SealedSidecar` carries a branding symbol no other module can name, so it is
+ * constructible only here, and `writer.ts` accepts only a `SealedRevision`. That
+ * much is genuinely compile-time. It is *not* true that unsealed data cannot
+ * reach a capture directory by any route — `library.ts`'s `saveSidecarRevision`
+ * is a second, unbranded door. `writer.ts`'s header documents that seam exactly,
+ * including why closing it needs a binary-content policy here first. Read it
+ * before relying on the brand as a whole-system property.
  */
 
 import { finalize, type SidecarDraft } from '@shared/sidecar/draft'

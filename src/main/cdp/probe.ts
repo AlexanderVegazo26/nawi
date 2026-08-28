@@ -107,10 +107,57 @@ export interface SecretMarking {
   total: number
   /** DOM-domain ids for the marked elements. */
   backendNodeIds: number[]
+  /**
+   * `name`/`id` of every marked form control, for the HAR request-body control.
+   * Parameter names, never values — see `markSecrets` in `probe.js`.
+   */
+  fieldNames: string[]
 }
 
 interface DomNode {
   backendNodeId?: number
+  /** Flat `[name, value, name, value, …]`, as the DOM domain emits it. */
+  attributes?: string[]
+  children?: DomNode[]
+  shadowRoots?: DomNode[]
+  contentDocument?: DomNode
+  pseudoElements?: DomNode[]
+}
+
+/**
+ * Collect the `backendNodeId` of every marked element in a `DOM.getDocument`
+ * tree, descending into shadow roots and frame content documents.
+ *
+ * **Why a tree walk rather than `DOM.querySelectorAll`.** The marking pass now
+ * stamps elements inside open shadow roots and same-origin iframes, and the
+ * *resolution* half has to reach exactly the same set or the fix is cosmetic:
+ * `marked` would climb while `backendNodeIds` did not, nothing would be
+ * filtered, and the counter would report success. `DOM.getDocument({pierce:true})`
+ * returns `shadowRoots` and `contentDocument` as explicit branches, so walking
+ * it is a definite answer rather than a bet on how a selector engine treats
+ * boundaries. It also replaces one `DOM.describeNode` round trip per marked
+ * element with none — the ids are already in this reply.
+ */
+function collectMarkedBackendNodeIds(node: DomNode | undefined, into: number[]): void {
+  if (!node) return
+
+  const attributes = node.attributes
+  if (Array.isArray(attributes)) {
+    for (let i = 0; i < attributes.length; i += 2) {
+      if (attributes[i] === SECRET_MARKER_ATTRIBUTE) {
+        if (typeof node.backendNodeId === 'number') into.push(node.backendNodeId)
+        break
+      }
+    }
+  }
+
+  for (const branch of [node.children, node.shadowRoots, node.pseudoElements]) {
+    for (const child of branch ?? []) collectMarkedBackendNodeIds(child, into)
+  }
+  // Same-origin frames only. A cross-origin frame is an OOPIF: CDP omits its
+  // `contentDocument` here and the snapshot omits it too, so it is already
+  // fail-closed and there is nothing to resolve.
+  collectMarkedBackendNodeIds(node.contentDocument, into)
 }
 
 /**
@@ -129,29 +176,27 @@ export async function markAndResolveSecrets(
   client: ProbeClient,
   sessionId?: string
 ): Promise<SecretMarking> {
-  const marking = await evaluate<{ marked: number; total: number }>(
+  const marking = await evaluate<{ marked: number; total: number; fieldNames?: string[] }>(
     client,
     'window.__nawiProbe.markSecrets()',
     sessionId
   )
 
-  const { root } = await client.send<{ root: { nodeId: number } }>(
+  const { root } = await client.send<{ root: DomNode }>(
     'DOM.getDocument',
     { depth: -1, pierce: true },
     sessionId
   )
-  const { nodeIds } = await client.send<{ nodeIds: number[] }>(
-    'DOM.querySelectorAll',
-    { nodeId: root.nodeId, selector: `[${SECRET_MARKER_ATTRIBUTE}]` },
-    sessionId
-  )
 
   const backendNodeIds: number[] = []
-  for (const nodeId of nodeIds) {
-    const described = await client.send<{ node: DomNode }>('DOM.describeNode', { nodeId }, sessionId)
-    const backendNodeId = described.node?.backendNodeId
-    if (typeof backendNodeId === 'number') backendNodeIds.push(backendNodeId)
-  }
+  collectMarkedBackendNodeIds(root, backendNodeIds)
 
-  return { marked: marking.marked, total: marking.total, backendNodeIds }
+  return {
+    marked: marking.marked,
+    total: marking.total,
+    backendNodeIds: [...new Set(backendNodeIds)],
+    fieldNames: Array.isArray(marking.fieldNames)
+      ? marking.fieldNames.filter((n): n is string => typeof n === 'string')
+      : []
+  }
 }

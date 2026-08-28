@@ -225,15 +225,83 @@
     return false
   }
 
+  /**
+   * One step up the *composed* tree.
+   *
+   * `parentElement` alone stops dead at a shadow boundary and at a document
+   * boundary, so a field inside an open shadow root or a same-origin iframe
+   * would be judged non-secret even when its host or its `<iframe>` carries the
+   * marker. Climbing through `.host` and `frameElement` makes containment mean
+   * what a reader assumes it means.
+   */
+  function climb(node) {
+    if (node.parentElement) return node.parentElement
+    var root = node.getRootNode ? node.getRootNode() : null
+    if (root && root.host) return root.host
+    try {
+      var view = node.ownerDocument && node.ownerDocument.defaultView
+      // Cross-origin: `frameElement` throws or is null. Either way we stop,
+      // which is the fail-closed direction — see `eachElement`.
+      if (view && view.frameElement) return view.frameElement
+    } catch (e) {
+      /* cross-origin parent; nothing further to climb */
+    }
+    return null
+  }
+
   /** Secret by inheritance: anything inside a secret subtree is secret too. */
   function isSecret(el) {
     var node = el
-    while (node && node.nodeType === 1) {
+    var depth = 0
+    while (node && node.nodeType === 1 && depth < 500) {
       if (node.hasAttribute(MARKER)) return true
       if (isSecretElement(node)) return true
-      node = node.parentElement
+      node = climb(node)
+      depth++
     }
     return false
+  }
+
+  /**
+   * Every element reachable from `root`, descending through open shadow roots
+   * and same-origin iframe documents.
+   *
+   * `document.querySelectorAll('*')` — what this replaced — pierces neither, and
+   * that was a live FR-SEC.2 hole: `DOMSnapshot.captureSnapshot` *does* serialize
+   * shadow and same-origin-frame content (`snapshot.ts` declares
+   * `shadowRootType` for exactly that reason), so a `one-time-code` field inside
+   * a design-system component or an embedded auth widget was serialized in full
+   * while nothing had ever stamped it.
+   *
+   * **Cross-origin frames are deliberately not walked.** They are OOPIFs with a
+   * separate CDP target and no session attached, so they are absent from the
+   * snapshot entirely — already fail-closed. Reaching into them here would be
+   * both impossible and pointless; the `try` below keeps a SecurityError from
+   * aborting the walk over the frames we *can* see.
+   */
+  function eachElement(root, visit, depth) {
+    if (!root || typeof root.querySelectorAll !== 'function') return
+    if (depth > 20) return
+    var all
+    try {
+      all = root.querySelectorAll('*')
+    } catch (e) {
+      return
+    }
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i]
+      visit(el)
+      if (el.shadowRoot) eachElement(el.shadowRoot, visit, depth + 1)
+      if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+        var doc = null
+        try {
+          doc = el.contentDocument
+        } catch (e) {
+          doc = null
+        }
+        if (doc) eachElement(doc, visit, depth + 1)
+      }
+    }
   }
 
   /**
@@ -246,23 +314,66 @@
    */
   function markSecrets() {
     var marked = 0
-    var all = document.querySelectorAll('*')
-    for (var i = 0; i < all.length; i++) {
-      var el = all[i]
-      if (!isSecretElement(el)) continue
+    var total = 0
+    var names = {}
+
+    function stamp(el) {
       if (!el.hasAttribute(MARKER)) {
         el.setAttribute(MARKER, '1')
         marked++
       }
-      var descendants = el.querySelectorAll('*')
-      for (var j = 0; j < descendants.length; j++) {
-        if (!descendants[j].hasAttribute(MARKER)) {
-          descendants[j].setAttribute(MARKER, '1')
-          marked++
-        }
+    }
+
+    /**
+     * The submitted *parameter name* of a secret control, for the HAR's
+     * request-body control (`har.ts`). A name is page structure, not page
+     * content — it is the same class of fact as the role and the selector we
+     * already record — and it never itself reaches disk: `harvest.ts` hands it
+     * to `HarBuilder` purely as a redaction key. Bounded in length and count so
+     * a hostile page cannot use it as an unbounded channel.
+     */
+    function noteFieldName(el) {
+      if (el.tagName !== 'INPUT' && el.tagName !== 'SELECT' && el.tagName !== 'TEXTAREA') return
+      for (var k = 0; k < 2; k++) {
+        var value = k === 0 ? el.getAttribute('name') : el.getAttribute('id')
+        if (typeof value !== 'string') continue
+        value = value.trim()
+        if (value && value.length <= 128) names[value] = true
       }
     }
-    return { marked: marked, markerAttribute: MARKER, total: document.querySelectorAll('[' + MARKER + ']').length }
+
+    eachElement(
+      document,
+      function (el) {
+        if (!isSecretElement(el)) return
+        stamp(el)
+        noteFieldName(el)
+        // Descendants, including any nested inside the secret element's own
+        // shadow root or frame — `eachElement` on an Element works the same way.
+        eachElement(el, stamp, 0)
+      },
+      0
+    )
+
+    // Recount across every root rather than with a plain
+    // `document.querySelectorAll`, which would under-report exactly the
+    // shadow/frame elements this function now marks.
+    eachElement(
+      document,
+      function (el) {
+        if (el.hasAttribute(MARKER)) total++
+      },
+      0
+    )
+
+    var fieldNames = []
+    for (var name in names) {
+      if (Object.prototype.hasOwnProperty.call(names, name) && fieldNames.length < 100) {
+        fieldNames.push(name)
+      }
+    }
+
+    return { marked: marked, markerAttribute: MARKER, total: total, fieldNames: fieldNames }
   }
 
   /**
