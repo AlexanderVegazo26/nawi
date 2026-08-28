@@ -2,7 +2,17 @@ import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { mediaFormat } from '@shared/types'
 import type { AnnotationDoc, CaptureKind, LibraryItem, MediaKind } from '@shared/types'
+import type { Sidecar, SidecarRead } from '@shared/sidecar/types'
+import {
+  listRevisionsOnDisk,
+  nextRevision,
+  readRevision,
+  writeRevisionAtomically,
+  type RevisionFile
+} from './sidecar/store'
+import { parseRevision } from './sidecar/paths'
 
 /**
  * Flat-file library store.
@@ -88,7 +98,7 @@ export async function save(args: SaveArgs): Promise<LibraryItem> {
   await ensureDirs()
   const id = randomUUID()
   const now = new Date()
-  const ext = args.kind === 'video' ? 'webm' : 'png'
+  const ext = mediaFormat(args.kind).ext
   const filePath = join(assetsDir(), `${id}.${ext}`)
   await fs.writeFile(filePath, args.bytes)
 
@@ -156,5 +166,121 @@ export async function saveAnnotations(id: string, doc: AnnotationDoc): Promise<L
 export async function readItemBytes(id: string): Promise<{ bytes: Buffer; mime: string }> {
   const item = await requireItem(id)
   const bytes = await fs.readFile(item.filePath)
-  return { bytes, mime: item.kind === 'video' ? 'video/webm' : 'image/png' }
+  return { bytes, mime: mediaFormat(item.kind).mime }
+}
+
+/* ------------------------------------------------------------------ *
+ * Sidecars (DC-3 / DC-6)
+ *
+ * The state layer lives in `captures/<uuid>/v<N>/`, parallel to `assets/` —
+ * not inside the index. `update()` above mutates a record in place, which is
+ * exactly what DC-6 forbids for a sidecar: a redaction or a heal must write a
+ * *new* revision and leave the previous file byte-identical.
+ *
+ * The index still holds the pointer, so the whole publish is: rename the
+ * revision directory into place, then one `writeIndex` flipping
+ * `sidecarRevision`. Both steps run on the existing serialized write chain, so
+ * a concurrent capture cannot interleave and lose the pointer.
+ * ------------------------------------------------------------------ */
+
+export interface SaveSidecarOptions {
+  /** Side files (`dom/…`, `console.ndjson`, …) published in the same transaction. */
+  files?: RevisionFile[]
+}
+
+export interface SavedSidecar {
+  revision: string
+  dir: string
+  item: LibraryItem
+}
+
+/**
+ * Serializes sidecar transactions.
+ *
+ * A *second* chain, not `writeChain`: the unit below ends in `update()`, which
+ * chains on `writeChain`, so running it there would make the task await itself
+ * and deadlock. `writeChain` never awaits this one, so there is no cycle.
+ *
+ * Without it, two concurrent revisions of the same capture — a harvest finishing
+ * while a redaction fires is the realistic case — both compute `v2` and both
+ * stage into the same `.tmp-v2` directory. The second call's staging cleanup
+ * deletes the first's files, and the first's `rename` then publishes a mixed
+ * revision. That is a silent DC-3 violation, not the loud "already exists"
+ * rejection, so the `exists()` check in the store cannot catch it.
+ *
+ * Chained on a *settled* tail for the same reason `writeChain` is: one rejection
+ * must not poison the queue for the rest of the process.
+ */
+let sidecarChain: Promise<unknown> = Promise.resolve()
+
+/**
+ * Writes the next revision for a capture and points the index at it.
+ *
+ * `supersedes` is set from whatever revision was current, so the chain is
+ * recorded in the file itself and not only in the index. Reading it inside the
+ * serialized unit means it reflects a *committed* index, not one a queued write
+ * is about to change.
+ */
+export function saveSidecarRevision(
+  id: string,
+  sidecar: Sidecar,
+  options: SaveSidecarOptions = {}
+): Promise<SavedSidecar> {
+  const task = sidecarChain.catch(() => undefined).then(async (): Promise<SavedSidecar> => {
+    const item = await requireItem(id)
+    const libraryRoot = root()
+
+    // Fold in what the index believes as well as what is on disk: a revision
+    // directory deleted by hand must not cause the number to be reused.
+    const indexRevision = item.sidecarRevision ? (parseRevision(item.sidecarRevision) ?? 0) : 0
+    const revision = await nextRevision(libraryRoot, id, indexRevision)
+
+    const toWrite: Sidecar = {
+      ...sidecar,
+      capture_id: id,
+      supersedes: item.sidecarRevision ?? null
+    }
+
+    await writeRevisionAtomically(libraryRoot, id, revision, toWrite, options.files ?? [])
+
+    // Only now does the revision become "current". A crash before this line leaves
+    // a complete but orphaned directory that `readSidecar(id)` will not resolve.
+    const updated = await update(id, {
+      sidecarDir: join(libraryRoot, 'captures', id),
+      sidecarRevision: revision
+    })
+
+    return { revision, dir: join(libraryRoot, 'captures', id, revision), item: updated }
+  })
+
+  sidecarChain = task
+  return task
+}
+
+/**
+ * Reads a capture's sidecar.
+ *
+ * With no `revision`, resolves through the index — so a revision orphaned by a
+ * crash between the rename and the index write is inert, exactly as DC-3
+ * requires. Pass an explicit revision to read a superseded one (which is still
+ * on disk, byte-identical to the day it was written).
+ */
+export async function readSidecar(id: string, revision?: string): Promise<SidecarRead | null> {
+  const item = await requireItem(id)
+  const target = revision ?? item.sidecarRevision
+  if (!target) return null
+  if (parseRevision(target) === null) throw new Error(`invalid sidecar revision: ${target}`)
+  return readRevision(root(), id, target)
+}
+
+/**
+ * Every revision genuinely present on disk, ascending.
+ *
+ * Reports what exists rather than what the index blesses — including an orphan,
+ * because a caller auditing the store needs to see one. Interrupted `.tmp-`
+ * writes are never revisions and never appear.
+ */
+export async function listRevisions(id: string): Promise<string[]> {
+  if (!UUID_RE.test(id)) return []
+  return listRevisionsOnDisk(root(), id)
 }

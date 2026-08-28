@@ -17,6 +17,53 @@ export type MediaKind = 'image' | 'video'
  */
 export type LibraryItemKind = MediaKind | 'guide'
 
+/**
+ * The single exhaustive read of `LibraryItemKind`.
+ *
+ * Widening `LibraryItemKind` made six sites non-exhaustive: each tested
+ * `kind === 'video'` and treated everything else as an image, so a guide would be
+ * handed back as `image/png` with a `.png` extension. Routing every read through
+ * here means adding a kind is a *compile error* in one place instead of a
+ * mislabelled file in five.
+ */
+export function mediaKindOf(kind: LibraryItemKind): MediaKind | null {
+  switch (kind) {
+    case 'image':
+      return 'image'
+    case 'video':
+      return 'video'
+    case 'guide':
+      // A guide is a document, not media. Callers that need bytes must say so.
+      return null
+    default: {
+      const unhandled: never = kind
+      throw new Error(`unhandled library item kind: ${String(unhandled)}`)
+    }
+  }
+}
+
+export interface MediaFormat {
+  ext: 'png' | 'webm'
+  mime: 'image/png' | 'video/webm'
+}
+
+/**
+ * File extension and MIME for an item that must have bytes.
+ *
+ * Throws for a guide rather than falling back to PNG. A fallback here is the
+ * exact bug this function exists to remove — it would hand a caller a guide
+ * labelled as an image and let it reach the clipboard or the filesystem.
+ */
+export function mediaFormat(kind: LibraryItemKind): MediaFormat {
+  const media = mediaKindOf(kind)
+  if (media === null) {
+    throw new Error(`a ${kind} has no media bytes; it cannot be exported or read as a file`)
+  }
+  return media === 'video'
+    ? { ext: 'webm', mime: 'video/webm' }
+    : { ext: 'png', mime: 'image/png' }
+}
+
 /** A selectable capture source, as surfaced by desktopCapturer. */
 export interface CaptureSource {
   id: string

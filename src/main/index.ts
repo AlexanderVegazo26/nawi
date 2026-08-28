@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { promises as fs } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { CAPTURE_SCHEME, IPC } from '@shared/ipc'
+import { mediaFormat } from '@shared/types'
 import type {
   AnnotationDoc,
   ExportRequest,
@@ -488,7 +489,7 @@ function registerIpc(): void {
   handle(IPC.exportOriginal, async (itemId: string) => {
     const item = await library.getItem(itemId)
     if (!item) throw new Error('That capture no longer exists')
-    const format = item.kind === 'video' ? 'webm' : 'png'
+    const format = mediaFormat(item.kind).ext
     const target = await askSavePath(itemId, format)
     if (!target) return null
     await fs.copyFile(item.filePath, target)

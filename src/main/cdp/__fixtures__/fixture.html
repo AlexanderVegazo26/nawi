@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Nawi CDP fixture</title>
+  </head>
+  <body>
+    <!-- PRD §6.3 FR-STA.6 acceptance element, verbatim. -->
+    <button data-testid="submit" id="s1" class="btn btn-primary">Save</button>
+
+    <!-- A generated-looking id, to exercise the demotion rule end to end. -->
+    <button id=":r1a:" class="css-1q2w3e">Cancel</button>
+
+    <!-- FR-SEC.2 secret targets, one of each kind. -->
+    <form>
+      <label for="pw">Password</label>
+      <input type="password" id="pw" name="password" value="hunter2-must-never-leave-the-page" />
+
+      <label for="otp">One-time code</label>
+      <input type="text" id="otp" autocomplete="one-time-code" value="314159-otp-secret" />
+
+      <div data-nawi-secret>
+        <input type="text" id="nested-secret" value="inherited-secret-value" />
+      </div>
+
+      <label for="email">Email</label>
+      <input type="email" id="email" value="not-a-secret@example.com" />
+    </form>
+
+    <script>
+      console.error('boom from fixture page')
+    </script>
+  </body>
+</html>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { mediaKindOf } from '@shared/types'
 import type { AnnotationDoc, LibraryItem, Rect, Shape, ShapeKind } from '@shared/types'
 import { hitTest, normalizeRect, renderDocument } from '../lib/render'
 import { Button, Modal, Spinner } from './ui'
@@ -78,7 +79,7 @@ export function EditorView({
   } | null>(null)
   const [preview, setPreview] = useState<Shape | null>(null)
 
-  const isVideo = item.kind === 'video'
+  const isVideo = mediaKindOf(item.kind) === 'video'
 
   /* ---------------- load the source image ---------------- */
   useEffect(() => {

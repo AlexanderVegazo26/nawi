@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { mediaKindOf } from '@shared/types'
 import type { LibraryItem } from '@shared/types'
 import { Button, EmptyState, ErrorState, Modal, Spinner, formatBytes, formatDuration, formatWhen } from './ui'
 
@@ -206,7 +207,7 @@ export function LibraryView({
                     className="flex cursor-pointer flex-col text-left"
                   >
                   <div className="relative aspect-video bg-surface-0">
-                    {item.kind === 'video' ? (
+                    {mediaKindOf(item.kind) === 'video' ? (
                       <div className="flex h-full items-center justify-center text-text-secondary">
                         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
                           <circle cx="12" cy="12" r="9" />
@@ -222,7 +223,7 @@ export function LibraryView({
                       />
                     )}
                     <span className="absolute right-2 top-2 rounded bg-scrim/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-secondary">
-                      {item.kind === 'video'
+                      {mediaKindOf(item.kind) === 'video'
                         ? item.durationMs
                           ? formatDuration(item.durationMs)
                           : 'video'
