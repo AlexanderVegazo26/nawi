@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '@shared/ipc'
-import type { Settings, NawiApi } from '@shared/types'
+import type { AgentAccessState, Settings, NawiApi } from '@shared/types'
 
 /**
  * The entire privileged surface available to the renderer.
@@ -42,6 +42,16 @@ const api: NawiApi = {
     ipcRenderer.on(IPC.settingsChanged, listener)
     return () => {
       ipcRenderer.removeListener(IPC.settingsChanged, listener)
+    }
+  },
+
+  getAgentAccess: () => ipcRenderer.invoke(IPC.getAgentAccess),
+  setAgentAccessPaused: (paused) => ipcRenderer.invoke(IPC.setAgentAccess, paused),
+  onAgentAccessChanged: (cb) => {
+    const listener = (_e: unknown, state: AgentAccessState): void => cb(state)
+    ipcRenderer.on(IPC.agentAccessChanged, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.agentAccessChanged, listener)
     }
   },
 

@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url'
 import { CAPTURE_SCHEME, IPC } from '@shared/ipc'
 import { mediaFormat } from '@shared/types'
 import type {
+  AgentAccessState,
   AnnotationDoc,
   ExportRequest,
   IpcResult,
@@ -31,6 +32,7 @@ import type {
 import * as library from './library'
 import * as capture from './capture'
 import * as settings from './settings'
+import { startMcpServer, type McpServerHandle } from './mcp/server'
 import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
 const isDev = !app.isPackaged
@@ -60,6 +62,15 @@ let pendingRecordingSourceId: string | null = null
  * recording the user asked to be silent.
  */
 let pendingRecordingAudio = false
+
+/**
+ * The loopback MCP endpoint, or null when it could not start.
+ *
+ * Null is a real, reportable state rather than an error: a port problem must not
+ * stop Nawi from launching, so the app runs with the agent interface down
+ * and says so instead of failing to open a window.
+ */
+let mcpServer: McpServerHandle | null = null
 
 /* ------------------------------------------------------------------ *
  * Protocol — file:// is unusable under webSecurity against a dev-server
@@ -515,9 +526,33 @@ function registerIpc(): void {
     return null
   })
 
+  /* --- UX-AGT.3 kill switch --------------------------------------- *
+   * Backed by the settings layer, so the choice survives a restart. The MCP
+   * dispatcher reads the same value per call, which is what makes a pause take
+   * effect on the agent's very next call rather than the next session.
+   * ---------------------------------------------------------------- */
+  handle(IPC.getAgentAccess, () => agentAccessState())
+  handle(IPC.setAgentAccess, async (paused: unknown) => {
+    // The renderer's payload is untrusted like any other: only a real boolean
+    // moves the switch, and anything else is a refusal rather than a coercion
+    // that could accidentally *resume* agent access.
+    if (typeof paused !== 'boolean') throw new Error('agent access state must be a boolean')
+    await settings.updateSettings({ agentAccessPaused: paused })
+    return agentAccessState()
+  })
+
   handle(IPC.getSettings, () => settings.getSettings())
   // The patch is untrusted; `updateSettings` validates and merges it in main.
   handle(IPC.updateSettings, (patch: unknown) => settings.updateSettings(patch))
+}
+
+/** The kill-switch state the renderer renders. */
+async function agentAccessState(): Promise<AgentAccessState> {
+  const current = await settings.getSettings()
+  return {
+    paused: current.agentAccessPaused,
+    endpoint: mcpServer ? { port: mcpServer.info.port, url: mcpServer.info.url } : null
+  }
 }
 
 /**
@@ -526,8 +561,16 @@ function registerIpc(): void {
  * bug that only shows up on a second monitor.
  */
 function broadcastSettings(next: Settings): void {
+  const agent: AgentAccessState = {
+    paused: next.agentAccessPaused,
+    endpoint: mcpServer ? { port: mcpServer.info.port, url: mcpServer.info.url } : null
+  }
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.settingsChanged, next)
+    if (win.isDestroyed()) continue
+    win.webContents.send(IPC.settingsChanged, next)
+    // Sent alongside rather than derived in the renderer, so a pause toggled from
+    // anywhere reaches every window without each one re-deriving it.
+    win.webContents.send(IPC.agentAccessChanged, agent)
   }
 }
 
@@ -633,6 +676,31 @@ app.whenReady().then(() => {
     }
   })
 
+  /**
+   * The agent interface. Started after IPC is registered so a tool call cannot
+   * arrive before the handlers exist.
+   *
+   * `startMcpServer` resolves null instead of throwing on an operational
+   * failure, and this is deliberately not awaited into the launch path: a wedged
+   * bind must degrade the agent interface, never prevent the window from
+   * appearing.
+   */
+  void startMcpServer()
+    .then((handle) => {
+      mcpServer = handle
+      if (handle) {
+        // FR-SEC.1: a *listening* loopback socket is not network egress. Nothing
+        // leaves this machine because of it, so a local-only indicator must not
+        // treat this as outbound traffic.
+        console.log(`[mcp] agent endpoint listening on ${handle.info.url} (loopback only, no egress)`)
+      } else {
+        console.error('[mcp] agent endpoint is not available; MCP tool calls cannot reach this app')
+      }
+    })
+    .catch((err: unknown) => {
+      console.error('[mcp] agent endpoint failed to start', err)
+    })
+
   createMainWindow()
 
   // Subscribed synchronously: an update landing before the first read resolved
@@ -660,4 +728,9 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('will-quit', () => globalShortcut.unregisterAll())
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  // Removes userData/mcp.json as well, so a bridge spawned after we exit reports
+  // "Nawi is not running" rather than a bare connection refusal.
+  void mcpServer?.close()
+})

@@ -6,6 +6,13 @@ directories:
 files:
   - out/**
   - package.json
+# The MCP stdio bridge is spawned by an external MCP client using plain `node`,
+# which cannot read inside an asar archive — `node <...>/app.asar/out/mcp/stdio-bridge.js`
+# fails with "Cannot find module". Unpacking it puts a real file on disk at
+# resources/app.asar.unpacked/out/mcp/stdio-bridge.js, which is the path a client
+# must be pointed at. Without this the bridge builds, ships, and cannot be run.
+asarUnpack:
+  - out/mcp/**
 win:
   target:
     - target: nsis

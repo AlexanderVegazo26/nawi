@@ -5,6 +5,7 @@ import { LibraryView } from './components/LibraryView'
 import { EditorView } from './components/EditorView'
 import { Toast } from './components/ui'
 import { ThemeToggle } from './components/ThemeToggle'
+import { AgentAccessToggle } from './components/AgentAccessToggle'
 import { ScreenRecorder, blobToBytes, type RecordingResult } from './lib/recorder'
 
 type View = 'capture' | 'library'
@@ -289,6 +290,7 @@ export function App(): React.JSX.Element {
         ))}
 
         <div className="flex-1" />
+        <AgentAccessToggle />
         <ThemeToggle />
         {recording && (
           <div className="flex flex-col items-center gap-1 text-[10px] text-danger">

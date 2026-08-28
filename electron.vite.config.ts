@@ -7,8 +7,12 @@ export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
     build: {
+      outDir: 'out',
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/main/index.ts') }
+        input: {
+          'main/index': resolve(__dirname, 'src/main/index.ts'),
+          'mcp/stdio-bridge': resolve(__dirname, 'src/mcp/stdio-bridge.ts')
+        }
       }
     },
     resolve: {

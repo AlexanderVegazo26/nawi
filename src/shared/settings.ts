@@ -53,6 +53,16 @@ export interface Settings {
   /** Window/app titles whose pixels are blacked out during capture. */
   maskedApps: string[]
   redactionRules: RedactionRule[]
+  /**
+   * UX-AGT.3 kill switch. `true` means every MCP tool call is rejected with
+   * AGENT_ACCESS_PAUSED until the user resumes.
+   *
+   * Deliberately a *paused* flag rather than an *enabled* one: the safe value is
+   * `false`, which is also what a settings file written before this field existed
+   * degrades to. An `agentAccessEnabled` field would default an old file to
+   * "disabled" and silently break a working agent setup on upgrade.
+   */
+  agentAccessPaused: boolean
 }
 
 /**
@@ -80,7 +90,8 @@ export function defaultSettings(): Settings {
       hideAppDuringCapture: true
     },
     maskedApps: [],
-    redactionRules: []
+    redactionRules: [],
+    agentAccessPaused: false
   }
 }
 
@@ -91,6 +102,7 @@ export type SettingsPatch = {
   captureDefaults?: Partial<Record<string, unknown>>
   maskedApps?: unknown
   redactionRules?: unknown
+  agentAccessPaused?: unknown
 }
 
 const THEMES: readonly ThemePreference[] = ['system', 'dark', 'light']
@@ -240,7 +252,11 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
     redactionRules:
       'redactionRules' in p
         ? sanitizeRedactionRules(p.redactionRules, base.redactionRules)
-        : base.redactionRules
+        : base.redactionRules,
+    // Only an actual boolean moves the switch. A truthy string from a
+    // hand-edited file must not be able to *unpause* agent access.
+    agentAccessPaused:
+      typeof p.agentAccessPaused === 'boolean' ? p.agentAccessPaused : base.agentAccessPaused
   }
 }
 

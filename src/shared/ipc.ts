@@ -29,6 +29,12 @@ export const IPC = {
   /** main -> renderer broadcast, fired after a settings write lands on disk. */
   settingsChanged: 'settings:changed',
 
+  /** UX-AGT.3 kill switch, plus the loopback endpoint the rail displays. */
+  getAgentAccess: 'agent:get-access',
+  setAgentAccess: 'agent:set-access',
+  /** main -> renderer broadcast, so a pause made elsewhere is reflected everywhere. */
+  agentAccessChanged: 'agent:access-changed',
+
   shortcut: 'app:shortcut'
 } as const
 

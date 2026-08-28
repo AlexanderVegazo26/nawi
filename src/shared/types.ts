@@ -185,6 +185,24 @@ export interface AnnotationDoc {
 }
 
 /* ------------------------------------------------------------------ *
+ * Agent access (UX-AGT.3)
+ * ------------------------------------------------------------------ */
+
+/**
+ * What the renderer needs to show the kill switch honestly.
+ *
+ * `endpoint` is null when the MCP server failed to start � which is a different
+ * state from "paused", and the UI must not conflate them: an agent cannot reach
+ * a server that is not listening either, but resuming will not fix it.
+ */
+export interface AgentAccessState {
+  /** True when every MCP tool call is being rejected with AGENT_ACCESS_PAUSED. */
+  paused: boolean
+  /** Loopback endpoint, or null when the server is not listening. */
+  endpoint: { port: number; url: string } | null
+}
+
+/* ------------------------------------------------------------------ *
  * IPC payloads
  * ------------------------------------------------------------------ */
 
@@ -254,6 +272,13 @@ export interface NawiApi {
   updateSettings(patch: SettingsPatch): Promise<IpcResult<Settings>>
   /** Fires after a settings write lands on disk. Returns an unsubscribe function. */
   onSettingsChanged(cb: (settings: Settings) => void): () => void
+
+  /* agent access (UX-AGT.3) */
+  getAgentAccess(): Promise<IpcResult<AgentAccessState>>
+  /** Pauses or resumes MCP tool calls. Takes effect on the agent's next call. */
+  setAgentAccessPaused(paused: boolean): Promise<IpcResult<AgentAccessState>>
+  /** Fires when the pause state changes, including from another window. */
+  onAgentAccessChanged(cb: (state: AgentAccessState) => void): () => void
 
   /* app */
   onShortcut(cb: (action: string) => void): () => void
