@@ -261,9 +261,9 @@ export function App(): React.JSX.Element {
     <div className="flex h-full">
       <nav
         aria-label="Main"
-        className="flex w-[76px] shrink-0 flex-col items-center gap-1.5 border-r border-ink-700 bg-ink-850 py-4"
+        className="flex w-[76px] shrink-0 flex-col items-center gap-1.5 border-r border-border bg-surface-1 py-4"
       >
-        <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-brand-500 text-white">
+        <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-accent-fg">
           <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3" />
           </svg>
@@ -274,10 +274,10 @@ export function App(): React.JSX.Element {
             key={r.id}
             onClick={() => setView(r.id)}
             aria-current={view === r.id ? 'page' : undefined}
-            className={`flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-xl text-[11px] transition-colors ${
+            className={`flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-xl text-[11px] transition-colors motion-tool ${
               view === r.id
-                ? 'bg-ink-700 text-mist-100'
-                : 'text-mist-400 hover:bg-ink-800 hover:text-mist-100'
+                ? 'bg-surface-3 text-text-primary'
+                : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
             }`}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -289,8 +289,8 @@ export function App(): React.JSX.Element {
 
         <div className="flex-1" />
         {recording && (
-          <div className="flex flex-col items-center gap-1 text-[10px] text-red-300">
-            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
+          <div className="flex flex-col items-center gap-1 text-[10px] text-danger">
+            <span className="h-2.5 w-2.5 motion-pulse animate-pulse rounded-full bg-danger" />
             REC
           </div>
         )}

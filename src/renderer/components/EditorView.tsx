@@ -519,18 +519,18 @@ export function EditorView({
 
   /* ---------------- render ---------------- */
   return (
-    <div className="flex h-full flex-col bg-ink-900">
+    <div className="flex h-full flex-col bg-surface-0">
       {/* header */}
-      <header className="flex shrink-0 items-center gap-2 border-b border-ink-700 bg-ink-850 px-3 py-2">
+      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-1 px-3 py-2">
         <Button variant="subtle" onClick={requestClose} title="Close (Ctrl+W)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M19 12H5M12 19l-7-7 7-7" />
           </svg>
           Library
         </Button>
-        <div className="mx-2 h-5 w-px bg-ink-600" />
-        <h1 className="truncate text-sm font-semibold text-mist-100">{item.name}</h1>
-        {dirty && <span className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">Unsaved</span>}
+        <div className="mx-2 h-5 w-px bg-surface-3" />
+        <h1 className="truncate text-sm font-semibold text-text-primary">{item.name}</h1>
+        {dirty && <span className="rounded bg-warning-surface px-2 py-0.5 text-xs text-warning">Unsaved</span>}
         <div className="flex-1" />
         <Button onClick={undo} disabled={history.length === 0} title="Undo (Ctrl+Z)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -542,7 +542,7 @@ export function EditorView({
             <path d="M21 7v6h-6M21 13a9 9 0 1 1-3-7.7L21 8" />
           </svg>
         </Button>
-        <div className="mx-1 h-5 w-px bg-ink-600" />
+        <div className="mx-1 h-5 w-px bg-surface-3" />
         <Button onClick={() => void copy()} disabled={isVideo} title="Copy (Ctrl+C)">
           Copy
         </Button>
@@ -559,7 +559,7 @@ export function EditorView({
         {!isVideo && (
           <nav
             aria-label="Annotation tools"
-            className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-ink-700 bg-ink-850 py-2"
+            className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-border bg-surface-1 py-2"
           >
             {TOOLS.map((t) => (
               <button
@@ -568,10 +568,10 @@ export function EditorView({
                 title={`${t.label} (${t.key})`}
                 aria-label={t.label}
                 aria-pressed={tool === t.id}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors motion-tool ${
                   tool === t.id
-                    ? 'bg-brand-500 text-white'
-                    : 'text-mist-400 hover:bg-ink-700 hover:text-mist-100'
+                    ? 'bg-accent text-accent-fg'
+                    : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary'
                 }`}
               >
                 <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -583,7 +583,7 @@ export function EditorView({
         )}
 
         {/* canvas */}
-        <main className="relative min-w-0 flex-1 overflow-auto bg-ink-950 p-8" ref={wrapRef}>
+        <main className="relative min-w-0 flex-1 overflow-auto bg-surface-0 p-8" ref={wrapRef}>
           {loading && (
             <div className="flex h-full items-center justify-center">
               <Spinner label="Loading capture…" />
@@ -593,8 +593,8 @@ export function EditorView({
           {loadError && (
             <div className="flex h-full items-center justify-center text-center">
               <div>
-                <p className="text-base font-semibold text-mist-100">{loadError}</p>
-                <p className="mt-2 text-sm text-mist-400">
+                <p className="text-base font-semibold text-text-primary">{loadError}</p>
+                <p className="mt-2 text-sm text-text-secondary">
                   The file may have been moved or deleted outside the app.
                 </p>
               </div>
@@ -606,7 +606,7 @@ export function EditorView({
               <video
                 src={`capture://asset/${item.id}`}
                 controls
-                className="max-h-full max-w-full rounded-lg ring-1 ring-ink-700"
+                className="max-h-full max-w-full rounded-lg ring-1 ring-border-strong"
               />
             </div>
           )}
@@ -626,7 +626,7 @@ export function EditorView({
                     height: displaySize.height * zoom,
                     cursor: tool === 'select' ? 'default' : 'crosshair'
                   }}
-                  className="rounded-lg bg-ink-900 shadow-2xl ring-1 ring-ink-700"
+                  className="rounded-lg bg-surface-0 shadow-2xl ring-1 ring-border-strong"
                 />
                 {textDraft && (
                   <textarea
@@ -650,7 +650,7 @@ export function EditorView({
                       color,
                       fontSize: Math.max(16, stroke * 6) * zoom
                     }}
-                    className="absolute min-w-[8ch] resize-none rounded border border-brand-400 bg-ink-950/80 px-1 font-semibold outline-none"
+                    className="absolute min-w-[8ch] resize-none rounded border border-accent-hover bg-scrim/80 px-1 font-semibold outline-none"
                     rows={1}
                     placeholder="Type…"
                   />
@@ -663,7 +663,7 @@ export function EditorView({
 
       {/* properties bar */}
       {!isVideo && (
-        <footer className="flex shrink-0 items-center gap-4 border-t border-ink-700 bg-ink-850 px-4 py-2">
+        <footer className="flex shrink-0 items-center gap-4 border-t border-border bg-surface-1 px-4 py-2">
           <div className="flex items-center gap-1.5" role="group" aria-label="Color">
             {SWATCHES.map((c, i) => (
               <button
@@ -673,7 +673,7 @@ export function EditorView({
                 aria-pressed={color === c}
                 title={`Color ${i + 1}`}
                 className={`flex h-8 w-8 items-center justify-center rounded-full ${
-                  color === c ? 'ring-2 ring-brand-400 ring-offset-2 ring-offset-ink-850' : ''
+                  color === c ? 'ring-2 ring-accent-hover ring-offset-2 ring-offset-surface-1' : ''
                 }`}
               >
                 <span
@@ -684,9 +684,9 @@ export function EditorView({
             ))}
           </div>
 
-          <div className="h-5 w-px bg-ink-600" />
+          <div className="h-5 w-px bg-surface-3" />
 
-          <label className="flex items-center gap-2 text-xs text-mist-400">
+          <label className="flex items-center gap-2 text-xs text-text-secondary">
             Stroke
             <input
               type="range"
@@ -694,15 +694,15 @@ export function EditorView({
               max={40}
               value={stroke}
               onChange={(e) => setStroke(Number(e.target.value))}
-              className="w-28 accent-[var(--color-brand-500)]"
+              className="w-28 accent-[var(--color-accent)]"
               aria-label="Stroke width"
             />
-            <span className="w-6 font-mono text-mist-100">{stroke}</span>
+            <span className="w-6 font-mono text-text-primary">{stroke}</span>
           </label>
 
           {doc.crop && (
             <>
-              <div className="h-5 w-px bg-ink-600" />
+              <div className="h-5 w-px bg-surface-3" />
               <Button variant="subtle" onClick={() => commit({ ...doc, crop: null })}>
                 Reset crop
               </Button>
@@ -711,10 +711,10 @@ export function EditorView({
 
           <div className="flex-1" />
 
-          <span className="font-mono text-xs text-mist-400">
+          <span className="font-mono text-xs text-text-secondary">
             {Math.round(displaySize.width)} × {Math.round(displaySize.height)}
           </span>
-          <div className="h-5 w-px bg-ink-600" />
+          <div className="h-5 w-px bg-surface-3" />
           <div className="flex items-center gap-1">
             <Button variant="subtle" onClick={() => setZoom((z) => Math.max(0.1, z / 1.2))} title="Zoom out (Ctrl+-)">
               −
@@ -722,7 +722,7 @@ export function EditorView({
             <button
               onClick={() => setZoom(1)}
               title="Reset zoom (Ctrl+0)"
-              className="min-w-14 rounded px-2 py-1 font-mono text-xs text-mist-300 hover:bg-ink-700"
+              className="min-w-14 rounded px-2 py-1 font-mono text-xs text-text-secondary hover:bg-surface-3"
             >
               {Math.round(zoom * 100)}%
             </button>
@@ -748,7 +748,7 @@ export function EditorView({
             </>
           }
         >
-          Your annotations on <strong className="text-mist-100">{item.name}</strong> haven&apos;t been
+          Your annotations on <strong className="text-text-primary">{item.name}</strong> haven&apos;t been
           saved. Discarding closes the editor and loses them.
         </Modal>
       )}

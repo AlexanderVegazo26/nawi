@@ -107,10 +107,10 @@ export function LibraryView({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-ink-700 px-6 py-4">
+      <header className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-4">
         <div>
-          <h1 className="text-xl font-semibold text-mist-100">Library</h1>
-          <p className="text-xs text-mist-400">
+          <h1 className="text-xl font-semibold text-text-primary">Library</h1>
+          <p className="text-xs text-text-secondary">
             {items.length} {items.length === 1 ? 'capture' : 'captures'}
           </p>
         </div>
@@ -123,7 +123,7 @@ export function LibraryView({
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-mist-400"
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary"
           >
             <circle cx="11" cy="11" r="7" />
             <path d="m20 20-3.5-3.5" />
@@ -134,7 +134,7 @@ export function LibraryView({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search captures (Ctrl+F)"
             aria-label="Search captures"
-            className="h-9 w-64 rounded-lg bg-ink-800 pl-9 pr-3 text-sm text-mist-100 placeholder:text-mist-400 ring-1 ring-ink-600 focus:ring-brand-500 outline-none"
+            className="h-9 w-64 rounded-lg bg-surface-2 pl-9 pr-3 text-sm text-text-primary placeholder:text-text-secondary ring-1 ring-border-strong focus:ring-accent outline-none"
           />
         </div>
         <Button variant="primary" onClick={onNewCapture}>
@@ -184,10 +184,10 @@ export function LibraryView({
                     role="button" is invalid ARIA and garbles the accessible name.
                     The preview is the real control and the card's tab stop. */}
                 <div
-                  className={`surface group flex flex-col overflow-hidden rounded-xl transition-all ${
+                  className={`surface group flex flex-col overflow-hidden rounded-xl transition-all motion-panel ${
                     selected === item.id
-                      ? 'border-brand-500 ring-2 ring-brand-500/40'
-                      : 'hover:border-ink-500'
+                      ? 'border-accent ring-2 ring-accent/40'
+                      : 'hover:border-accent'
                   }`}
                 >
                   <button
@@ -205,9 +205,9 @@ export function LibraryView({
                     }}
                     className="flex cursor-pointer flex-col text-left"
                   >
-                  <div className="relative aspect-video bg-ink-950">
+                  <div className="relative aspect-video bg-surface-0">
                     {item.kind === 'video' ? (
-                      <div className="flex h-full items-center justify-center text-mist-400">
+                      <div className="flex h-full items-center justify-center text-text-secondary">
                         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
                           <circle cx="12" cy="12" r="9" />
                           <path d="m10 8 6 4-6 4V8Z" fill="currentColor" />
@@ -221,7 +221,7 @@ export function LibraryView({
                         className="h-full w-full object-contain"
                       />
                     )}
-                    <span className="absolute right-2 top-2 rounded bg-ink-950/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-mist-300">
+                    <span className="absolute right-2 top-2 rounded bg-scrim/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-secondary">
                       {item.kind === 'video'
                         ? item.durationMs
                           ? formatDuration(item.durationMs)
@@ -231,16 +231,16 @@ export function LibraryView({
                   </div>
 
                   <div className="flex min-w-0 flex-col gap-0.5 px-3 py-2.5">
-                    <p className="truncate text-sm font-medium text-mist-100" title={item.name}>
+                    <p className="truncate text-sm font-medium text-text-primary" title={item.name}>
                       {item.name}
                     </p>
-                    <p className="font-mono text-[11px] text-mist-400">
+                    <p className="font-mono text-[11px] text-text-secondary">
                       {item.width}×{item.height} · {formatBytes(item.size)} · {formatWhen(item.createdAt)}
                     </p>
                   </div>
                   </button>
 
-                  <div className="flex items-center gap-1 border-t border-ink-700 px-2 py-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                  <div className="flex items-center gap-1 border-t border-border px-2 py-1.5 opacity-0 transition-opacity motion-tool group-hover:opacity-100 focus-within:opacity-100">
                     <Button variant="subtle" onClick={() => onOpen(item)} title="Open in editor">
                       Open
                     </Button>
@@ -262,7 +262,7 @@ export function LibraryView({
                       variant="subtle"
                       onClick={() => setConfirmDelete(item)}
                       title="Delete"
-                      className="text-red-300 hover:bg-red-950/60 hover:text-red-200"
+                      className="text-danger hover:bg-danger-surface"
                     >
                       Delete
                     </Button>
@@ -296,7 +296,7 @@ export function LibraryView({
             </>
           }
         >
-          <strong className="text-mist-100">{confirmDelete.name}</strong> will be permanently removed
+          <strong className="text-text-primary">{confirmDelete.name}</strong> will be permanently removed
           from your library and deleted from disk. This can&apos;t be undone.
         </Modal>
       )}
@@ -335,7 +335,7 @@ export function LibraryView({
               }
             }}
             aria-label="Capture name"
-            className="h-10 w-full rounded-lg bg-ink-800 px-3 text-sm text-mist-100 ring-1 ring-ink-600 focus:ring-brand-500 outline-none"
+            className="h-10 w-full rounded-lg bg-surface-2 px-3 text-sm text-text-primary ring-1 ring-border-strong focus:ring-accent outline-none"
           />
         </Modal>
       )}

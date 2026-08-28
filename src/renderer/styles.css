@@ -1,19 +1,154 @@
 @import 'tailwindcss';
 
+/*
+ * SEMANTIC TOKEN LAYER — PRD-002 UX-VIS.3 (dark + light, following the OS).
+ *
+ * Two layers on purpose:
+ *   1. `--sf-*` raw values, swapped at runtime per theme (below).
+ *   2. `@theme` semantic names pointing at those raws, so Tailwind compiles
+ *      `bg-surface-1` to `var(--color-surface-1)` once and the *value* follows
+ *      the active theme. Never define a colour only inside a media query.
+ *
+ * Theme resolution order:
+ *   :root                                    -> light (the unconditional base)
+ *   @media (prefers-color-scheme: dark)      -> dark, unless explicitly light
+ *   :root[data-theme="dark"|"light"]         -> explicit choice wins both ways
+ *
+ * >>> SETTINGS SEAM <<<
+ * Nothing here reads persisted settings. The settings layer attaches by
+ * stamping `document.documentElement.dataset.theme = 'dark' | 'light'` (and
+ * deleting the attribute to fall back to the OS). No other wiring is needed.
+ */
+
 @theme {
-  --color-ink-950: #07090d;
-  --color-ink-900: #0a0c10;
-  --color-ink-850: #0f1218;
-  --color-ink-800: #141821;
-  --color-ink-700: #1c2130;
-  --color-ink-600: #2a3040;
-  --color-ink-500: #3d465c;
-  --color-mist-400: #8a95ab;
-  --color-mist-300: #aab3c5;
-  --color-mist-100: #e6eaf2;
-  --color-brand-500: #4c8dff;
-  --color-brand-400: #6ba3ff;
-  --color-brand-600: #2f6fe0;
+  --color-surface-0: var(--sf-surface-0);
+  --color-surface-1: var(--sf-surface-1);
+  --color-surface-2: var(--sf-surface-2);
+  --color-surface-3: var(--sf-surface-3);
+  --color-border: var(--sf-border);
+  /* Control outlines that are the *only* thing identifying a control's bounds
+     need 3:1 (WCAG 1.4.11); --color-border stays for decorative dividers. */
+  --color-border-strong: var(--sf-border-strong);
+  --color-text-primary: var(--sf-text-primary);
+  --color-text-secondary: var(--sf-text-secondary);
+  --color-accent: var(--sf-accent);
+  --color-accent-hover: var(--sf-accent-hover);
+  --color-accent-active: var(--sf-accent-active);
+  /* Foreground for text/icons sitting ON an accent fill. */
+  --color-accent-fg: var(--sf-accent-fg);
+  --color-danger: var(--sf-danger);
+  --color-danger-hover: var(--sf-danger-hover);
+  --color-danger-fill: var(--sf-danger-fill);
+  --color-danger-surface: var(--sf-danger-surface);
+  --color-success: var(--sf-success);
+  --color-warning: var(--sf-warning);
+  --color-warning-surface: var(--sf-warning-surface);
+  /* Scrims stay dark in BOTH themes: they sit over the user's own screenshot,
+     so they are not a surface. UX-VIS.1 wants a neutral black dim. */
+  --color-scrim: var(--sf-scrim);
+}
+
+/* --- Light ramp: the unconditional base. ------------------------------- */
+:root {
+  --sf-surface-0: #ffffff;
+  --sf-surface-1: #f6f7f9;
+  --sf-surface-2: #edeff3;
+  --sf-surface-3: #e1e5ec;
+  --sf-border: #c7cdd8;
+  --sf-border-strong: #767e8c;
+  --sf-text-primary: #14161a;
+  --sf-text-secondary: #535c6b;
+  --sf-accent: #1160d8;
+  --sf-accent-hover: #0b4eb4;
+  --sf-accent-active: #093c8c;
+  --sf-accent-fg: #ffffff;
+  --sf-danger: #b02525;
+  --sf-danger-fill: #b02525;
+  --sf-danger-hover: #8e1b1b;
+  --sf-danger-surface: #fdeaea;
+  --sf-success: #12703a;
+  --sf-warning: #8a5a00;
+  --sf-warning-surface: #fdf3dc;
+  --sf-scrim: #000000;
+
+  /* PRD-002 UX-VIS.2 motion budget. Nothing in the capture path exceeds 200ms. */
+  --motion-overlay: 120ms;
+  --motion-tool: 80ms;
+  --motion-panel: 200ms;
+  --motion-toast: 150ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+/* --- Dark ramp (UX-SPEC §1.5), applied twice so both directions win. ---- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --sf-surface-0: #101114;
+    --sf-surface-1: #17191e;
+    --sf-surface-2: #20232a;
+    --sf-surface-3: #2b2f38;
+    --sf-border: #363b45;
+    --sf-border-strong: #6e7788;
+    --sf-text-primary: #edeff3;
+    --sf-text-secondary: #a2a9b6;
+    --sf-accent: #5a97ff;
+    --sf-accent-hover: #6ba3ff;
+    --sf-accent-active: #2f6fe0;
+    --sf-accent-fg: #0a1220;
+    --sf-danger: #ff7a7a;
+    --sf-danger-fill: #d93a3a;
+    --sf-danger-hover: #c22f2f;
+    --sf-danger-surface: #2a1416;
+    --sf-success: #3fd07e;
+    --sf-warning: #f5b94a;
+    --sf-warning-surface: #3a2a0a;
+    --sf-scrim: #000000;
+  }
+}
+
+:root[data-theme='dark'] {
+  --sf-surface-0: #101114;
+  --sf-surface-1: #17191e;
+  --sf-surface-2: #20232a;
+  --sf-surface-3: #2b2f38;
+  --sf-border: #363b45;
+  --sf-border-strong: #6e7788;
+  --sf-text-primary: #edeff3;
+  --sf-text-secondary: #a2a9b6;
+  --sf-accent: #5a97ff;
+  --sf-accent-hover: #6ba3ff;
+  --sf-accent-active: #2f6fe0;
+  --sf-accent-fg: #0a1220;
+  --sf-danger: #ff7a7a;
+  --sf-danger-fill: #d93a3a;
+  --sf-danger-hover: #c22f2f;
+  --sf-danger-surface: #2a1416;
+  --sf-success: #3fd07e;
+  --sf-warning: #f5b94a;
+  --sf-warning-surface: #3a2a0a;
+  --sf-scrim: #000000;
+}
+
+:root[data-theme='light'] {
+  --sf-surface-0: #ffffff;
+  --sf-surface-1: #f6f7f9;
+  --sf-surface-2: #edeff3;
+  --sf-surface-3: #e1e5ec;
+  --sf-border: #c7cdd8;
+  --sf-border-strong: #767e8c;
+  --sf-text-primary: #14161a;
+  --sf-text-secondary: #535c6b;
+  --sf-accent: #1160d8;
+  --sf-accent-hover: #0b4eb4;
+  --sf-accent-active: #093c8c;
+  --sf-accent-fg: #ffffff;
+  --sf-danger: #b02525;
+  --sf-danger-fill: #b02525;
+  --sf-danger-hover: #8e1b1b;
+  --sf-danger-surface: #fdeaea;
+  --sf-success: #12703a;
+  --sf-warning: #8a5a00;
+  --sf-warning-surface: #fdf3dc;
+  --sf-scrim: #000000;
 }
 
 @layer base {
@@ -23,10 +158,21 @@
     height: 100%;
   }
 
+  html {
+    /* Lets the UA paint form controls/scrollbars for the active theme. */
+    color-scheme: light dark;
+  }
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+  }
+  :root[data-theme='light'] {
+    color-scheme: light;
+  }
+
   body {
     margin: 0;
-    background-color: var(--color-ink-900);
-    color: var(--color-mist-100);
+    background-color: var(--color-surface-0);
+    color: var(--color-text-primary);
     font-family:
       'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
     font-size: 14px;
@@ -36,7 +182,7 @@
 
   /* Keep focus visible everywhere — this app is meant to be fully keyboard-driven. */
   :focus-visible {
-    outline: 2px solid var(--color-brand-400);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
     border-radius: 4px;
   }
@@ -49,18 +195,73 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--color-ink-600);
+    background: var(--color-surface-3);
     border-radius: 999px;
-    border: 2px solid var(--color-ink-900);
+    border: 2px solid var(--color-surface-0);
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--color-ink-500);
+    background: var(--color-border-strong);
   }
 }
 
 @layer utilities {
   .surface {
-    background-color: var(--color-ink-850);
-    border: 1px solid var(--color-ink-700);
+    background-color: var(--color-surface-1);
+    border: 1px solid var(--color-border);
+  }
+
+  /* UX-VIS.2 motion budget, as named durations rather than Tailwind defaults. */
+  .motion-tool {
+    transition-duration: var(--motion-tool);
+    transition-timing-function: var(--motion-ease);
+  }
+  .motion-overlay {
+    transition-duration: var(--motion-overlay);
+    transition-timing-function: var(--motion-ease);
+  }
+  .motion-panel {
+    transition-duration: var(--motion-panel);
+    transition-timing-function: var(--motion-ease);
+  }
+  .motion-toast {
+    animation-duration: var(--motion-toast);
+    transition-duration: var(--motion-toast);
+    transition-timing-function: var(--motion-ease);
+  }
+}
+
+/*
+ * UX-A11Y.7 — reduced motion. Each animated indicator gets a *static, visible*
+ * replacement rather than simply having its animation removed: `animate-ping`
+ * and `animate-pulse` both end at opacity 0, so killing the animation alone
+ * would make the recording indicator disappear.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Recording "ping" halo -> a solid static ring at full opacity. */
+  .motion-ping {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  /* Pulsing recording dot -> stays solid. */
+  .motion-pulse {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+
+  /* Busy spinner -> static ring; the adjacent role="status" label carries the
+     meaning, and the partial border still reads as an indeterminate control. */
+  .motion-spin {
+    animation: none !important;
   }
 }

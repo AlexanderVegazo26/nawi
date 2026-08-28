@@ -128,16 +128,16 @@ export function CaptureView({
     return (
       <div className="flex h-full flex-col items-center justify-center gap-6">
         <div className="relative flex h-24 w-24 items-center justify-center">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500/20" />
-          <span className="relative inline-flex h-16 w-16 items-center justify-center rounded-full bg-red-600">
+          <span className="absolute inline-flex h-full w-full motion-ping animate-ping rounded-full bg-danger/20" />
+          <span className="relative inline-flex h-16 w-16 items-center justify-center rounded-full bg-danger-fill">
             <span className="h-6 w-6 rounded-sm bg-white" />
           </span>
         </div>
         <div className="text-center">
-          <p className="font-mono text-3xl font-semibold tabular-nums text-mist-100">
+          <p className="font-mono text-3xl font-semibold tabular-nums text-text-primary">
             {formatDuration(recording.elapsedMs)}
           </p>
-          <p className="mt-1 text-sm text-mist-400">Recording in progress</p>
+          <p className="mt-1 text-sm text-text-secondary">Recording in progress</p>
         </div>
         <Button
           variant="danger"
@@ -153,8 +153,8 @@ export function CaptureView({
   return (
     <div className="h-full overflow-auto p-8">
       <div className="mx-auto max-w-4xl">
-        <h1 className="text-2xl font-semibold text-mist-100">New capture</h1>
-        <p className="mt-1.5 text-sm text-mist-400">
+        <h1 className="text-2xl font-semibold text-text-primary">New capture</h1>
+        <p className="mt-1.5 text-sm text-text-secondary">
           Grab a still or record your screen. Everything lands in your library.
         </p>
 
@@ -164,11 +164,11 @@ export function CaptureView({
               key={c.id}
               onClick={c.action}
               disabled={busy !== null}
-              className="surface group flex items-start gap-4 rounded-xl p-5 text-left transition-colors hover:border-brand-500/60 hover:bg-ink-800 disabled:opacity-50"
+              className="surface group flex items-start gap-4 rounded-xl p-5 text-left transition-colors motion-tool hover:border-accent/60 hover:bg-surface-2 disabled:opacity-50"
             >
-              <span className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-ink-800 text-brand-400 ring-1 ring-ink-600 group-hover:bg-brand-500/15">
+              <span className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-accent-hover ring-1 ring-border-strong group-hover:bg-accent/15">
                 {busy === c.id ? (
-                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-ink-600 border-t-brand-400" />
+                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-accent-hover" />
                 ) : (
                   <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                     {c.icon}
@@ -177,12 +177,12 @@ export function CaptureView({
               </span>
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-2">
-                  <span className="font-semibold text-mist-100">{c.title}</span>
-                  <kbd className="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[11px] text-mist-400 ring-1 ring-ink-600">
+                  <span className="font-semibold text-text-primary">{c.title}</span>
+                  <kbd className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary ring-1 ring-border-strong">
                     {c.hint}
                   </kbd>
                 </span>
-                <span className="mt-1 block text-sm leading-relaxed text-mist-400">{c.body}</span>
+                <span className="mt-1 block text-sm leading-relaxed text-text-secondary">{c.body}</span>
               </span>
             </button>
           ))}
@@ -190,15 +190,15 @@ export function CaptureView({
       </div>
 
       {picker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/75 p-8">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/75 p-8">
           <div
             role="dialog"
             aria-modal="true"
             aria-label={picker === 'window' ? 'Choose a window' : 'Choose what to record'}
             className="surface flex max-h-[80vh] w-full max-w-3xl flex-col rounded-2xl shadow-2xl"
           >
-            <div className="flex items-center justify-between border-b border-ink-700 px-5 py-3.5">
-              <h2 className="text-base font-semibold text-mist-100">
+            <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
+              <h2 className="text-base font-semibold text-text-primary">
                 {picker === 'window' ? 'Choose a window' : 'Choose what to record'}
               </h2>
               <Button variant="subtle" onClick={() => setPicker(null)}>
@@ -220,7 +220,7 @@ export function CaptureView({
                 />
               )}
               {sources?.length === 0 && (
-                <p className="py-16 text-center text-sm text-mist-400">
+                <p className="py-16 text-center text-sm text-text-secondary">
                   No capturable {picker === 'window' ? 'windows' : 'sources'} were found.
                 </p>
               )}
@@ -232,16 +232,16 @@ export function CaptureView({
                         onClick={() =>
                           picker === 'window' ? void doWindow(s.id) : void startRecording(s.id)
                         }
-                        className="group w-full overflow-hidden rounded-lg bg-ink-800 text-left ring-1 ring-ink-600 transition-colors hover:ring-brand-500"
+                        className="group w-full overflow-hidden rounded-lg bg-surface-2 text-left ring-1 ring-border-strong transition-colors motion-tool hover:ring-accent"
                       >
                         <img
                           src={s.thumbnail}
                           alt=""
-                          className="aspect-video w-full bg-ink-900 object-cover"
+                          className="aspect-video w-full bg-surface-0 object-cover"
                         />
                         <span className="flex items-center gap-2 px-3 py-2">
                           {s.appIcon && <img src={s.appIcon} alt="" className="h-4 w-4 shrink-0" />}
-                          <span className="truncate text-xs text-mist-300 group-hover:text-mist-100">
+                          <span className="truncate text-xs text-text-secondary group-hover:text-text-primary">
                             {s.name}
                           </span>
                         </span>
@@ -253,13 +253,13 @@ export function CaptureView({
             </div>
 
             {picker === 'record' && (
-              <div className="border-t border-ink-700 px-5 py-3">
-                <label className="flex items-center gap-2.5 text-sm text-mist-300">
+              <div className="border-t border-border px-5 py-3">
+                <label className="flex items-center gap-2.5 text-sm text-text-secondary">
                   <input
                     type="checkbox"
                     checked={withAudio}
                     onChange={(e) => setWithAudio(e.target.checked)}
-                    className="h-4 w-4 accent-[var(--color-brand-500)]"
+                    className="h-4 w-4 accent-[var(--color-accent)]"
                   />
                   Record system audio when available
                 </label>

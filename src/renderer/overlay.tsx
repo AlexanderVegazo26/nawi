@@ -136,12 +136,12 @@ function Overlay(): React.JSX.Element {
 
   if (error) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-ink-950">
+      <div className="flex h-full w-full items-center justify-center bg-surface-0">
         <div className="surface max-w-md rounded-xl px-6 py-5 text-center">
-          <p className="text-base font-semibold text-mist-100">Couldn&apos;t start region capture</p>
-          <p className="mt-2 text-sm text-mist-400">{error}</p>
+          <p className="text-base font-semibold text-text-primary">Couldn&apos;t start region capture</p>
+          <p className="mt-2 text-sm text-text-secondary">{error}</p>
           <button
-            className="mt-4 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-400"
+            className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:bg-accent-hover"
             onClick={() => window.api.cancelRegion()}
           >
             Close (Esc)
@@ -153,7 +153,7 @@ function Overlay(): React.JSX.Element {
 
   return (
     <div
-      className="relative h-full w-full cursor-crosshair select-none overflow-hidden bg-ink-950"
+      className="relative h-full w-full cursor-crosshair select-none overflow-hidden bg-surface-0"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -181,7 +181,7 @@ function Overlay(): React.JSX.Element {
             )}
           </mask>
         </defs>
-        <rect width="100%" height="100%" fill="rgba(6,8,12,0.55)" mask="url(#cutout)" />
+        <rect width="100%" height="100%" fill="rgba(0,0,0,0.45)" mask="url(#cutout)" />
         {rect && rect.width > 0 && (
           <rect
             x={rect.x}
@@ -189,7 +189,7 @@ function Overlay(): React.JSX.Element {
             width={rect.width}
             height={rect.height}
             fill="none"
-            stroke="#6ba3ff"
+            stroke="var(--color-accent)"
             strokeWidth={1.5}
           />
         )}
@@ -198,14 +198,14 @@ function Overlay(): React.JSX.Element {
       {/* Crosshair guides before the first drag. */}
       {!rect && (
         <svg className="pointer-events-none absolute inset-0 h-full w-full">
-          <line x1={cursor.x} y1={0} x2={cursor.x} y2="100%" stroke="rgba(107,163,255,0.5)" strokeWidth={1} />
-          <line x1={0} y1={cursor.y} x2="100%" y2={cursor.y} stroke="rgba(107,163,255,0.5)" strokeWidth={1} />
+          <line x1={cursor.x} y1={0} x2={cursor.x} y2="100%" stroke="var(--color-accent)" strokeOpacity={0.5} strokeWidth={1} />
+          <line x1={0} y1={cursor.y} x2="100%" y2={cursor.y} stroke="var(--color-accent)" strokeOpacity={0.5} strokeWidth={1} />
         </svg>
       )}
 
       {rect && rect.width > 0 && (
         <div
-          className="pointer-events-none absolute rounded-md bg-ink-950/90 px-2 py-1 font-mono text-xs text-mist-100 ring-1 ring-ink-600"
+          className="pointer-events-none absolute rounded-md bg-scrim/90 px-2 py-1 font-mono text-xs text-text-primary ring-1 ring-border-strong"
           style={{
             left: rect.x,
             // Sit above the selection unless it would clip off the top edge.
@@ -218,10 +218,10 @@ function Overlay(): React.JSX.Element {
       )}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-10 flex justify-center">
-        <div className="surface rounded-full px-5 py-2.5 text-sm text-mist-300 shadow-2xl">
-          Drag to select · <kbd className="text-mist-100">Arrows</kbd> resize ·{' '}
-          <kbd className="text-mist-100">Enter</kbd> confirm ·{' '}
-          <kbd className="text-mist-100">Esc</kbd> cancel
+        <div className="surface rounded-full px-5 py-2.5 text-sm text-text-secondary shadow-2xl">
+          Drag to select · <kbd className="text-text-primary">Arrows</kbd> resize ·{' '}
+          <kbd className="text-text-primary">Enter</kbd> confirm ·{' '}
+          <kbd className="text-text-primary">Esc</kbd> cancel
         </div>
       </div>
     </div>
