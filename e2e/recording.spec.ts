@@ -1,5 +1,6 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import { promises as fs } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -36,6 +37,87 @@ async function launch(userDataDir: string): Promise<{ app: ElectronApplication; 
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
   return { app, win }
+}
+
+interface VideoProbe {
+  ok: boolean
+  error: string | null
+  duration: number
+  readyState: number
+  seeked: boolean
+}
+
+/**
+ * Loads a stored item as video two ways and reports what each managed.
+ *
+ *  - through a blob URL from `readItemBytes`, which isolates the container
+ *    itself from how it was served, and
+ *  - through `capture://asset/<id>`, which is ARCHITECTURE.md assumption #6 —
+ *    an MP4 over a custom protocol previously failed with media error 4 until
+ *    range requests were avoided, and that assumption has never been retired.
+ *
+ * Having both is what makes a failure diagnosable: blob works and `capture://`
+ * does not means the protocol; neither works means the container, and no
+ * protocol change would help.
+ */
+async function probeVideo(
+  win: Page,
+  itemId: string
+): Promise<{ blob: VideoProbe | null; protocol: VideoProbe | null; error: string | null }> {
+  return win.evaluate(async (id: string) => {
+    async function load(src: string): Promise<VideoProbe> {
+      const video = document.createElement('video')
+      video.preload = 'metadata'
+      video.muted = true
+      const result: VideoProbe = {
+        ok: false,
+        error: null,
+        duration: 0,
+        readyState: 0,
+        seeked: false
+      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('metadata timed out')), 15_000)
+          video.onloadedmetadata = () => {
+            clearTimeout(timer)
+            resolve()
+          }
+          video.onerror = () => {
+            clearTimeout(timer)
+            reject(new Error(`media error ${video.error?.code ?? '?'}`))
+          }
+          video.src = src
+        })
+        result.readyState = video.readyState
+        result.duration = video.duration
+        result.ok = true
+
+        const target = Number.isFinite(video.duration) && video.duration > 0 ? video.duration / 2 : 0.5
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 10_000)
+          video.onseeked = () => {
+            clearTimeout(timer)
+            result.seeked = true
+            resolve()
+          }
+          video.currentTime = target
+        })
+      } catch (err) {
+        result.error = err instanceof Error ? err.message : String(err)
+      }
+      video.src = ''
+      return result
+    }
+
+    const bytes = await window.api.readItemBytes(id)
+    if (!bytes.ok) return { blob: null, protocol: null, error: bytes.error }
+    const url = URL.createObjectURL(new Blob([bytes.value.data], { type: bytes.value.mime }))
+    const blob = await load(url)
+    URL.revokeObjectURL(url)
+    const protocol = await load(`capture://asset/${id}`)
+    return { blob, protocol, error: null }
+  }, itemId)
 }
 
 test.describe('crash recovery', () => {
@@ -88,7 +170,14 @@ test.describe('crash recovery', () => {
     // The kill. Not `app.close()` — nothing gets to flush, finalize, or write a
     // commit marker, which is the whole point.
     const pid = first.app.process().pid!
-    process.kill(pid, 'SIGKILL')
+    if (process.platform === 'win32') {
+      // The whole tree, not just the main process. Killing only the parent
+      // leaves the renderer and GPU children orphaned, which then outlive the
+      // test run and trip Playwright's worker-teardown timeout.
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'])
+    } else {
+      process.kill(pid, 'SIGKILL')
+    }
     await first.app.waitForEvent('close').catch(() => undefined)
 
     // Bytes must already be on disk, written as the chunks arrived.
@@ -133,71 +222,112 @@ test.describe('crash recovery', () => {
        * seek is what a broken range implementation looks like.
        */
       const id = items.value[0].id
-      const probe = await second.win.evaluate(async (itemId: string) => {
-        async function load(src: string): Promise<{
-          ok: boolean
-          error: string | null
-          duration: number
-          readyState: number
-          seeked: boolean
-        }> {
-          const video = document.createElement('video')
-          video.preload = 'metadata'
-          video.muted = true
-          const result = { ok: false, error: null as string | null, duration: 0, readyState: 0, seeked: false }
-          try {
-            await new Promise<void>((resolve, reject) => {
-              const timer = setTimeout(() => reject(new Error('metadata timed out')), 15_000)
-              video.onloadedmetadata = () => {
-                clearTimeout(timer)
-                resolve()
-              }
-              video.onerror = () => {
-                clearTimeout(timer)
-                reject(new Error(`media error ${video.error?.code ?? '?'}`))
-              }
-              video.src = src
-            })
-            result.readyState = video.readyState
-            result.duration = video.duration
-            result.ok = true
-
-            const target = Number.isFinite(video.duration) && video.duration > 0 ? video.duration / 2 : 0.5
-            await new Promise<void>((resolve) => {
-              const timer = setTimeout(resolve, 10_000)
-              video.onseeked = () => {
-                clearTimeout(timer)
-                result.seeked = true
-                resolve()
-              }
-              video.currentTime = target
-            })
-          } catch (err) {
-            result.error = err instanceof Error ? err.message : String(err)
-          }
-          video.src = ''
-          return result
-        }
-
-        const bytes = await window.api.readItemBytes(itemId)
-        if (!bytes.ok) return { blob: null, protocol: null, error: bytes.error }
-        const url = URL.createObjectURL(new Blob([bytes.value.data], { type: bytes.value.mime }))
-        const blob = await load(url)
-        URL.revokeObjectURL(url)
-        const protocol = await load(`capture://asset/${itemId}`)
-        return { blob, protocol, error: null }
-      }, id)
+      const probe = await probeVideo(second.win, id)
 
       // The container itself opens and reports a real duration.
       expect(probe.blob?.ok, `blob-URL playback failed: ${probe.blob?.error}`).toBe(true)
       expect(probe.blob?.readyState).toBeGreaterThanOrEqual(1)
       expect(Number.isFinite(probe.blob?.duration ?? NaN) && (probe.blob?.duration ?? 0) > 0).toBe(true)
 
-      // And it plays AND scrubs through the custom protocol — assumption #6.
+      /*
+       * And it plays through the custom protocol.
+       *
+       * Seeking is deliberately NOT asserted here. This file was truncated by a
+       * SIGKILL, so it has no trailing index — whether a given position is
+       * seekable depends on where the kill landed relative to the last fragment,
+       * and the assertion was observed to pass on one run and time out on the
+       * next. That is a property of the truncated artefact, not of the protocol.
+       * The scrub requirement (ARCHITECTURE.md assumption #6) is asserted
+       * against a cleanly finalized recording in the test below, which is the
+       * artefact the requirement is actually about.
+       */
       expect(probe.protocol?.ok, `capture:// playback failed: ${probe.protocol?.error}`).toBe(true)
-      expect(probe.protocol?.seeked, 'capture:// served the file but would not seek').toBe(true)
     }
     await second.app.close()
+  })
+
+  test('a normally stopped recording is MP4, and plays and scrubs over capture://', async () => {
+    test.setTimeout(90_000)
+    const { app, win } = await launch(userDataDir)
+
+    const sources = await win.evaluate(() => window.api.listSources(['screen']))
+    if (!sources.ok || sources.value.length === 0) {
+      await app.close()
+      test.skip(true, 'no screen capture source is available in this environment')
+      return
+    }
+
+    const started = await win.evaluate(
+      (sourceId: string) =>
+        window.api.startRecording({
+          sourceId,
+          tracks: { system: false, mic: false, camera: false },
+          countdown: false
+        }),
+      sources.value[0].id
+    )
+    expect(started.ok).toBe(true)
+
+    await expect
+      .poll(
+        async () => {
+          const s = await win.evaluate(() => window.api.getRecordingStatus())
+          return s.ok ? s.value.phase : 'unknown'
+        },
+        { timeout: 30_000, intervals: [250] }
+      )
+      .toBe('recording')
+
+    // FR-REC.2: pause and resume mid-recording, so the finalized file is one
+    // that actually went through the pause path rather than a straight run.
+    await win.waitForTimeout(2_000)
+    await win.evaluate(() => window.api.sendRecordCommand('pause'))
+    await win.waitForTimeout(1_000)
+    await win.evaluate(() => window.api.sendRecordCommand('resume'))
+    // FR-REC.8: a chapter marker, which must survive into the library item.
+    await win.evaluate(() => window.api.sendRecordCommand('chapter'))
+    await win.waitForTimeout(3_000)
+
+    await win.evaluate(() => window.api.sendRecordCommand('stop'))
+    await expect
+      .poll(
+        async () => {
+          const items = await win.evaluate(() => window.api.listLibrary())
+          return items.ok ? items.value.length : 0
+        },
+        { timeout: 30_000, intervals: [250] }
+      )
+      .toBe(1)
+
+    const items = await win.evaluate(() => window.api.listLibrary())
+    expect(items.ok).toBe(true)
+    if (items.ok) {
+      const item = items.value[0]
+      // FR-REC.4 — this build negotiates MP4, and the stored file says so.
+      expect(item.container).toBe('mp4')
+      expect(item.filePath.endsWith('.mp4')).toBe(true)
+      expect(item.kind).toBe('video')
+      // Not a recovery: the normal stop path committed and adopted the file.
+      expect(item.recovered).toBeUndefined()
+      expect(item.chapters?.length).toBe(1)
+      expect(item.durationMs).toBeGreaterThan(0)
+      // Paused time is excluded, so the duration is the recorded material only.
+      expect(item.durationMs!).toBeLessThan(9_000)
+
+      const probe = await probeVideo(win, item.id)
+      expect(probe.blob?.ok, `blob-URL playback failed: ${probe.blob?.error}`).toBe(true)
+      // ARCHITECTURE.md assumption #6, finally retired: a complete MP4 served
+      // over the custom scheme both plays AND seeks.
+      expect(probe.protocol?.ok, `capture:// playback failed: ${probe.protocol?.error}`).toBe(true)
+      expect(probe.protocol?.seeked, 'capture:// served the file but would not seek').toBe(true)
+      expect(Number.isFinite(probe.protocol?.duration ?? NaN)).toBe(true)
+    }
+
+    // Nothing is left behind for the recovery path once a recording ended cleanly.
+    const recRes = await win.evaluate(() => window.api.listRecoverableRecordings())
+    expect(recRes.ok && recRes.value).toEqual([])
+
+    await app.close()
   })
 
   test('a planted interrupted recording can be recovered, and discarding removes it', async () => {
