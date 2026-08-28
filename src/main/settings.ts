@@ -29,20 +29,45 @@ export function onSettingsChanged(fn: Listener): () => void {
   return () => listeners.delete(fn)
 }
 
+/**
+ * In-flight cold read, shared by every concurrent caller.
+ *
+ * Without this, `getSettings` is a non-atomic read-and-publish: two callers both
+ * see an empty cache, both await `readFile`, and both assign the result. The
+ * later assignment wins even when it holds *older* bytes — so a write that
+ * completed while a read was in flight gets overwritten in the cache, and the
+ * next merge builds on the stale base and silently reverts it. Deduping the read
+ * means the file is parsed once and every caller observes the same object.
+ */
+let pendingRead: Promise<Settings> | null = null
+
 export async function getSettings(): Promise<Settings> {
   if (cache) return cache
+  if (pendingRead) return pendingRead
+
+  pendingRead = (async () => {
+    try {
+      const raw = await fs.readFile(settingsPath(), 'utf-8')
+      // Unknown/absent/malformed fields fall back to defaults field-by-field, so a
+      // hand-edited file loses only what it actually broke.
+      return sanitizeSettings(JSON.parse(raw) as unknown)
+    } catch {
+      // Missing file is the normal first-run case; a corrupt one is recovered the
+      // same way. The bad file is left untouched rather than silently overwritten —
+      // it is the only copy of whatever the user meant to write.
+      return defaultSettings()
+    }
+  })()
+
   try {
-    const raw = await fs.readFile(settingsPath(), 'utf-8')
-    // Unknown/absent/malformed fields fall back to defaults field-by-field, so a
-    // hand-edited file loses only what it actually broke.
-    cache = sanitizeSettings(JSON.parse(raw) as unknown)
-  } catch {
-    // Missing file is the normal first-run case; a corrupt one is recovered the
-    // same way. The bad file is left untouched rather than silently overwritten —
-    // it is the only copy of whatever the user meant to write.
-    cache = defaultSettings()
+    const loaded = await pendingRead
+    // A write that landed while this read was in flight is newer than these bytes,
+    // so it wins. Only publish when nothing else already did.
+    cache ??= loaded
+    return cache
+  } finally {
+    pendingRead = null
   }
-  return cache
 }
 
 /**

@@ -218,3 +218,80 @@ describe('change notification', () => {
     expect(await (await loadModule()).getSettings()).toMatchObject({ theme: 'dark' })
   })
 })
+
+describe('regressions found in M0 review', () => {
+  it('a cold read that resolves after a write does not revert it', async () => {
+    // The read-and-publish in getSettings is not atomic: a caller can enter with
+    // an empty cache, suspend on readFile, and then publish its now-stale bytes
+    // over a write that landed in the meantime. The next merge builds on that
+    // stale base and silently undoes the user's change.
+    const settings = await loadModule()
+
+    const coldRead = settings.getSettings()
+    const written = await settings.updateSettings({ theme: 'light' })
+    await coldRead
+
+    expect(written.theme).toBe('light')
+    // The cache must agree with disk, not with the pre-write bytes.
+    expect((await settings.getSettings()).theme).toBe('light')
+
+    // The real damage showed up on the *next* write, which merged onto the stale base.
+    await settings.updateSettings({ maskedApps: ['1Password'] })
+    const onDisk = JSON.parse(await fs.readFile(settingsFile(), 'utf-8')) as Settings
+    expect(onDisk.theme).toBe('light')
+    expect(onDisk.maskedApps).toEqual(['1Password'])
+  })
+
+  it('concurrent cold reads parse the file once and agree', async () => {
+    await fs.writeFile(settingsFile(), JSON.stringify({ version: 1, theme: 'dark' }), 'utf-8')
+    const settings = await loadModule()
+
+    const [a, b, c] = await Promise.all([
+      settings.getSettings(),
+      settings.getSettings(),
+      settings.getSettings()
+    ])
+    // Same object, not merely equal values — proves the in-flight read was shared.
+    expect(a).toBe(b)
+    expect(b).toBe(c)
+    expect(a.theme).toBe('dark')
+  })
+
+  it('a failed write leaves the queue usable and the cache honest', async () => {
+    const settings = await loadModule()
+    await settings.updateSettings({ theme: 'dark' })
+
+    // Make rename fail exactly once, simulating a transient FS error mid-write.
+    const rename = fs.rename
+    const spy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('EPERM'))
+    await expect(settings.updateSettings({ theme: 'light' })).rejects.toThrow('EPERM')
+    spy.mockRestore()
+    expect(fs.rename).toBe(rename)
+
+    // The queue must not be poisoned by the rejection: the next write still lands.
+    await expect(settings.updateSettings({ theme: 'light' })).resolves.toMatchObject({
+      theme: 'light'
+    })
+    const onDisk = JSON.parse(await fs.readFile(settingsFile(), 'utf-8')) as Settings
+    expect(onDisk.theme).toBe('light')
+    // And the failed write must not have left 'light' cached as though it persisted.
+    expect((await settings.getSettings()).theme).toBe('light')
+  })
+
+  it('rejects a chord already claimed by another action instead of silently unbinding one', async () => {
+    // A global accelerator goes to whoever registers it first; the loser just
+    // fails. Nothing surfaces that, so the user loses a hotkey with no signal.
+    const settings = await loadModule()
+    const region = DEFAULT_HOTKEYS['capture-region']
+
+    const saved = await settings.updateSettings({ hotkeys: { 'record-stop': region } })
+
+    // The action the user just asked for wins the chord...
+    expect(saved.hotkeys['record-stop']).toBe(region)
+    // ...and the displaced one must not still be claiming it.
+    expect(saved.hotkeys['capture-region']).not.toBe(region)
+
+    const chords = Object.values(saved.hotkeys).filter((c) => c !== '')
+    expect(new Set(chords).size).toBe(chords.length)
+  })
+})

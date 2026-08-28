@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AnnotationDoc, LibraryItem, Rect, Shape, ShapeKind } from '@shared/types'
 import { hitTest, normalizeRect, renderDocument } from '../lib/render'
 import { Button, Modal, Spinner } from './ui'
+import { cssVar } from '../lib/theme'
 
 type Tool = ShapeKind | 'select' | 'crop'
 
@@ -158,7 +159,7 @@ export function EditorView({
         const r = normalizeRect(s)
         const off = doc.crop ? normalizeRect(doc.crop) : { x: 0, y: 0 }
         ctx.save()
-        ctx.strokeStyle = '#6ba3ff'
+        ctx.strokeStyle = cssVar('--color-accent', '#5a97ff')
         ctx.lineWidth = 2 / zoom
         ctx.setLineDash([6 / zoom, 4 / zoom])
         const pad = 6
@@ -182,13 +183,15 @@ export function EditorView({
         const cx = r.x - off.x
         const cy = r.y - off.y
         ctx.save()
-        ctx.fillStyle = 'rgba(6,8,12,0.55)'
+        // Neutral black at 45% per PRD-002 UX-VIS.1 — the dim sits over the
+        // user's own image, so it must not tint it toward either theme.
+        ctx.fillStyle = 'rgba(0,0,0,0.45)'
         ctx.fillRect(0, 0, canvas.width, canvas.height)
         ctx.clearRect(cx, cy, r.width, r.height)
         if (imageRef.current) {
           ctx.drawImage(imageRef.current, r.x, r.y, r.width, r.height, cx, cy, r.width, r.height)
         }
-        ctx.strokeStyle = '#6ba3ff'
+        ctx.strokeStyle = cssVar('--color-accent', '#5a97ff')
         ctx.lineWidth = 2 / zoom
         ctx.strokeRect(cx, cy, r.width, r.height)
         ctx.restore()

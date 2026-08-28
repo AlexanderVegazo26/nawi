@@ -319,3 +319,52 @@ test('settings round-trip across the real IPC boundary and broadcast a change', 
 
   await win.evaluate(() => window.api.updateSettings({ theme: 'system' }))
 })
+
+test('the theme preference actually reaches the pixels, not just the disk', async () => {
+  // The settings round-trip above proves plumbing. It passed while the theme did
+  // nothing at all on screen, because nothing consumed the stored value. This
+  // asserts the effect: computed background, in both directions, from the store.
+  const bg = async (): Promise<string> =>
+    win.evaluate(() => getComputedStyle(document.body).backgroundColor)
+
+  await win.evaluate(() => window.api.updateSettings({ theme: 'dark' }))
+  await expect.poll(bg).toBe('rgb(16, 17, 20)')
+  await expect.poll(() => win.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
+
+  await win.evaluate(() => window.api.updateSettings({ theme: 'light' }))
+  await expect.poll(bg).toBe('rgb(255, 255, 255)')
+
+  // 'system' is the absence of the attribute — there is no CSS for a third value.
+  await win.evaluate(() => window.api.updateSettings({ theme: 'system' }))
+  await expect
+    .poll(() => win.evaluate(() => document.documentElement.dataset.theme ?? null))
+    .toBe(null)
+})
+
+test('the theme toggle in the rail cycles and persists', async () => {
+  await win.evaluate(() => window.api.updateSettings({ theme: 'system' }))
+
+  // The editor replaces the whole shell including the rail (App.tsx:239), and an
+  // earlier test leaves it open with unsaved changes. Get back to a view that has
+  // the rail, clearing the dirty-state guard on the way.
+  const leaveEditor = win.getByRole('button', { name: 'Library', exact: true })
+  if (await leaveEditor.isVisible().catch(() => false)) {
+    await leaveEditor.click()
+    const discard = win.getByRole('button', { name: 'Discard', exact: true })
+    if (await discard.isVisible().catch(() => false)) await discard.click()
+  }
+
+  const toggle = win.getByRole('button', { name: /Theme:/ })
+  await expect(toggle).toBeVisible()
+
+  // system -> light -> dark
+  await toggle.click()
+  await expect.poll(() => win.evaluate(() => document.documentElement.dataset.theme)).toBe('light')
+  await toggle.click()
+  await expect.poll(() => win.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
+
+  const onDisk = JSON.parse(await fs.readFile(join(userDataDir, 'settings.json'), 'utf-8'))
+  expect(onDisk.theme).toBe('dark')
+
+  await win.evaluate(() => window.api.updateSettings({ theme: 'system' }))
+})

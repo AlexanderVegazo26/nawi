@@ -542,6 +542,10 @@ async function registerShortcuts(): Promise<void> {
   globalShortcut.unregisterAll()
 
   const bind = (accel: string, action: string): void => {
+    // An empty chord means the action was deliberately left unbound — either by
+    // the user, or by collision resolution yielding it. Asking Electron to
+    // register '' throws, so don't.
+    if (!accel) return
     try {
       const ok = globalShortcut.register(accel, () => {
         mainWindow?.show()

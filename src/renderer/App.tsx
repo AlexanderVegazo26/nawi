@@ -4,6 +4,7 @@ import { CaptureView } from './components/CaptureView'
 import { LibraryView } from './components/LibraryView'
 import { EditorView } from './components/EditorView'
 import { Toast } from './components/ui'
+import { ThemeToggle } from './components/ThemeToggle'
 import { ScreenRecorder, blobToBytes, type RecordingResult } from './lib/recorder'
 
 type View = 'capture' | 'library'
@@ -288,6 +289,7 @@ export function App(): React.JSX.Element {
         ))}
 
         <div className="flex-1" />
+        <ThemeToggle />
         {recording && (
           <div className="flex flex-col items-center gap-1 text-[10px] text-danger">
             <span className="h-2.5 w-2.5 motion-pulse animate-pulse rounded-full bg-danger" />

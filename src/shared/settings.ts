@@ -130,6 +130,49 @@ function mergeHotkeys(
     const value = patch[action]
     if (isAccelerator(value)) out[action] = value
   }
+  return resolveHotkeyCollisions(out, base)
+}
+
+/**
+ * Two actions cannot share a chord.
+ *
+ * A global accelerator is claimed by whichever action registers it first; the
+ * second `register()` just returns false. So a duplicate does not produce a
+ * conflict the user can see — it silently disables one of their hotkeys, and the
+ * only trace is a console line that a packaged Windows app has no stdout to
+ * print. Resolving it here means the persisted file is always bindable.
+ *
+ * The incoming binding wins and the *other* action is the one that yields, since
+ * the collision only exists because the user just asked for that chord. A yielding
+ * action falls back to its previous chord when that is still free, and is
+ * otherwise left unbound rather than silently stealing a third action's key.
+ */
+function resolveHotkeyCollisions(
+  next: Record<HotkeyAction, string>,
+  previous: Record<HotkeyAction, string>
+): Record<HotkeyAction, string> {
+  const out = { ...next }
+  const claimedBy = new Map<string, HotkeyAction>()
+
+  // Actions whose chord actually changed staked their claim first.
+  const changed = HOTKEY_ACTIONS.filter((a) => out[a] !== previous[a])
+  const unchanged = HOTKEY_ACTIONS.filter((a) => out[a] === previous[a])
+
+  for (const action of [...changed, ...unchanged]) {
+    const chord = out[action]
+    const key = chord.toLowerCase()
+    if (!claimedBy.has(key)) {
+      claimedBy.set(key, action)
+      continue
+    }
+    const fallback = previous[action]
+    if (fallback && !claimedBy.has(fallback.toLowerCase())) {
+      out[action] = fallback
+      claimedBy.set(fallback.toLowerCase(), action)
+    } else {
+      out[action] = ''
+    }
+  }
   return out
 }
 
