@@ -1,0 +1,22 @@
+appId: com.nawi.app
+productName: Nawi
+directories:
+  buildResources: resources
+  output: release
+files:
+  - out/**
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+mac:
+  target: [dmg]
+  category: public.app-category.productivity
+linux:
+  target: [AppImage]
+  category: Utility

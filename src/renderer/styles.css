@@ -1,0 +1,66 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink-950: #07090d;
+  --color-ink-900: #0a0c10;
+  --color-ink-850: #0f1218;
+  --color-ink-800: #141821;
+  --color-ink-700: #1c2130;
+  --color-ink-600: #2a3040;
+  --color-ink-500: #3d465c;
+  --color-mist-400: #8a95ab;
+  --color-mist-300: #aab3c5;
+  --color-mist-100: #e6eaf2;
+  --color-brand-500: #4c8dff;
+  --color-brand-400: #6ba3ff;
+  --color-brand-600: #2f6fe0;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-ink-900);
+    color: var(--color-mist-100);
+    font-family:
+      'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  /* Keep focus visible everywhere — this app is meant to be fully keyboard-driven. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-400);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-ink-600);
+    border-radius: 999px;
+    border: 2px solid var(--color-ink-900);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-500);
+  }
+}
+
+@layer utilities {
+  .surface {
+    background-color: var(--color-ink-850);
+    border: 1px solid var(--color-ink-700);
+  }
+}
