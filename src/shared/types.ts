@@ -143,6 +143,15 @@ export interface LibraryItem {
   /** Who created this item. Absent means 'user' — the only producer before agents existed. */
   source?: 'user' | 'agent'
   /**
+   * PRD-002 §1 P5 soft-delete marker. ISO-8601 timestamp of the delete request.
+   *
+   * Present means "hidden from the library and scheduled for removal", not
+   * "gone": the bytes are still on disk until the 30-second undo window
+   * expires. Absent is the normal state, so an index.json from an earlier build
+   * needs no migration.
+   */
+  deletedAt?: string
+  /**
    * Container of a video item's bytes. Absent means WebM — every recording
    * written before FR-REC.4 landed was WebM, so an old index record still
    * resolves correctly with no migration.
@@ -450,8 +459,14 @@ export interface NawiApi {
 
   /* library */
   listLibrary(): Promise<IpcResult<LibraryItem[]>>
-  deleteLibraryItem(id: string): Promise<IpcResult<null>>
+  deleteLibraryItem(id: string): Promise<IpcResult<LibraryItem | null>>
   renameLibraryItem(id: string, name: string): Promise<IpcResult<LibraryItem>>
+  /**
+   * PRD-002 P5 soft-delete. Resolves with the marked item — hidden from the
+   * library, still on disk for 30 seconds — or `null` if there was nothing to
+   * delete. The renderer uses the returned item to name the undo toast.
+   */
+  restoreLibraryItem(id: string): Promise<IpcResult<LibraryItem | null>>
   saveAnnotations(id: string, doc: AnnotationDoc): Promise<IpcResult<LibraryItem>>
   /**
    * Raw bytes of a stored asset. The editor needs these rather than a
@@ -482,6 +497,42 @@ export interface NawiApi {
   /** Fires when the pause state changes, including from another window. */
   onAgentAccessChanged(cb: (state: AgentAccessState) => void): () => void
 
+  /* permissions & recovery (UX-PRM.1-3) */
+  getScreenPermission(): Promise<IpcResult<PermissionState>>
+  /** Deep-links to the OS pane named by `PermissionState.settingsPath`. */
+  openScreenSettings(): Promise<IpcResult<null>>
+  /** UX-PRM.3 — quits and restarts so a fresh grant is read at process start. */
+  relaunchApp(): Promise<IpcResult<null>>
+
+  /* disk pressure (UX-STA.5) */
+  getDiskPressure(estimateMinutes?: number): Promise<IpcResult<DiskPressure>>
+
   /* app */
   onShortcut(cb: (action: string) => void): () => void
+}
+
+/** Screen-recording access as the OS reports it; `unknown` when it cannot be read. */
+export type ScreenAccess = 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unknown'
+
+export interface PermissionState {
+  platform: string
+  screen: ScreenAccess
+  /** The OS path to show the user, in the OS's own vocabulary (UX-PRM.1). */
+  settingsPath: string
+  /** True only where a grant needs a relaunch to take effect (macOS). */
+  relaunchMayBeRequired: boolean
+}
+
+export interface DiskPressure {
+  /**
+   * False when free space could not be read. Callers must not treat an unknown
+   * as "fine" — `low` is false in that case only because there is nothing to
+   * compare, and the UI says so rather than staying silent.
+   */
+  known: boolean
+  freeBytes: number
+  /** Expected size of the recording the user is about to start (UX-STA.5). */
+  estimatedBytes: number
+  estimateMinutes: number
+  low: boolean
 }

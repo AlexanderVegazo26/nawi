@@ -105,7 +105,12 @@ export interface SaveArgs {
 
 export async function listItems(): Promise<LibraryItem[]> {
   const items = await readIndex()
-  return [...items].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  // Soft-deleted items are hidden here rather than removed from the index, so
+  // the undo window has something to restore. `getItem` deliberately still
+  // finds them — restore and the expiry sweep both need to.
+  return items
+    .filter((i) => !i.deletedAt)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
 export async function save(args: SaveArgs): Promise<LibraryItem> {
@@ -173,13 +178,103 @@ async function requireItem(id: string): Promise<LibraryItem> {
   return item
 }
 
-export async function deleteItem(id: string): Promise<void> {
+/* ------------------------------------------------------------------ *
+ * Soft delete — PRD-002 §1 P5, "every destructive act is reversible for
+ * 30 seconds".
+ *
+ * The shipped `deleteItem` unlinked the asset immediately, so the previous
+ * confirm modal's "This can't be undone" was accurate — and that is precisely
+ * what P5 forbids. Restoring a file after `fs.rm` is not possible, so the undo
+ * has to be implemented by *not deleting yet*, not by a nicer toast.
+ *
+ * No separate holding directory: the asset never moves, only an index flag
+ * changes. Moving files twice would double the failure surface for a window
+ * that usually expires with nothing having happened, and a rename across a
+ * device boundary can fail (see EXDEV in `save`).
+ *
+ * If the app quits inside the undo window the item is **restored** on next
+ * launch (`sweepExpiredDeletes` below), not removed. A user who quits during
+ * the window has not confirmed anything, and of the two ways to be wrong,
+ * keeping a capture the user meant to delete is recoverable and losing one they
+ * did not is not.
+ * ------------------------------------------------------------------ */
+
+export const UNDO_WINDOW_MS = 30_000
+
+/** Timers for deletes awaiting expiry in this process. */
+const pendingDeletes = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
+ * Marks an item deleted and schedules the real removal.
+ *
+ * Returns the marked item so a caller can name it in the undo toast without a
+ * second lookup.
+ */
+export async function deleteItem(id: string): Promise<LibraryItem | null> {
+  const target = await getItem(id)
+  if (!target || target.deletedAt) return null
+  const marked = await update(id, { deletedAt: new Date().toISOString() })
+
+  const timer = setTimeout(() => {
+    pendingDeletes.delete(id)
+    void purgeItem(id).catch(() => undefined)
+  }, UNDO_WINDOW_MS)
+  // Nothing should hold the process open just to finish a delete; the sweep on
+  // next launch covers a quit inside the window.
+  timer.unref?.()
+  pendingDeletes.set(id, timer)
+
+  return marked
+}
+
+/** Cancels a pending delete (the undo toast's action). */
+export async function restoreItem(id: string): Promise<LibraryItem | null> {
+  const timer = pendingDeletes.get(id)
+  if (timer) {
+    clearTimeout(timer)
+    pendingDeletes.delete(id)
+  }
+  const target = await getItem(id)
+  if (!target?.deletedAt) return null
+  const items = await readIndex()
+  const idx = items.findIndex((i) => i.id === id)
+  // Delete the key rather than setting it to undefined: `!i.deletedAt` would
+  // accept either, but an explicit `"deletedAt": undefined` does not survive
+  // JSON and leaves the on-disk record shaped differently from a fresh one.
+  const restored = { ...items[idx] }
+  delete restored.deletedAt
+  const next = [...items]
+  next[idx] = restored
+  await writeIndex(next)
+  return restored
+}
+
+/** Irreversible removal. Only reached when the undo window has expired. */
+async function purgeItem(id: string): Promise<void> {
   const target = await getItem(id)
   if (!target) return
   const items = await readIndex()
   await writeIndex(items.filter((i) => i.id !== id))
   // Best-effort asset cleanup — a missing file must not fail the delete.
   await fs.rm(target.filePath, { force: true }).catch(() => undefined)
+}
+
+/**
+ * Called once at launch. Clears any `deletedAt` left behind by a quit inside
+ * the undo window, so an unconfirmed delete never survives a restart.
+ */
+export async function sweepExpiredDeletes(): Promise<number> {
+  const items = await readIndex()
+  const stale = items.filter((i) => i.deletedAt)
+  if (stale.length === 0) return 0
+  const next = items.map((i) => {
+    if (!i.deletedAt) return i
+    const restored = { ...i }
+    delete restored.deletedAt
+    return restored
+  })
+  await writeIndex(next)
+  return stale.length
 }
 
 async function update(id: string, patch: Partial<LibraryItem>): Promise<LibraryItem> {

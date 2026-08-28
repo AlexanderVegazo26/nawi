@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { CaptureSource, LibraryItem } from '@shared/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CaptureSource, DiskPressure, LibraryItem, PermissionState } from '@shared/types'
+import type { HotkeyAction } from '@shared/settings'
 import type { RecordingStatus, TrackSelection } from '@shared/recording'
-import { Button, ErrorState, Spinner } from './ui'
+import { Button, ErrorState, Modal, Spinner, formatBytes } from './ui'
+import { PermissionRecovery } from './PermissionRecovery'
+import { hotkeyLabel, useHotkeys } from '../lib/hotkeys'
+import { failureFrom } from '../lib/failure'
 
 type Busy = null | 'fullscreen' | 'region' | 'window'
 
@@ -42,6 +46,21 @@ export function CaptureView({
   const [tracks, setTracks] = useState<TrackSelection>({ system: true, mic: false, camera: false })
   const [countdown, setCountdown] = useState(true)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
+  /** §9 — hotkeys in copy resolved from settings at render time, never literals. */
+  const hotkeys = useHotkeys()
+  /** UX-PRM.2 — set when a capture failed in a way a permission would explain. */
+  const [permission, setPermission] = useState<PermissionState | null>(null)
+  /**
+   * Which capture the recovery card is offering to retry.
+   *
+   * Held because "I've done this — check again" has to re-run *the thing that
+   * failed*: a user whose region capture was denied and who is then handed a
+   * full-screen capture gets a different artifact than the one they asked for,
+   * silently.
+   */
+  const retryRef = useRef<(() => void) | null>(null)
+  /** UX-STA.5 — the pending disk-pressure warning, and what it is gating. */
+  const [pressure, setPressure] = useState<{ info: DiskPressure; sourceId: string } | null>(null)
 
   // Track choices and the countdown are remembered per user through the M0
   // settings layer, so the picker opens where the user left it.
@@ -61,6 +80,41 @@ export function CaptureView({
     })
   }, [])
 
+  /**
+   * UX-PRM.2 — turn a failed capture into a recovery card instead of a toast.
+   *
+   * Driven by an *actual failure*, never by the permission status alone. On
+   * Windows `getMediaAccessStatus('screen')` cannot report a denial (see
+   * `src/main/permissions.ts`), so a status-first check would show this to
+   * nobody there; on macOS a status check that ran before the first capture
+   * attempt would show it to everyone. Asking only after something failed is
+   * the ordering that works on both.
+   */
+  const onCaptureFailed = useCallback(
+    async (error: string, retry: () => void): Promise<void> => {
+      const res = await window.api.getScreenPermission()
+      const denied = res.ok && (res.value.screen === 'denied' || res.value.screen === 'restricted')
+      // `unknown` covers Windows and any platform where the API says nothing.
+      // A capture that failed with nothing else to blame is still worth the
+      // recovery card, because the alternative is the dead-end toast.
+      const unhelpfulStatus = res.ok && res.value.screen === 'unknown'
+      if (res.ok && (denied || unhelpfulStatus)) {
+        retryRef.current = retry
+        setPermission(res.value)
+        return
+      }
+      notify(
+        failureFrom(error, {
+          failed: 'That capture didn’t complete',
+          intact: 'Nothing was saved and your library is unchanged',
+          next: 'Try again'
+        }),
+        'err'
+      )
+    },
+    [notify]
+  )
+
   const loadSources = useCallback(async (kinds: Array<'screen' | 'window'>) => {
     setSources(null)
     setSourceError(null)
@@ -79,20 +133,20 @@ export function CaptureView({
     const res = await window.api.captureFullscreen()
     setBusy(null)
     if (res.ok) onCaptured(res.value, true)
-    else notify(res.error, 'err')
-  }, [onCaptured, notify])
+    else await onCaptureFailed(res.error, () => void doFullscreen())
+  }, [onCaptured, onCaptureFailed])
 
   const doRegion = useCallback(async () => {
     setBusy('region')
     const res = await window.api.beginRegion()
     setBusy(null)
     if (!res.ok) {
-      notify(res.error, 'err')
+      await onCaptureFailed(res.error, () => void doRegion())
       return
     }
     // null means the user cancelled — that is not an error worth a toast.
     if (res.value) onCaptured(res.value, true)
-  }, [onCaptured, notify])
+  }, [onCaptured, onCaptureFailed])
 
   const doWindow = useCallback(
     async (sourceId: string) => {
@@ -101,9 +155,9 @@ export function CaptureView({
       const res = await window.api.captureWindow(sourceId)
       setBusy(null)
       if (res.ok) onCaptured(res.value, true)
-      else notify(res.error, 'err')
+      else await onCaptureFailed(res.error, () => void doWindow(sourceId))
     },
-    [onCaptured, notify]
+    [onCaptured, onCaptureFailed]
   )
 
   const startRecording = useCallback(
@@ -123,16 +177,55 @@ export function CaptureView({
       const res = await window.api.startRecording({ sourceId, tracks, countdown })
       // Failures after this point arrive through `onRecordingFailed` in App;
       // this only reports a request main refused outright.
-      if (!res.ok) notify(res.error, 'err')
+      if (!res.ok) {
+        notify(
+          failureFrom(res.error, {
+            failed: 'That recording didn’t start',
+            intact: 'Nothing was recorded and your library is unchanged',
+            next: 'Pick a source and try again'
+          }),
+          'err'
+        )
+      }
     },
     [tracks, countdown, notify]
+  )
+
+  /**
+   * UX-STA.5 — disk-pressure precheck, run *before* the recording starts.
+   *
+   * Before, not during: a recording that runs out of disk halfway is the
+   * failure this exists to prevent, and a warning after the fact is a report,
+   * not a check. Asking main each time rather than caching, because free space
+   * is exactly the kind of value that changes between the app launching and the
+   * user pressing record.
+   */
+  const requestRecording = useCallback(
+    async (sourceId: string) => {
+      const res = await window.api.getDiskPressure(5)
+      // A failed or unknown reading must not block a recording — the user came
+      // here to record, and refusing on a check we could not perform is worse
+      // than the risk it was checking for.
+      if (res.ok && res.value.known && res.value.low) {
+        setPicker(null)
+        setPressure({ info: res.value, sourceId })
+        return
+      }
+      await startRecording(sourceId)
+    },
+    [startRecording]
   )
 
   const cards: Array<{
     id: Busy | 'record'
     title: string
     body: string
-    hint: string
+    /**
+     * §9 — "Keep hotkeys in copy rendered as the user's actual binding,
+     * resolved at render time." These were string literals; a user who rebound
+     * region capture was being told to press a chord that did nothing.
+     */
+    hotkey: HotkeyAction
     icon: React.JSX.Element
     action: () => void
   }> = [
@@ -140,7 +233,7 @@ export function CaptureView({
       id: 'region',
       title: 'Region',
       body: 'Drag to select any part of the screen.',
-      hint: 'Ctrl+Shift+1',
+      hotkey: 'capture-region',
       icon: <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3" />,
       action: () => void doRegion()
     },
@@ -148,7 +241,7 @@ export function CaptureView({
       id: 'fullscreen',
       title: 'Full screen',
       body: 'Capture your entire primary display.',
-      hint: 'Ctrl+Shift+2',
+      hotkey: 'capture-fullscreen',
       icon: <rect x="2" y="4" width="20" height="14" rx="2" />,
       action: () => void doFullscreen()
     },
@@ -156,7 +249,7 @@ export function CaptureView({
       id: 'window',
       title: 'Window',
       body: 'Pick a single open application window.',
-      hint: 'Ctrl+Shift+3',
+      hotkey: 'capture-window',
       icon: <path d="M3 5h18v14H3zM3 9h18" />,
       action: () => setPicker('window')
     },
@@ -164,7 +257,7 @@ export function CaptureView({
       id: 'record',
       title: 'Record',
       body: 'Capture a video of a screen or window.',
-      hint: 'Ctrl+Shift+4',
+      hotkey: 'record-start',
       icon: <><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" fill="currentColor" /></>,
       action: () => setPicker('record')
     }
@@ -217,6 +310,29 @@ export function CaptureView({
           </div>
         )}
 
+        {/* UX-PRM.2 — the recovery card replaces the capture cards, because a
+            grid of buttons that all fail is not a useful thing to look at. */}
+        {permission && (
+          <div className="mt-6">
+            <PermissionRecovery
+              state={permission}
+              notify={notify}
+              onRecheck={() => {
+                // "Check again" means retry the thing that failed, not re-read
+                // a status flag — on Windows the status can never say denied,
+                // so a status re-read would clear the card while capture is
+                // still broken. And it must be the *same* capture kind: retrying
+                // a region denial with a full-screen grab hands the user a
+                // different artifact than the one they asked for.
+                const retry = retryRef.current
+                retryRef.current = null
+                setPermission(null)
+                retry?.()
+              }}
+            />
+          </div>
+        )}
+
         <div className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {cards.map((c) => (
             <button
@@ -238,7 +354,7 @@ export function CaptureView({
                 <span className="flex items-center gap-2">
                   <span className="font-semibold text-text-primary">{c.title}</span>
                   <kbd className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary ring-1 ring-border-strong">
-                    {c.hint}
+                    {hotkeyLabel(hotkeys, c.hotkey)}
                   </kbd>
                 </span>
                 <span className="mt-1 block text-sm leading-relaxed text-text-secondary">{c.body}</span>
@@ -289,7 +405,7 @@ export function CaptureView({
                     <li key={s.id}>
                       <button
                         onClick={() =>
-                          picker === 'window' ? void doWindow(s.id) : void startRecording(s.id)
+                          picker === 'window' ? void doWindow(s.id) : void requestRecording(s.id)
                         }
                         className="group w-full overflow-hidden rounded-lg bg-surface-2 text-left ring-1 ring-border-strong transition-colors motion-tool hover:ring-accent"
                       >
@@ -349,6 +465,43 @@ export function CaptureView({
             )}
           </div>
         </div>
+      )}
+
+      {/*
+        UX-STA.5 — disk-pressure warning before the recording starts, naming the
+        estimated size of the intended recording.
+
+        Informational, not a gate: the requirement says "warning", and refusing
+        to record on a machine whose disk the user knows better than we do would
+        be the app deciding for them. So the primary action is still Record.
+      */}
+      {pressure && (
+        <Modal
+          title="Not much room left on this disk"
+          onClose={() => setPressure(null)}
+          footer={
+            <>
+              <Button autoFocusInModal onClick={() => setPressure(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  const target = pressure.sourceId
+                  setPressure(null)
+                  void startRecording(target)
+                }}
+              >
+                Record anyway
+              </Button>
+            </>
+          }
+        >
+          You have <strong className="text-text-primary">{formatBytes(pressure.info.freeBytes)}</strong>{' '}
+          free. A {pressure.info.estimateMinutes}-minute recording is usually about{' '}
+          <strong className="text-text-primary">{formatBytes(pressure.info.estimatedBytes)}</strong>.
+          Recording anyway is fine — a recording that runs out of space is stopped and kept, not lost.
+        </Modal>
       )}
     </div>
   )

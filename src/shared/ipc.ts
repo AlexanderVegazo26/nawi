@@ -41,6 +41,8 @@ export const IPC = {
 
   listLibrary: 'library:list',
   deleteLibraryItem: 'library:delete',
+  /** PRD-002 P5 — cancels a delete inside its 30-second undo window. */
+  restoreLibraryItem: 'library:restore',
   renameLibraryItem: 'library:rename',
   saveAnnotations: 'library:save-annotations',
   readItemBytes: 'library:read-bytes',
@@ -60,6 +62,14 @@ export const IPC = {
   setAgentAccess: 'agent:set-access',
   /** main -> renderer broadcast, so a pause made elsewhere is reflected everywhere. */
   agentAccessChanged: 'agent:access-changed',
+
+  /** UX-PRM.1-3 screen-recording permission state and its two recovery actions. */
+  getScreenPermission: 'permission:get-screen',
+  openScreenSettings: 'permission:open-settings',
+  relaunchApp: 'permission:relaunch',
+
+  /** UX-STA.5 disk-pressure precheck. */
+  getDiskPressure: 'disk:pressure',
 
   shortcut: 'app:shortcut'
 } as const

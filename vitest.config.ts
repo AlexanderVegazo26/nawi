@@ -15,7 +15,12 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // `.tsx` too: some PRD-002 state requirements ("this surface renders a
+    // skeleton, never a spinner") are claims about rendered output, and the
+    // only honest way to check them without a browser is to render the
+    // component. `react-dom/server` does that in a node environment with no new
+    // dependency.
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     // e2e/ is Playwright's; running it under Vitest would load a different runner's globals.
     exclude: ['e2e/**', 'node_modules/**', 'out/**', 'release/**']
   }

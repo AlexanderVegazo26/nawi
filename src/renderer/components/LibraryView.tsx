@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { mediaKindOf } from '@shared/types'
 import type { LibraryItem } from '@shared/types'
-import { Button, EmptyState, ErrorState, Modal, Spinner, formatBytes, formatDuration, formatWhen } from './ui'
+import {
+  Button,
+  EmptyState,
+  ErrorState,
+  Modal,
+  SkeletonGrid,
+  formatBytes,
+  formatDuration,
+  formatWhen
+} from './ui'
+import { hotkeyLabel, useHotkeys } from '../lib/hotkeys'
+import { failureFrom } from '../lib/failure'
 
 export function LibraryView({
   items,
@@ -31,6 +42,9 @@ export function LibraryView({
   const [renameValue, setRenameValue] = useState('')
   const searchRef = useRef<HTMLInputElement>(null)
   const gridRef = useRef<HTMLUListElement>(null)
+  // UX-STA.1 / §9 — the empty state must offer the user's *actual* binding.
+  const hotkeys = useHotkeys()
+  const regionHotkey = hotkeyLabel(hotkeys, 'capture-region')
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -90,20 +104,34 @@ export function LibraryView({
   /** Exports the stored file as-is; main does the copy, so nothing large crosses IPC. */
   const doExport = async (item: LibraryItem): Promise<void> => {
     const res = await window.api.exportOriginal(item.id)
-    if (!res.ok) notify(res.error, 'err')
-    else if (res.value) notify(`Exported to ${res.value}`)
-  }
-
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner label="Loading your library…" />
-      </div>
-    )
+    if (!res.ok) {
+      // UX-STA.3 — the raw error said only what failed.
+      notify(
+        failureFrom(res.error, {
+          failed: 'Couldn’t export a copy of that capture',
+          intact: 'The original is still in your library, unchanged',
+          next: 'Try a different folder'
+        }),
+        'err'
+      )
+    } else if (res.value) notify(`Exported to ${res.value}`)
   }
 
   if (error) {
-    return <ErrorState title="Couldn't load your library" detail={error} onRetry={onReload} />
+    return (
+      <ErrorState
+        title="Couldn't load your library"
+        // UX-STA.3: what failed, what still worked, what to do. The captures are
+        // files on disk — an index read that failed has lost nothing, and saying
+        // so is the difference between an error and a scare.
+        detail={failureFrom(error, {
+          failed: 'The library index couldn’t be read',
+          intact: 'Your captures are still on disk and nothing has been removed',
+          next: 'Try again'
+        })}
+        onRetry={onReload}
+      />
+    )
   }
 
   return (
@@ -144,8 +172,13 @@ export function LibraryView({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-6">
-        {/* Two distinct empty states — nothing captured yet vs. nothing matching. */}
-        {items.length === 0 ? (
+        {/* UX-STA.2 — skeleton cards in the grid's own geometry, never a
+            full-screen blocking spinner. The header, search field and New
+            capture button above stay live throughout the load. */}
+        {loading ? (
+          <SkeletonGrid />
+        ) : /* Two distinct empty states — nothing captured yet vs. nothing matching. */
+        items.length === 0 ? (
           <EmptyState
             icon={
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -154,7 +187,10 @@ export function LibraryView({
               </svg>
             }
             title="No captures yet"
-            body="Take your first screenshot or recording and it'll appear here, ready to annotate and export."
+            /* UX-STA.1 — offer the primary action with the user's real binding,
+               resolved at render time. `hotkeyLabel` renders "not set" when the
+               action lost a collision, which is a reachable state. */
+            body={`Press ${regionHotkey} to take your first capture. It'll appear here, ready to annotate and export.`}
             action={
               <Button variant="primary" onClick={onNewCapture}>
                 Take a capture
@@ -241,6 +277,20 @@ export function LibraryView({
                   </div>
                   </button>
 
+                  {/*
+                    WCAG 2.2 SC 2.4.11 (focus not obscured).
+                    `opacity-0` alone was the risk here: an opacity-hidden
+                    control is still in the tab order and still focusable, so a
+                    keyboard user could land on an invisible button. It is
+                    revealed on `focus-within`, which covers *that* — but the
+                    row also sits inside the card's `overflow-hidden`, so a
+                    focused control must not be clipped by it. The row is laid
+                    out in normal flow (not absolutely positioned over the
+                    card), so it occupies real height and cannot be cropped.
+                    Whether the focus ring is fully visible at the card's
+                    rounded bottom edge is a rendered-pixel question left for
+                    qa-engineer.
+                  */}
                   <div className="flex items-center gap-1 border-t border-border px-2 py-1.5 opacity-0 transition-opacity motion-tool group-hover:opacity-100 focus-within:opacity-100">
                     <Button variant="subtle" onClick={() => onOpen(item)} title="Open in editor">
                       Open
@@ -297,8 +347,15 @@ export function LibraryView({
             </>
           }
         >
-          <strong className="text-text-primary">{confirmDelete.name}</strong> will be permanently removed
-          from your library and deleted from disk. This can&apos;t be undone.
+          {/*
+            PRD-002 §1 P5. The previous copy read "permanently removed … This
+            can't be undone", which was *accurate* against the old handler — it
+            unlinked the file immediately. Now main marks the item and removes
+            it 30 seconds later, so the honest sentence is the one that names
+            the window the user actually has.
+          */}
+          <strong className="text-text-primary">{confirmDelete.name}</strong> will be removed from your
+          library. You&apos;ll have 30 seconds to undo before it&apos;s deleted from disk.
         </Modal>
       )}
 

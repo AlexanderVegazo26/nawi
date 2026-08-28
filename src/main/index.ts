@@ -29,6 +29,8 @@ import type {
   Rect
 } from '@shared/types'
 import * as library from './library'
+import * as permissions from './permissions'
+import * as disk from './disk'
 import * as capture from './capture'
 import * as settings from './settings'
 import * as recording from './recording/orchestrator'
@@ -527,10 +529,13 @@ function registerIpc(): void {
   handle(IPC.listAudioInputs, () => recording.listAudioInputs())
 
   handle(IPC.listLibrary, () => library.listItems())
-  handle(IPC.deleteLibraryItem, async (id: string) => {
-    await library.deleteItem(id)
-    return null
-  })
+  /**
+   * PRD-002 P5 — this hides the item and schedules removal 30 s later; it does
+   * not unlink anything yet. `null` means there was nothing to delete, which
+   * the renderer renders as "no undo offered" rather than as an error.
+   */
+  handle(IPC.deleteLibraryItem, (id: string) => library.deleteItem(id))
+  handle(IPC.restoreLibraryItem, (id: string) => library.restoreItem(id))
   handle(IPC.renameLibraryItem, (id: string, name: string) => library.renameItem(id, name))
   handle(IPC.saveAnnotations, (id: string, doc: AnnotationDoc) => library.saveAnnotations(id, doc))
 
@@ -600,6 +605,29 @@ function registerIpc(): void {
     if (typeof paused !== 'boolean') throw new Error('agent access state must be a boolean')
     await settings.updateSettings({ agentAccessPaused: paused })
     return agentAccessState()
+  })
+
+  /* --- permissions & recovery (UX-PRM.1-3) --- */
+  handle(IPC.getScreenPermission, () => permissions.screenPermission())
+  handle(IPC.openScreenSettings, async () => {
+    await permissions.openScreenSettings()
+    return null
+  })
+  handle(IPC.relaunchApp, () => {
+    permissions.relaunchApp()
+    return null
+  })
+
+  /* --- disk pressure (UX-STA.5) --- */
+  handle(IPC.getDiskPressure, (estimateMinutes?: unknown) => {
+    // Arrives from the renderer, so it is clamped rather than trusted: a NaN or
+    // a huge value would produce an "estimated size" that is nonsense in the
+    // one place the number is the whole point of the warning.
+    const m =
+      typeof estimateMinutes === 'number' && Number.isFinite(estimateMinutes)
+        ? Math.min(240, Math.max(1, Math.round(estimateMinutes)))
+        : 5
+    return disk.diskPressure(m)
   })
 
   handle(IPC.getSettings, () => settings.getSettings())
@@ -715,6 +743,18 @@ app.whenReady().then(() => {
   )
 
   registerIpc()
+
+  /**
+   * PRD-002 P5 — restore anything still flagged deleted from a previous run.
+   *
+   * A `deletedAt` that survived a quit means the 30-second undo window was cut
+   * short by the process ending, so the delete was never confirmed by expiry.
+   * Not awaited: a failed sweep must not delay the window, and the flagged item
+   * stays hidden until the next successful sweep rather than disappearing.
+   */
+  void library.sweepExpiredDeletes().catch((err: unknown) => {
+    console.error('[library] could not sweep unconfirmed deletes', err)
+  })
 
   // Each overlay resolves its own identity from its URL, so this is per-window.
   ipcMain.handle(IPC.overlayInit, (event): IpcResult<{ displayId: number; freezeUrl: string; scaleFactor: number }> => {

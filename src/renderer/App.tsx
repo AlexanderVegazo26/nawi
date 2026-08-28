@@ -5,7 +5,8 @@ import { CaptureView } from './components/CaptureView'
 import { LibraryView } from './components/LibraryView'
 import { EditorView } from './components/EditorView'
 import { RecoveryBanner } from './components/RecoveryBanner'
-import { Toast } from './components/ui'
+import { LiveAnnouncer, OfflineBanner, Toast, UNDO_WINDOW_MS } from './components/ui'
+import { failureFrom } from './lib/failure'
 import { ThemeToggle } from './components/ThemeToggle'
 import { AgentAccessToggle } from './components/AgentAccessToggle'
 
@@ -14,6 +15,9 @@ interface ToastMsg {
   id: number
   message: string
   tone: 'ok' | 'err'
+  /** PRD-002 P5 — present on every destructive action's toast. */
+  action?: { label: string; onAction: () => void }
+  durationMs?: number
 }
 
 const RAIL: Array<{ id: View; label: string; icon: React.JSX.Element }> = [
@@ -62,6 +66,48 @@ export function App(): React.JSX.Element {
     const id = ++toastId.current
     setToasts((t) => [...t, { id, message, tone }])
   }, [])
+
+  /**
+   * PRD-002 §1 P5 — the undo toast for a destructive action.
+   *
+   * Separate from `notify` because the lifetime is load-bearing: the default
+   * 3.2 s toast would vanish 27 seconds before the window main is actually
+   * holding open, leaving an undo that exists but that nobody can reach.
+   */
+  const notifyUndo = useCallback(
+    (message: string, onUndo: () => void) => {
+      const id = ++toastId.current
+      setToasts((t) => [
+        ...t,
+        { id, message, tone: 'ok', durationMs: UNDO_WINDOW_MS, action: { label: 'Undo', onAction: onUndo } }
+      ])
+    },
+    []
+  )
+
+  /**
+   * UX-STA.4 — offline is a normal state.
+   *
+   * `navigator.onLine` is only ever a hint (it reports link state, not
+   * reachability), which is fine precisely because nothing here depends on the
+   * network; the banner is informational and never blocks an action.
+   */
+  const [online, setOnline] = useState(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  )
+  useEffect(() => {
+    const up = (): void => setOnline(true)
+    const down = (): void => setOnline(false)
+    window.addEventListener('online', up)
+    window.addEventListener('offline', down)
+    return () => {
+      window.removeEventListener('online', up)
+      window.removeEventListener('offline', down)
+    }
+  }, [])
+
+  /** UX-A11Y.8 — capture completion and recording start/stop, announced. */
+  const [announcement, setAnnouncement] = useState('')
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -160,9 +206,25 @@ export function App(): React.JSX.Element {
       if (openEditor) setEditing(item)
       else setView('library')
       notify('Capture saved')
+      // UX-A11Y.8 — capture completion announced. The toast is `aria-live`
+      // too, but it unmounts on a timer and a toast that has already gone is
+      // not an announcement anyone can wait for.
+      setAnnouncement(`Capture saved: ${item.name}, ${item.width} by ${item.height} pixels`)
     },
     [notify]
   )
+
+  /** UX-A11Y.8 — recording start and stop announced. */
+  const lastPhase = useRef(recording.phase)
+  useEffect(() => {
+    const prev = lastPhase.current
+    lastPhase.current = recording.phase
+    if (prev === recording.phase) return
+    if (recording.phase === 'recording' && prev !== 'paused') setAnnouncement('Recording started')
+    else if (recording.phase === 'paused') setAnnouncement('Recording paused')
+    else if (recording.phase === 'recording' && prev === 'paused') setAnnouncement('Recording resumed')
+    else if (prev !== 'idle' && recording.phase === 'idle') setAnnouncement('Recording stopped')
+  }, [recording.phase])
 
   /* ---------------- global shortcuts from main ---------------- */
   useEffect(() => {
@@ -209,17 +271,50 @@ export function App(): React.JSX.Element {
     })
   }, [editing, onCaptured, notify, stopRecording, recording.phase])
 
+  /**
+   * PRD-002 §1 P5 — delete is reversible for 30 seconds.
+   *
+   * Main marks the item and schedules the real removal; this only has to hide
+   * it and offer the way back. The undo path re-inserts at the position the
+   * item's `createdAt` sorts to, not at the top, so undoing does not silently
+   * reorder the grid.
+   */
   const onDelete = useCallback(
     async (item: LibraryItem) => {
       const res = await window.api.deleteLibraryItem(item.id)
       if (!res.ok) {
-        notify(res.error, 'err')
+        notify(
+          failureFrom(res.error, {
+            failed: `Couldn’t delete “${item.name}”`,
+            intact: 'It is still in your library and nothing was removed',
+            next: 'Try again'
+          }),
+          'err'
+        )
         return
       }
       setItems((prev) => prev.filter((i) => i.id !== item.id))
-      notify(`Deleted “${item.name}”`)
+      notifyUndo(`Deleted “${item.name}”`, () => {
+        void window.api.restoreLibraryItem(item.id).then((restored) => {
+          if (!restored.ok || !restored.value) {
+            notify(
+              failureFrom(restored.ok ? 'the undo window had already closed' : restored.error, {
+                failed: `Couldn’t bring “${item.name}” back`,
+                intact: 'Every other capture in your library is untouched',
+                next: 'Deletes can only be undone within 30 seconds'
+              }),
+              'err'
+            )
+            return
+          }
+          const back = restored.value
+          setItems((prev) =>
+            [...prev, back].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+          )
+        })
+      })
     },
-    [notify]
+    [notify, notifyUndo]
   )
 
   const onRename = useCallback(
@@ -303,6 +398,7 @@ export function App(): React.JSX.Element {
       </nav>
 
       <main className="flex min-w-0 flex-1 flex-col">
+        <OfflineBanner online={online} />
         <RecoveryBanner
           items={recoverable}
           onRecover={(id) => void onRecover(id)}
@@ -329,6 +425,7 @@ export function App(): React.JSX.Element {
         </div>
       </main>
 
+      <LiveAnnouncer message={announcement} />
       <ToastStack toasts={toasts} dismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
     </div>
   )
@@ -344,7 +441,14 @@ function ToastStack({
   return (
     <div className="pointer-events-none fixed bottom-5 right-5 z-[60] flex w-80 flex-col gap-2">
       {toasts.map((t) => (
-        <Toast key={t.id} message={t.message} tone={t.tone} onDismiss={() => dismiss(t.id)} />
+        <Toast
+          key={t.id}
+          message={t.message}
+          tone={t.tone}
+          action={t.action}
+          durationMs={t.durationMs}
+          onDismiss={() => dismiss(t.id)}
+        />
       ))}
     </div>
   )

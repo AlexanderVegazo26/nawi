@@ -67,6 +67,7 @@ const api: NawiApi = {
 
   listLibrary: () => ipcRenderer.invoke(IPC.listLibrary),
   deleteLibraryItem: (id) => ipcRenderer.invoke(IPC.deleteLibraryItem, id),
+  restoreLibraryItem: (id) => ipcRenderer.invoke(IPC.restoreLibraryItem, id),
   renameLibraryItem: (id, name) => ipcRenderer.invoke(IPC.renameLibraryItem, id, name),
   saveAnnotations: (id, doc) => ipcRenderer.invoke(IPC.saveAnnotations, id, doc),
   readItemBytes: (id) => ipcRenderer.invoke(IPC.readItemBytes, id),
@@ -95,6 +96,12 @@ const api: NawiApi = {
       ipcRenderer.removeListener(IPC.agentAccessChanged, listener)
     }
   },
+
+  getScreenPermission: () => ipcRenderer.invoke(IPC.getScreenPermission),
+  openScreenSettings: () => ipcRenderer.invoke(IPC.openScreenSettings),
+  relaunchApp: () => ipcRenderer.invoke(IPC.relaunchApp),
+
+  getDiskPressure: (estimateMinutes) => ipcRenderer.invoke(IPC.getDiskPressure, estimateMinutes),
 
   onShortcut: (cb) => {
     // The listener receives the payload only, never the IpcRendererEvent.

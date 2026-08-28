@@ -36,3 +36,28 @@ exported file, so it uses fixed literals, never `cssVar()`. Routing them through
 theme tokens would make the same document export differently in dark and light
 mode. `e2e/annotation.spec.ts` asserts byte-identical exports across both
 themes; `cssVar` belongs only on editor-only overlays (selection ring, crop dim).
+
+## 2026-08-28 — PRD-002 conformance pass: what was left open
+
+- **UX-STA.6 ("No structured data available for this surface") is not
+  implemented.** There is no state-panel surface in `src/renderer/**` for it to
+  attach to — nothing in the renderer reads a sidecar. The requirement needs the
+  state panel to exist first; building the empty-state component alone would be a
+  component with no consumer.
+- **UX-CAP.5 vs UX-A11Y.2 conflict is unresolved in the spec.** Both claim the
+  `Shift` modifier ("Shift+arrow = 10 px" vs "Shift+arrow = resize"). Implemented
+  as arrows = move 1 px, Shift+arrow = move 10 px, Ctrl+arrow = resize (reusing
+  the modifier the shipped overlay already used, so nothing new was invented).
+  Documented in `src/renderer/lib/nudge.ts`. Needs a ux-designer decision.
+- **UX-PRM.2/3 cannot be validated on this machine.** Windows has no per-app
+  screen-recording grant and `systemPreferences.getMediaAccessStatus('screen')`
+  cannot report a denial there, so the recovery card is driven by an actual failed
+  capture rather than by permission status. The macOS branch — including the
+  verbatim §4 copy and the UX-PRM.3 relaunch offer — is unit-tested for copy but
+  has never been executed against a real TCC denial.
+- **P5 undo is implemented for delete only.** Discard (`discardRecoverableRecording`)
+  and overwrite still have no undo toast.
+- **The 30-second undo toast overlaps subsequent interactions.** It is bottom-right,
+  `pointer-events-auto`, and outlives a view change into the Editor. It already
+  made one pre-existing E2E locator ambiguous. Whether it visually obscures Editor
+  controls is unassessed.

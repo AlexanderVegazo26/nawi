@@ -183,7 +183,9 @@ function Hud(): React.JSX.Element {
         <button
           type="button"
           onClick={() => send('skip-countdown')}
-          className="hud-no-drag h-11 rounded-lg px-2 text-xs font-medium text-accent hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          /* UX-A11Y.9 — `h-11` alone gave a 44px-tall, ~30px-wide target. The
+             requirement is 44x44, so the width floor has to be stated too. */
+          className="hud-no-drag h-11 min-w-11 rounded-lg px-2 text-xs font-medium text-accent hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         >
           Skip
         </button>
@@ -277,7 +279,9 @@ function Hud(): React.JSX.Element {
               // next move if the second device is also silent.
               setTimeout(() => setSwitching(false), 1500)
             }}
-            className="hud-no-drag rounded px-1.5 py-0.5 text-[10px] font-semibold text-warning underline disabled:opacity-50"
+            /* UX-A11Y.9 — this was a ~55x16 target. The glyph stays small; the
+               hit area does not. */
+            className="hud-no-drag inline-flex min-h-11 min-w-11 items-center justify-center rounded px-1.5 text-[10px] font-semibold text-warning underline disabled:opacity-50"
           >
             Switch mic
           </button>

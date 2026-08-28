@@ -146,7 +146,12 @@ test('annotations draw on the canvas, persist, and mark the document dirty', asy
 })
 
 test('undo removes the annotation and the change round-trips to disk', async () => {
-  await win.getByRole('button', { name: 'Undo' }).click()
+  // Named exactly, not by substring. PRD-002 P5 gave the delete flow a
+  // 30-second undo toast whose action button is also labelled "Undo", so the
+  // loose `name: 'Undo'` could match two controls once that toast is on
+  // screen. Tightening the locator to the editor's own button, not relaxing
+  // the assertion.
+  await win.getByRole('button', { name: 'Undo (Ctrl+Z)', exact: true }).click()
   await expect(win.getByText('Unsaved')).toBeVisible()
   await win.getByRole('button', { name: 'Save' }).click()
 
@@ -221,7 +226,12 @@ test('moving a shape is undoable', async () => {
 
   // The move must be undoable — it previously created no history entry at all,
   // so Undo silently discarded some earlier operation instead.
-  await win.getByRole('button', { name: 'Undo' }).click()
+  // Named exactly, not by substring. PRD-002 P5 gave the delete flow a
+  // 30-second undo toast whose action button is also labelled "Undo", so the
+  // loose `name: 'Undo'` could match two controls once that toast is on
+  // screen. Tightening the locator to the editor's own button, not relaxing
+  // the assertion.
+  await win.getByRole('button', { name: 'Undo (Ctrl+Z)', exact: true }).click()
   await win.getByRole('button', { name: 'Save' }).click()
   await expect.poll(async () => Math.round((await readPos())!.x)).toBe(Math.round(posBefore.x))
   expect(Math.round((await readPos())!.y)).toBe(Math.round(posBefore.y))
