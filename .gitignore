@@ -1,12 +1,55 @@
+# --- Dependencies -----------------------------------------------------------
 node_modules/
+
+# --- Build output -----------------------------------------------------------
 out/
 release/
+
+# Incremental typecheck state. These were tracked, which meant every build
+# produced a spurious diff; untracked with `git rm --cached`.
+*.tsbuildinfo
+
+# --- Test output ------------------------------------------------------------
 test-results/
 playwright-report/
-*.log
+blob-report/
+.playwright/
 
-# Worktrees created by the Workflow tool for isolated agent builds.
+# Acceptance-evidence artifacts produced by driving the real app. Regenerated
+# on every run, and large — the measurement is the deliverable, not the file.
+artifacts/
+
+# --- Agent runtime ----------------------------------------------------------
+# Worktrees created by the Workflow tool for isolated agent builds. They are
+# real checkouts and must never be committed into the parent repository.
 .claude/worktrees/
 
-# Acceptance-evidence artifacts produced by driving the app; regenerated per run.
-artifacts/
+# --- Secrets and local config ----------------------------------------------
+# Nothing here today, but this is a public repository — keep it that way.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.secrets
+# electron-builder signing material
+CSC_LINK
+*.provisionprofile
+
+# --- Logs -------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# --- OS and editor ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
