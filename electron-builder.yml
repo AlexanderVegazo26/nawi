@@ -11,19 +11,112 @@ files:
 # fails with "Cannot find module". Unpacking it puts a real file on disk at
 # resources/app.asar.unpacked/out/mcp/stdio-bridge.js, which is the path a client
 # must be pointed at. Without this the bridge builds, ships, and cannot be run.
+#
+# `out/cli/**` is here for the identical reason: the `nawi` CLI is also run
+# by plain `node` from outside the app, so it must exist as a real file on disk.
+#
+# `out/chunks/**` is NOT optional and NOT a tidiness choice. The bridge and the
+# CLI share `src/mcp/endpoint.ts`, so Rollup hoists it into a shared chunk under
+# out/chunks/ rather than duplicating it into both entries. That chunk is an
+# ordinary ESM import from two unpacked files — so leaving it inside the asar
+# reproduces the exact ERR_MODULE_NOT_FOUND this list exists to prevent, for
+# both entry points at once. Verified by running the packaged CLI from
+# release/win-unpacked; it fails before printing anything.
 asarUnpack:
   - out/mcp/**
+  - out/cli/**
+  - out/chunks/**
+
 win:
   target:
     - target: nsis
-      arch: [x64]
+      # arm64 added alongside x64: Windows-on-ARM otherwise runs the app under
+      # emulation, which is a measurable cost for a screen-capture tool.
+      arch: [x64, arm64]
+  # Signing is left to the environment. electron-builder picks up CSC_LINK and
+  # CSC_KEY_PASSWORD automatically; without them the installer ships UNSIGNED
+  # and SmartScreen will warn on first run.
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  # Deliberately NOT mutating PATH. Adding the CLI to the system PATH from an
+  # installer is a machine-wide side effect that is easy to leave behind on
+  # uninstall; users who want `nawi` on PATH should install it explicitly
+  # (see README). Revisit only as an opt-in checkbox.
+
 mac:
-  target: [dmg]
+  target:
+    # `zip` is REQUIRED, not decorative: electron-updater's MacUpdater looks up
+    # the release artifact with findFile(files, "zip", ["pkg","dmg"]) and errors
+    # out when no zip is published (node_modules/electron-updater/out/MacUpdater.js:81).
+    # With `dmg` alone the app builds and ships, and auto-update is silently
+    # dead on macOS. `electron-updater` is a real dependency here, so that
+    # matters.
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
   category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+  extendInfo:
+    # getUserMedia({ audio }) in recorder.ts:301 requires this string. macOS
+    # terminates the process outright when the key is absent — it is not a
+    # permission denial that the app can recover from.
+    NSMicrophoneUsageDescription: >-
+      Nawi needs microphone access to record narration alongside your
+      screen recordings.
+    # Screen recording is TCC-gated at first capture rather than by an
+    # entitlement, but the string is what the user reads in the prompt.
+    NSScreenCaptureUsageDescription: >-
+      Nawi needs screen recording access to capture screenshots and record
+      your screen.
+# Notarization is OFF until credentials exist. Turning it on means setting
+# APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID in the environment and
+# adding `notarize: true` above. UNTIL THEN: downloaded .dmg files are blocked
+# by Gatekeeper on other people's machines with "Nawi is damaged". Building
+# locally and running locally will not reproduce that — quarantine is only
+# applied to downloads.
+
 linux:
-  target: [AppImage]
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+      arch: [x64, arm64]
+    - target: rpm
+      arch: [x64]
   category: Utility
+  # `deb` and `rpm` fail the build outright without a maintainer field.
+  maintainer: Alexander Rodriguez <alexander.rodriguez@tapcheck.com>
+  synopsis: Screen capture, recording and annotation studio
+  description: >-
+    Nawi captures screenshots and screen recordings, annotates and redacts
+    them, and exposes the same operations to local agents over a loopback MCP
+    endpoint.
+  desktop:
+    entry:
+      # Without StartupWMClass the window does not associate with its launcher
+      # icon in GNOME/KDE docks and appears as a second, generic entry.
+      StartupWMClass: Nawi
+
+# Publishing target for electron-updater.
+#
+# >>> DELIBERATELY UNSET. <<< This repository has no git remote yet, so there is
+# no correct owner/repo to write here, and a GUESSED one is worse than none:
+# electron-builder bakes these values into app-update.yml, and electron-updater
+# would then poll a nonexistent repository forever — no error, no updates, and
+# nothing in a local build that reveals it.
+#
+# Set it when the remote exists:
+#
+#   publish:
+#     provider: github
+#     owner: <github-user-or-org>
+#     repo: <repository-name>
+#
+# `--publish never` on the dist:* scripts means local builds never upload
+# regardless; CI passes GH_TOKEN and can publish once this block is filled in.

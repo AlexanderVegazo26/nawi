@@ -1,4 +1,16 @@
 {
   "files": [],
-  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.web.json" }]
+  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.web.json" }],
+  // `files: []` means nothing is compiled through this config — the real build
+  // runs off the two referenced projects. `paths` is duplicated here purely so
+  // the shadcn CLI can resolve the `@/*` alias: it reads the ROOT tsconfig and
+  // aborts with "No import alias found" otherwise. tsconfig.web.json remains
+  // the authority for the renderer build.
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"],
+      "@/*": ["src/renderer/*"]
+    }
+  }
 }
