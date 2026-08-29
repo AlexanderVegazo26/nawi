@@ -1,0 +1,141 @@
+name: Release
+
+# electron-builder cannot cross-compile the macOS dmg or the Linux packages from
+# Windows, so "installable on Windows, macOS and Linux" is a claim that can only
+# be made true by building each on its own runner. This matrix is what makes the
+# three targets in electron-builder.yml real rather than aspirational.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish artifacts to a GitHub release'
+        type: boolean
+        default: false
+
+# `--publish never` in the dist:* scripts means the build jobs only ever upload
+# workflow artifacts, so read access is enough for them. The publish job below
+# is the only thing that needs to write a release.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Gate the expensive matrix on the cheap checks. A type error should not
+    # cost three platform builds to discover.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run install-electron
+      - run: npm run typecheck
+      - run: npm run test:unit
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            artifact: windows
+          - os: macos-latest
+            script: dist:mac
+            artifact: macos
+          - os: ubuntu-latest
+            script: dist:linux
+            artifact: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install rpm tooling
+        # electron-builder shells out to `rpmbuild` for the rpm target; the
+        # ubuntu runner does not ship it, and the failure is a late one.
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - run: npm ci
+
+      # Electron 44 dropped the postinstall binary fetch; electron-builder needs
+      # the real binary to package, and without this the failure comes late and
+      # reads as a packaging bug rather than a missing download.
+      - run: npm run install-electron
+
+      - name: Build installers
+        run: npm run ${{ matrix.script }}
+        env:
+          # Provided only if the secrets exist; electron-builder skips signing
+          # when they are absent rather than failing, so unsigned builds still
+          # produce artifacts. See electron-builder.yml for what that costs.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: nawi-${{ matrix.artifact }}
+          # The unpacked app tree is large and not a deliverable; only ship the
+          # installers, the update manifests and the checksums.
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: error
+
+  publish:
+    # The `publish` input existed but nothing read it, so a manual run could
+    # never actually publish — this job is what makes that input mean something.
+    # A `v*` tag publishes on its own; a manual run has to opt in.
+    needs: build
+    if: github.ref_type == 'tag' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          pattern: nawi-*
+          merge-multiple: true
+
+      - name: Create or update the GitHub release
+        # `latest*.yml` and the blockmaps are not decoration: electron-updater
+        # resolves updates through them, so a release missing them is a release
+        # that silently cannot auto-update.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_id) }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" \
+              --generate-notes \
+              --draft
+          fi

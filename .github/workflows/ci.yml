@@ -1,0 +1,72 @@
+name: CI
+
+# release.yml only runs on a `v*` tag, so before this workflow existed nothing
+# checked a pull request. The E2E suite in particular had never run on CI at all
+# — it drives the real Electron app, which needs a display, so it is easy to
+# leave out and expensive to leave broken.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same PR makes the first run's result irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Electron 44 no longer fetches its binary from a postinstall hook. The
+      # unit suite is node-environment and does not need it, but `npm ci` alone
+      # leaves node_modules/electron without a binary, so anything that resolves
+      # the real Electron would fail here rather than in the job that needs it.
+      - run: npm run install-electron
+      - run: npm run typecheck
+      - run: npm run test:unit
+
+  e2e:
+    name: E2E (Playwright + Electron)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run install-electron
+
+      - name: Install Playwright browsers and OS dependencies
+        # Electron ships its own Chromium, so only the shared libraries matter
+        # here — but `--with-deps` is the supported way to get them.
+        run: npx playwright install --with-deps chromium
+
+      # Electron needs a display. Without xvfb the app never opens a window and
+      # every spec fails on a timeout that looks like a product bug.
+      - name: Run E2E suite
+        run: xvfb-run --auto-servernum npm run test:e2e
+
+      - uses: actions/upload-artifact@v5
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -4,3 +4,9 @@ release/
 test-results/
 playwright-report/
 *.log
+
+# Worktrees created by the Workflow tool for isolated agent builds.
+.claude/worktrees/
+
+# Acceptance-evidence artifacts produced by driving the app; regenerated per run.
+artifacts/
