@@ -1,4 +1,4 @@
-# Competitor A Clone — UX Specification v1
+# Nawi — UX Specification v1
 
 Status: implementation-ready, Tier 3 (new user-facing product area, accessibility-critical capture overlay, multi-step journeys with real failure modes).
 Scope: what one implementer builds immediately. Supersedes nothing.
@@ -151,11 +151,11 @@ Trigger: any capture or record attempt where the OS reports screen-capture permi
 Presentation: the main window returns to front and the content area is replaced by a centered panel, max-width 520px:
 
 - Icon: a shield/monitor glyph, 48px, `text-secondary` — decorative, `aria-hidden`.
-- H1 (18px, `text-primary`): **"Competitor A Clone needs permission to capture your screen."**
+- H1 (18px, `text-primary`): **"Nawi needs permission to capture your screen."**
 - Body (13px, `text-secondary`): "macOS requires you to allow screen recording for this app. Your captures stay on this Mac — nothing is uploaded."
 - Numbered steps, visible, not hidden behind a disclosure:
   1. Open System Settings → Privacy & Security → Screen & System Audio Recording.
-  2. Turn on **Competitor A Clone**.
+  2. Turn on **Nawi**.
   3. Return here and choose **Check again**.
 - Primary button: **`Open System Settings`** — deep-links to the exact privacy pane.
 - Secondary button: **`Check again`** — re-queries permission. On success → dismiss panel and immediately retry the original action the user asked for (do not make them re-trigger). On still-denied → the panel stays and an `aria-live="assertive"` line appears beneath: "Still not granted. If you just turned it on, restart the app."

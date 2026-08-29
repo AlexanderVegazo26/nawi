@@ -1,8 +1,14 @@
-# Competitor A the version reviewed — As-Built Capability Matrix
+# Competitive Capability Matrix
 
-> **Purpose:** competitive/feature baseline for Nawi (PRD-001, PRD-002).
-> **Subject:** the vendor Competitor A, version `the version reviewed` (confirmed: `a package manifest`,
-> `SoftwareIdentity@version="the version reviewed"`), installed at `C:\Program Files\the vendor\Competitor A\`.
+> **Purpose:** a market baseline for Nawi (PRD-001, PRD-002). This is
+> competitor research: it records what an established product in this category
+> does, so Nawi's own scope decisions are made against evidence rather than
+> guesswork. Nawi is an independent product and not a reimplementation —
+> where a row below says "no", that is a deliberate scope decision or an open
+> backlog item, not a missing piece of a copy.
+> **Subject:** Competitor A — an established commercial product in the screen
+> capture and recording category. Version and vendor are deliberately omitted;
+> the findings are what matter, not which build they came from.
 > **Method:** black-box, read-only inventory of a licensed install. No licensing/DRM was
 > analysed, no obfuscated binary decompiled, no proprietary asset extracted.
 > **Extraction scope:** Tier 3 (whole application) per the proportionality table.
@@ -57,7 +63,7 @@ listing the vendor.com URLs. It is not usable as a vendor feature description.
 | `.snagx` ZIP internals (`index.json`, `metadata.json`, page JSON) | Document/data model |
 | `3rdparty_licenses.txt` §-headers | Vendor-declared third-party components |
 | `Messages/Stitching.json`, `Surveys/JtbdSurvey.json` | Scrolling-capture UX, vendor's own JTBD framing |
-| UTF-16 string scan of `Competitor ACapture.exe` | Command-line switches |
+| UTF-16 string scan of `a vendor artifact` | Command-line switches |
 | Nawi `src/` reads | Column 3 of the matrix |
 
 ### 1.4 What could not be determined
@@ -90,7 +96,7 @@ listing the vendor.com URLs. It is not usable as a vendor feature description.
 
 - `Competitor A.reg` — **0 bytes**.
 - `DynamicHelpXML_ENU.xml` — **0 bytes**.
-- `XP64/` contains `SP2K.INF`, `COMPETITOR-AP.GPD`, `Competitor AD.dll` — Windows-2000/XP-era printer
+- `XP64/` contains `SP2K.INF`, `COMPETITOR-AP.GPD`, `a vendor artifact` — Windows-2000/XP-era printer
   driver naming, **but** `Get-Printer` shows a live installed printer named `Competitor A` with
   driver `Competitor A Printer Driver`. This is *not* dead residue; see CAP-09.
 - `Competitor A.25.Picture` ProgID coexists with `Competitor A.26.Picture` — upgrade residue or
@@ -104,8 +110,8 @@ listing the vendor.com URLs. It is not usable as a vendor feature description.
 
 | Binary | Vendor `FileDescription` | Role |
 |---|---|---|
-| `Competitor ACapture.exe` (9.4 MB) | `Competitor A` | Capture host — the window in the user's screenshot |
-| `Competitor AEditor.exe` (11.1 MB) | `Competitor A Editor` | Editor / library / share |
+| `a vendor artifact` (9.4 MB) | `Competitor A` | Capture host — the window in the user's screenshot |
+| `a vendor artifact` (11.1 MB) | `Competitor A Editor` | Editor / library / share |
 | `Competitor API64.exe` | `Competitor A Printer Installer` | Installs the "Competitor A" printer |
 | `SnagPriv.exe` | `Competitor A RPC Helper` | Elevated/cross-process helper |
 | `crashpad_handler.exe`, `crashpad_http_upload.exe`, `crashpad_database_util.exe` | *(no description)* | Chromium Crashpad crash reporting (corroborated by `Crashreporting.dll`, `Backtrace.dll`) |
@@ -258,13 +264,13 @@ Supporting capabilities:
 
 | ID | Capability | Status | Evidence |
 |---|---|---|---|
-| AUT-01 | **Presets with per-preset global hotkeys** | Confirmed | U (Image `Ctrl+Shift+I`, Video `Ctrl+Shift+V`, Scrolling `Ctrl+Shift+Space`, Grab Text, Step Capture, Open in Competitor B Editor) + `Competitor APresets.Document` and `Competitor AProfile.Document` ProgIDs (O) + `Competitor AProfiles.ico` (O) |
-| AUT-02 | Presets/profiles are shareable documents | Confirmed | `Competitor APresets.Document` + `Competitor AProfile.Document` ProgIDs registered as document types (O) |
+| AUT-01 | **Presets with per-preset global hotkeys** | Confirmed | U (Image `Ctrl+Shift+I`, Video `Ctrl+Shift+V`, Scrolling `Ctrl+Shift+Space`, Grab Text, Step Capture, Open in Competitor B Editor) + `a vendor artifact` and `a vendor artifact` ProgIDs (O) + `a vendor artifact` (O) |
+| AUT-02 | Presets/profiles are shareable documents | Confirmed | `a vendor artifact` + `a vendor artifact` ProgIDs registered as document types (O) |
 | AUT-03 | **Full COM automation API** (~50 coclasses) | **Confirmed — high value** | `HKLM\SOFTWARE\Classes`: `COMPETITOR-A.Competitor A`, `ImageCapture`, `VideoCapture`, `TextCapture`, `ImageCaptureResults`, `Competitor AImageDocument`, `Competitor AVideoDocument`, `ImageAnnotation`, `TextAnnotation`, `SelectedArea`, `Competitor AOutputImageOptions`, `Competitor AOutputVideoOptions`, + all the `*Options` classes listed above (O) |
-| AUT-04 | Command-line switches | Confirmed | UTF-16 string scan of `Competitor ACapture.exe`: `/Open "<CaptureFilename>"`, `/name "%s"`, `/help`, `/restartwait`, `/INSTALLSTAMPS`, `/UNINSTALLSTAMPS`, `/IMPORTLASTVERSIONSETTINGS`, `/RETURNLICENSE`, `/tscdev`/`/tscstage`/`/tsclive` (env switches, also `--` forms) (O) |
+| AUT-04 | Command-line switches | Confirmed | UTF-16 string scan of `a vendor artifact`: `/Open "<CaptureFilename>"`, `/name "%s"`, `/help`, `/restartwait`, `/INSTALLSTAMPS`, `/UNINSTALLSTAMPS`, `/IMPORTLASTVERSIONSETTINGS`, `/RETURNLICENSE`, `/tscdev`/`/tscstage`/`/tsclive` (env switches, also `--` forms) (O) |
 | AUT-05 | File association `.snagx` → Editor | Confirmed | `HKLM\SOFTWARE\Classes\Competitor A.26.Picture\shell\open\command` = `"…\Competitor AEditor.exe" "%1"` (O) |
 | AUT-06 | **Two custom URL protocols** — `com.the vendor.competitor-acapture://` and `com.the vendor.competitor-aeditor://` | Confirmed | `HKLM\SOFTWARE\Classes\com.the vendor.competitor-a{capture,editor}` each carry a `URL Protocol` value, a `DefaultIcon`, and `Shell\open\command` = the respective EXE with `"%1"` (O). Separately `the vendorcompetitor-a` is a **ProgID, not a protocol** (no `URL Protocol` value) that also opens `Competitor AEditor.exe "%1"` (O), and `tscredirect://HELP_TOOLTIP_ARROW` appears as an in-app-only link scheme in `EnhancedTooltips/*/ENU/index.html` (O) with no registered system handler. |
-| AUT-07 | Windows Explorer shell extension (context menu) | Confirmed | `Competitor A.MainShellExt` ProgID (O) + `DLLx64/Competitor AShellExt64.dll`, `Competitor AShellExtRes.dll` (O) |
+| AUT-07 | Windows Explorer shell extension (context menu) | Confirmed | `Competitor A.MainShellExt` ProgID (O) + `DLLx64/Competitor AShellExt64.dll`, `a vendor artifact` (O) |
 | AUT-08 | Scheduled-task integration | **Confirmed** (promoted — see CAP-19) | `Microsoft.Win32.TaskScheduler.dll` (I) + `Presets8.xml` `<ScheduledCaptureTime>` with real values (O) |
 | AUT-09 | Windows toast notifications | Confirmed | `Microsoft.Toolkit.Uwp.Notifications.dll` (O) + `Microsoft.WindowsAPICodePack.Shell.dll` (O) |
 | AUT-10 | Feature flags / staged rollout | Confirmed | `FeatureSwitch.dll` (O) + `/tscdev`/`/tscstage`/`/tsclive` switches (O) — two independent sources |
@@ -382,7 +388,7 @@ record shared across all tools — one schema, `ToolMode` discriminates.
   libpng, libyuv, ABBYY FineReader, Google Fonts, zlib, Microsoft WebView2, OpenSSL,
   Websocket++, Boost, Intel. Plus (O, from filenames) LEADTOOLS, OpenCV 4.8.0, ONNX
   Runtime, hunspell, ZXing, BouncyCastle, Newtonsoft.Json, RestSharp, MimeKit, Tweetinvi.
-- **Deployment:** MSI (`swidtag` `tagId="msi:package/…"`, WiX declared in licenses),
+- **Deployment:** MSI (`a package manifest` `tagId="msi:package/…"`, WiX declared in licenses),
   per-machine `Program Files`, live printer device installed, shell extension registered,
   ~50 COM classes registered machine-wide.
 
@@ -393,8 +399,8 @@ record shared across all tools — one schema, `ToolMode` discriminates.
 Source: a second user-supplied screenshot, title bar
 `2026-08-28_15-09-21.snagx - Competitor A Editor`. **Everything in this subsection is tier U**
 unless a corroborating source is named. Until now the Editor was known only from the
-install tree (`Competitor AEditor.exe`, `EditorDotNet.dll`, `EditorInterop.dll`,
-`Competitor AEditorRes.dll`) — i.e. we knew it existed and roughly how big it was, and nothing
+install tree (`a vendor artifact`, `EditorDotNet.dll`, `EditorInterop.dll`,
+`a vendor artifact`) — i.e. we knew it existed and roughly how big it was, and nothing
 about its surface. This is the single largest reduction in §1.4 uncertainty in the document.
 
 | ID | Observation | Status | Notes / corroboration |
@@ -773,13 +779,13 @@ avoid? `EnhancedTooltips/more-tool/` "More Menu" is evidence they outgrew their 
 
 ## 7. Evidence appendix
 
-All paths relative to `C:\Program Files\the vendor\Competitor A\` unless noted.
+All paths relative to `the install directory` unless noted.
 
 | Ref | Source | Established |
 |---|---|---|
-| E1 | `a package manifest` | Version the version reviewed, MSI packaging, the vendor |
-| E2 | PE `VersionInfo` on 7 EXEs + ~35 first-party DLLs (PowerShell `Get-ChildItem \| VersionInfo`) | §2.1 executable roles; `a vendor module` = "Scrolling capture support"; `a vendor module` = "in-painting module"; `Competitor AD.dll` = "Competitor A Printer Driver" |
-| E3 | `HKLM\SOFTWARE\Classes` filtered on `^(COMPETITOR-A\|Competitor A\|the vendor\|tsc)` | ~50 COM ProgIDs (AUT-03), `Competitor APresets.Document`, `Competitor AProfile.Document`, `Competitor A.MainShellExt` |
+| E1 | `a package manifest` | version and packaging metadata |
+| E2 | PE `VersionInfo` on 7 EXEs + ~35 first-party DLLs (PowerShell `Get-ChildItem \| VersionInfo`) | §2.1 executable roles; `a vendor module` = "Scrolling capture support"; `a vendor module` = "in-painting module"; `a vendor artifact` = "Competitor A Printer Driver" |
+| E3 | `HKLM\SOFTWARE\Classes` filtered on `^(COMPETITOR-A\|Competitor A\|the vendor\|tsc)` | ~50 COM ProgIDs (AUT-03), `a vendor artifact`, `a vendor artifact`, `Competitor A.MainShellExt` |
 | E4 | `HKLM\SOFTWARE\Classes`: `Competitor A.26.Picture`, `the vendorcompetitor-a`, and the two `com.the vendor.competitor-a{capture,editor}` keys (the latter enumerated by filtering all of `HKLM\SOFTWARE\Classes` for a `URL Protocol` value) | AUT-05 file association; AUT-06 — exactly two registered URL protocols, both the vendor-namespaced |
 | E5 | `Get-Printer` | Live printer `Competitor A`, driver `Competitor A Printer Driver` (CAP-09) |
 | E6 | `EnhancedTooltips/*/ENU/index.html` (22 dirs) | 22 tool names + vendor descriptions + `tscredirect://` link scheme (§2.4) |
@@ -791,7 +797,7 @@ All paths relative to `C:\Program Files\the vendor\Competitor A\` unless noted.
 | E12 | `Messages/Stitching.json` | 20 rotating scrolling-capture progress messages, localized |
 | E13 | `Surveys/JtbdSurvey.json` | the vendor's own JTBD answer set (AUT-16) |
 | E14 | `en-US/*.mp4` (16 tutorial videos) | Vendor-authored feature demos: `smart-redact`, `remove-background-noise`, `screen-draw`, `picture-in-picture`, `multi-track`, `record-screen-webcam`, `step-capture`, `scrolling-{small,medium,large}`, `share-link`, `edit-images-from-Competitor B-editor`, `send-images-to-Competitor B-online`, `crop-your-image`, `add-steps-to-your-capture`, `point-out-important-information` |
-| E15 | UTF-16 string scan of `Competitor ACapture.exe` | CLI switches (AUT-04) |
+| E15 | UTF-16 string scan of `a vendor artifact` | CLI switches (AUT-04) |
 | E16 | Directory listing: `Stamps/` 9 categories, 2,301 files; `Simplify/` 7; `Step/` 4; `Templates/` 13; `dictionaries/` 6 languages; 6 locale dirs | ANN-19, ANN-20, ANN-21, EFX-06, ANN-31, LOC-01 |
 | E16a | `%LOCALAPPDATA%\the vendor\Competitor A\Presets8.xml` (44.7 KB `Presets7.xml` also present), plus sibling `Tools2.xml`, `ImageQuickStylesV2.xml`, `GifExportOptions.xml`, `ProgramOutputs.xml`, `AppSettings.json` | §2.8a preset schema; CAP-18, CAP-19, CAP-20, REC-11, REC-12, REC-13, SHR-13, SHR-14, SHR-15, ANN-37, AUT-01a; promotion of AUT-08 |
 | E16b | `EnhancedTooltips/*/ENU/index.html` `<div class="tpot-text">` extracted for all 22 tools | The verbatim vendor descriptions in §2.4 |

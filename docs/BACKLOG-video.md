@@ -2,8 +2,8 @@
 
 Queued video-editor work, in dependency order. Created 2026-08-29.
 
-Gap analysis was benchmarked against Competitor A, [an open-source NLE](an open-source NLE)
-and [another open-source NLE](another open-source NLE). Both references are MLT+FFmpeg NLEs, so most of
+Gap analysis was benchmarked against Competitor A, an open-source NLE
+and another open-source NLE. Both references are MLT+FFmpeg NLEs, so most of
 their surface (multi-track compositing, colour grading, chroma key, keyframable filter graphs,
 proxy editing, EDL, VST hosting) is deliberately **not** a goal for a capture tool. What follows is
 the filtered set that fits.

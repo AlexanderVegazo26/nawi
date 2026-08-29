@@ -1,6 +1,6 @@
 # Nawi
 
-A modern Competitor A replacement — capture, record, annotate, edit, library, export.
+A screen capture and recording studio — capture, record, annotate, edit, library, export.
 
 Electron + React + TypeScript. Windows-first, but the codebase is cross-platform.
 

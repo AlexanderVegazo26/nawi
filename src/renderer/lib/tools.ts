@@ -27,7 +27,7 @@ export interface ToolDef {
 /* ===========================================================================
  * RESOLVED KEY MAP — UX-ANN.1 vs. the shipped bindings.
  *
- * The divergence recorded in COMPETITOR-A-26-CAPABILITY-MATRIX.md §4.3 is resolved
+ * The divergence recorded in COMPETITIVE-CAPABILITY-MATRIX.md §4.3 is resolved
  * here. Written down so it is not re-litigated.
  *
  * PRD-002 UX-ANN.1 specifies:  A R E T N B P C S

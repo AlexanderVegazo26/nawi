@@ -3,7 +3,7 @@ import { PRD_UX_ANN_1, RESERVED_KEYS, TOOLS, toolById, toolForKey } from './tool
 
 /**
  * The key map is a requirement (PRD-002 UX-ANN.1) that the shipped editor
- * diverged from — recorded as an open item in COMPETITOR-A-26-CAPABILITY-MATRIX.md
+ * diverged from — recorded as an open item in COMPETITIVE-CAPABILITY-MATRIX.md
  * §4.3. These tests are what stop it diverging again silently.
  */
 

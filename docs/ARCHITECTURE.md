@@ -1,4 +1,4 @@
-# nawi — Architecture Note
+# Nawi — Architecture Note
 
 Status: accepted (ADR-001, greenfield). Date: 2026-08-28.
 Scope: Electron + Vite + React + TypeScript desktop capture/annotation app. Windows primary.
@@ -277,7 +277,7 @@ Also required:
 Preload surface (the complete API — anything not here does not exist to the renderer):
 
 ```ts
-export interface Competitor AApi {
+export interface AppApi {
   capture: {
     fullscreen(displayId?: number): Promise<CaptureRecord>;
     listSources(kinds: SourceKind[]): Promise<CaptureSource[]>;
@@ -310,14 +310,14 @@ export interface Competitor AApi {
   };
   on<K extends keyof IpcEvents>(channel: K, cb: (payload: IpcEvents[K]) => void): () => void;
 }
-declare global { interface Window { competitor-a: Competitor AApi } }
+declare global { interface Window { api: AppApi } }
 ```
 
 ---
 
 ## 4. Storage layout
 
-Root: `app.getPath('userData')` → `%APPDATA%/nawi/`.
+Root: `app.getPath('userData')` → `%APPDATA%/Nawi/`.
 
 ```
 userData/
