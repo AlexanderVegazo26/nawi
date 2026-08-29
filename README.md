@@ -53,6 +53,76 @@ on by providing `CSC_LINK` / `CSC_KEY_PASSWORD` (Windows) and `APPLE_ID` /
 `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` plus `notarize: true` (macOS).
 No application icon is set either, so all three ship the default Electron icon.
 
+## Installing and first run
+
+Nawi needs permission to record your screen, and the OS decides how that is
+granted. The steps differ per platform, and the macOS one has a step people
+routinely miss.
+
+### Windows
+
+1. Run the NSIS installer (`.exe`). **SmartScreen will warn you** — the build is
+   not code-signed yet. Choose **More info → Run anyway**.
+2. Launch Nawi. **No per-app screen-capture permission exists on Windows**, so
+   capture works immediately with nothing to grant.
+3. Microphone and webcam are prompted only at the moment you first enable them,
+   never at startup. Denying either leaves screen recording working.
+
+System audio capture is supported here and only here — Nawi uses the Windows
+loopback device. On macOS and Linux, recordings degrade to video-only.
+
+### macOS
+
+1. Open the `.dmg` and drag Nawi to Applications. Pick the build matching your
+   hardware: **arm64** for Apple Silicon, **x64** for Intel.
+2. **Gatekeeper will block it** — the build is not signed or notarized, so a
+   downloaded copy is quarantined and reports *"Nawi is damaged and can't be
+   opened."* It is not damaged. Clear the quarantine flag:
+   ```bash
+   xattr -d com.apple.quarantine /Applications/Nawi.app
+   ```
+   This does not reproduce when building locally, because quarantine is applied
+   only to downloads.
+3. Launch Nawi, then grant screen recording in
+   **System Settings → Privacy & Security → Screen & System Audio Recording**.
+   The in-app permission screen has a button that deep-links straight there.
+4. **Relaunch Nawi.** macOS reads the TCC grant at process start, so the
+   permission does not take effect in the running instance. Nawi detects this
+   case and says so rather than leaving you looking at a dead capture button.
+
+System audio is not captured on macOS; recordings are video plus microphone.
+
+### Linux
+
+1. Install the package for your distribution — `.AppImage` (any), `.deb`
+   (Debian/Ubuntu), or `.rpm` (Fedora/RHEL, x64 only). For the AppImage, mark it
+   executable first:
+   ```bash
+   chmod +x Nawi-*.AppImage && ./Nawi-*.AppImage
+   ```
+2. Screen capture goes through your desktop environment's screen-sharing
+   settings rather than an app-level permission. On Wayland the portal prompts on
+   first capture; on X11 it generally just works.
+
+System audio is not captured on Linux; recordings are video plus microphone.
+
+### Building from source (any platform)
+
+```bash
+npm install
+npm run install-electron   # Electron 44 fetches its binary separately
+npm run dev
+```
+
+`npm run dist` builds installers for **your own platform only** — electron-builder
+cannot cross-compile. Use the release workflow's three-OS matrix for the rest.
+
+### Putting the `nawi` CLI on your PATH
+
+The installers deliberately do not modify system PATH, since that leaves residue
+on uninstall. See [Agent access](#agent-access--mcp-and-cli) below for the shipped
+binary's location on each platform, or install from the repo with `npm install -g .`.
+
 ## Agent access — MCP and CLI
 
 Nawi exposes twelve tools over a loopback JSON-RPC endpoint: `capture_screen`,
