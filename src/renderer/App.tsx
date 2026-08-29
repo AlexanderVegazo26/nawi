@@ -18,6 +18,8 @@ interface ToastMsg {
   /** PRD-002 P5 — present on every destructive action's toast. */
   action?: { label: string; onAction: () => void }
   durationMs?: number
+  /** How many times this same message fired in a row; 1 (or absent) shows no badge. */
+  repeats?: number
 }
 
 const RAIL: Array<{ id: View; label: string; icon: React.JSX.Element }> = [
@@ -63,8 +65,25 @@ export function App(): React.JSX.Element {
   const toastId = useRef(0)
 
   const notify = useCallback((message: string, tone: 'ok' | 'err' = 'ok') => {
-    const id = ++toastId.current
-    setToasts((t) => [...t, { id, message, tone }])
+    setToasts((t) => {
+      /*
+       * Repeating an action repeats its toast, and three identical "Copied to
+       * clipboard" bars say nothing the first one didn't while taking three
+       * times the space. An immediate repeat replaces the previous card and
+       * bumps a count, so it re-reads as fresh feedback rather than as backlog.
+       *
+       * Only the newest toast is coalesced: collapsing a repeat that sits
+       * behind a *different* message would reorder the two, and an error that
+       * scrolled upward while an unrelated success re-announced itself is worse
+       * than a duplicate.
+       */
+      const last = t[t.length - 1]
+      if (last && last.message === message && last.tone === tone && !last.action) {
+        const repeats = (last.repeats ?? 1) + 1
+        return [...t.slice(0, -1), { ...last, id: ++toastId.current, repeats }]
+      }
+      return [...t, { id: ++toastId.current, message, tone }]
+    })
   }, [])
 
   /**
@@ -345,8 +364,20 @@ export function App(): React.JSX.Element {
             setEditing(updated)
           }}
           notify={notify}
+          /*
+           * Handed in rather than rendered as a sibling: as a viewport-pinned
+           * overlay this stack sat on top of the editor's properties bar,
+           * covering the colour swatches and zoom controls. EditorView anchors
+           * the slot above that bar instead.
+           */
+          toastSlot={
+            <ToastStack
+              variant="inline"
+              toasts={toasts}
+              dismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))}
+            />
+          }
         />
-        <ToastStack toasts={toasts} dismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
       </>
     )
   }
@@ -431,22 +462,60 @@ export function App(): React.JSX.Element {
   )
 }
 
+/**
+ * How many toasts are ever drawn at once.
+ *
+ * `notify` appends without bound and `notifyUndo` pins one for a full 30 s, so
+ * a few quick actions used to grow a column of bars tall enough to cover the
+ * editor's toolbar and canvas. Three keeps the newest feedback visible while
+ * putting a ceiling on the height; older ones are counted rather than drawn,
+ * because silently dropping them would hide an error someone needs to see.
+ */
+const MAX_VISIBLE_TOASTS = 3
+
 function ToastStack({
   toasts,
-  dismiss
+  dismiss,
+  /**
+   * `floating` pins the stack to the viewport's bottom-right — right for the
+   * capture and library views, which have no bottom chrome.
+   *
+   * `inline` renders it in normal flow so a caller can anchor it. The editor
+   * uses that to sit the stack directly above its properties bar: anchoring to
+   * the footer means a wrapped, taller footer still cannot be covered, with no
+   * measurement and no resize observer to keep in sync.
+   */
+  variant = 'floating'
 }: {
   toasts: ToastMsg[]
   dismiss: (id: number) => void
+  variant?: 'floating' | 'inline'
 }): React.JSX.Element {
+  // Newest first so the most recent action is nearest the surface it came from,
+  // and so the ones dropped by the cap are the stalest.
+  const ordered = [...toasts].reverse()
+  const visible = ordered.slice(0, MAX_VISIBLE_TOASTS)
+  const hidden = ordered.length - visible.length
+
   return (
-    <div className="pointer-events-none fixed bottom-5 right-5 z-[60] flex w-80 flex-col gap-2">
-      {toasts.map((t) => (
+    <div
+      className={`pointer-events-none flex w-80 flex-col gap-2 ${
+        variant === 'floating' ? 'fixed bottom-5 right-5 z-[60]' : 'z-[60]'
+      }`}
+    >
+      {hidden > 0 && (
+        <p className="self-end rounded-full bg-surface-2 px-2.5 py-1 text-[11px] text-text-secondary ring-1 ring-border-strong">
+          {hidden} more notification{hidden === 1 ? '' : 's'}
+        </p>
+      )}
+      {visible.map((t) => (
         <Toast
           key={t.id}
           message={t.message}
           tone={t.tone}
           action={t.action}
           durationMs={t.durationMs}
+          repeats={t.repeats}
           onDismiss={() => dismiss(t.id)}
         />
       ))}

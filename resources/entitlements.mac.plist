@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened Runtime entitlements. Required once `mac.hardenedRuntime` is on,
+  which notarization in turn requires.
+
+  Each entry is here because something in this app breaks without it:
+
+  - allow-jit / allow-unsigned-executable-memory / allow-dyld-environment-
+    variables: V8 and Chromium. Electron will not start under the hardened
+    runtime without these three.
+  - device.audio-input: `recorder.ts:301` calls getUserMedia({ audio }) for the
+    microphone track. Paired with NSMicrophoneUsageDescription in
+    electron-builder.yml's mac.extendInfo — the entitlement grants the
+    capability, the plist string is what macOS shows in the prompt, and a
+    missing string is an immediate crash rather than a denial.
+  - files.user-selected.read-write: the save/export dialogs write captures to
+    wherever the user picks.
+
+  Screen recording is deliberately NOT listed: macOS gates it through TCC at
+  first use of the capture API, not through an entitlement. `permissions.ts:46`
+  reads that status via systemPreferences.getMediaAccessStatus('screen').
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+  </dict>
+</plist>

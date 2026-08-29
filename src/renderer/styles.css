@@ -46,6 +46,77 @@
   /* Scrims stay dark in BOTH themes: they sit over the user's own screenshot,
      so they are not a surface. UX-VIS.1 wants a neutral black dim. */
   --color-scrim: var(--sf-scrim);
+
+  /*
+   * --- shadcn/ui BRIDGE -------------------------------------------------
+   *
+   * Components copied in via `npx shadcn add` are written against shadcn's own
+   * token vocabulary (--background, --primary, --border, ...). Rather than add
+   * a second, parallel palette, each shadcn name is aliased onto the --sf-*
+   * raw it corresponds to.
+   *
+   * These live INSIDE @theme deliberately. shadcn's stock setup defines its
+   * tokens under `:root` and a `.dark` class, which would break the theme
+   * resolution documented above in two ways: nothing in this app sets a `.dark`
+   * class, and a colour defined only inside a media query stops following the
+   * toggle. Because --sf-* is the layer that gets swapped per theme, aliasing
+   * at this level means shadcn components follow `data-theme` for free and the
+   * SETTINGS SEAM above stays the whole story.
+   *
+   * Consequence: do NOT let `npx shadcn init` write to this file. Adding a
+   * component with `npx shadcn add <name>` is fine — only `init` rewrites the
+   * token layer.
+   */
+  --color-background: var(--sf-surface-0);
+  --color-foreground: var(--sf-text-primary);
+  /* Cards/popovers sit ON the base surface, so they take the raised ramp. */
+  --color-card: var(--sf-surface-1);
+  --color-card-foreground: var(--sf-text-primary);
+  --color-popover: var(--sf-surface-1);
+  --color-popover-foreground: var(--sf-text-primary);
+  --color-primary: var(--sf-accent);
+  --color-primary-foreground: var(--sf-accent-fg);
+  --color-secondary: var(--sf-surface-2);
+  --color-secondary-foreground: var(--sf-text-primary);
+  --color-muted: var(--sf-surface-2);
+  --color-muted-foreground: var(--sf-text-secondary);
+  /*
+   * !!! NAME COLLISION — read before adding a shadcn component. !!!
+   *
+   * shadcn's `--accent` is NOT a brand colour: it is the subtle hover fill for
+   * menu/select rows. This app already defines `--color-accent` above as the
+   * brand blue, and that meaning is used across every existing view, so it wins.
+   *
+   * The result is that a stock shadcn component's `bg-accent`/`text-accent-
+   * foreground` hover pair will paint a solid brand-blue row instead of a quiet
+   * grey one. When adding a component that uses them, rewrite those two classes
+   * to `bg-accent-subtle text-text-primary`. This is the one place the bridge
+   * cannot be transparent, because the conflict is in the names themselves.
+   *
+   * `--color-accent-foreground` is mapped below anyway, so that a component
+   * slipping through unedited renders readable text on the wrong-coloured row
+   * rather than invisible text on it — a visible bug beats a blank one.
+   */
+  --color-accent-subtle: var(--sf-surface-2);
+  --color-accent-foreground: var(--sf-text-primary);
+  /* shadcn's `--destructive` is a fill that white text sits on, which is what
+     --sf-danger-fill is for; --sf-danger is the lighter text-on-surface tone. */
+  --color-destructive: var(--sf-danger-fill);
+  --color-destructive-foreground: #ffffff;
+  /* shadcn uses --input for control outlines, which is the 3:1 case (WCAG
+     1.4.11) — so it maps to the strong border, not the decorative one. */
+  --color-input: var(--sf-border-strong);
+  --color-ring: var(--sf-accent);
+
+  /* shadcn components use `rounded-sm/md/lg/xl` expecting them to derive from
+     --radius. On Tailwind v4 those are `--radius-*` theme keys, and defining
+     bare --radius alone leaves them at Tailwind's stock values — so the radii
+     would silently ignore this scale. Derived explicitly for that reason. */
+  --radius: 0.5rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 /* --- Light ramp: the unconditional base. ------------------------------- */

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { mediaKindOf } from '@shared/types'
 import type {
   AnnotationDoc,
@@ -87,12 +87,23 @@ export function EditorView({
   item,
   onClose,
   onSaved,
-  notify
+  notify,
+  toastSlot
 }: {
   item: LibraryItem
   onClose: () => void
   onSaved: (item: LibraryItem) => void
   notify: (msg: string, tone?: 'ok' | 'err') => void
+  /**
+   * The app's toast stack, anchored by this view instead of by the viewport.
+   *
+   * A `fixed bottom-right` stack overlaps the properties bar below, hiding the
+   * colour swatches and zoom controls behind a notification the user did not
+   * ask to have there. Rendering it directly above that bar means a taller,
+   * wrapped bar still pushes the toasts up rather than being covered — no
+   * measured offset to drift out of sync.
+   */
+  toastSlot?: ReactNode
 }): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -1119,9 +1130,21 @@ export function EditorView({
         </main>
       </div>
 
-      {/* properties bar */}
-      {!isVideo && (
-        <footer className="flex shrink-0 flex-wrap items-center gap-4 border-t border-border bg-surface-1 px-4 py-2">
+      {/*
+       * Toasts are anchored to the top edge of the properties bar (`bottom-full`
+       * on an absolute child of this relative wrapper), so they stack upward
+       * over the canvas and can never cover the controls below. `pointer-events-
+       * none` on the wrapper keeps the strip of canvas behind them clickable;
+       * Toast itself re-enables events on the card.
+       */}
+      <div className="relative shrink-0">
+        <div className="pointer-events-none absolute bottom-full right-4 mb-3 flex justify-end">
+          {toastSlot}
+        </div>
+
+        {/* properties bar */}
+        {!isVideo && (
+          <footer className="flex shrink-0 flex-wrap items-center gap-4 border-t border-border bg-surface-1 px-4 py-2">
           <div className="flex items-center gap-1.5" role="group" aria-label="Color">
             {SWATCHES.map((c, i) => (
               <button
@@ -1296,9 +1319,10 @@ export function EditorView({
             <Button variant="subtle" onClick={() => setZoom((z) => Math.min(4, z * 1.2))} title="Zoom in (Ctrl++)">
               +
             </Button>
-          </div>
-        </footer>
-      )}
+            </div>
+          </footer>
+        )}
+      </div>
 
       {/*
        * UX-ANN.3 / PRD-002 §9 — the revert confirmation names the risk. "Are you

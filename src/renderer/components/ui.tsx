@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
+import { Dialog, DialogContent, DialogOverlay, DialogTitle } from './shadcn/dialog'
 
 /** Small shared primitives. Kept deliberately plain so views stay readable. */
 
@@ -285,7 +286,30 @@ export function ErrorState({
   )
 }
 
-/** Focus-trapping modal that restores focus to whatever opened it. */
+/**
+ * Focus-trapping modal that restores focus to whatever opened it.
+ *
+ * The focus trap, scroll lock, Escape handling and focus restoration are Radix
+ * `Dialog`'s (see `./shadcn/dialog`); this component is the app-shaped wrapper
+ * around it. The props are unchanged from the hand-rolled version on purpose —
+ * every call site renders `<Modal>` conditionally and passes `onClose`, so the
+ * component owns `open` and reports closure the one way callers already expect.
+ *
+ * Three behaviours are pinned here rather than left to Radix's defaults:
+ *
+ *   - `onOpenAutoFocus` re-implements the `[data-autofocus]` targeting that
+ *     `Button`'s `autoFocusInModal` prop feeds (see its comment above). Radix
+ *     would otherwise focus the FIRST focusable child, and every current caller
+ *     is a destructive confirm — that default would land initial focus on
+ *     "Delete"/"Revert" instead of the safe escape hatch. UX-A11Y.3.
+ *   - `onPointerDownOutside` is prevented. Radix dismisses on outside click by
+ *     default; the previous modal did not, and a stray click discarding a
+ *     confirm dialog is a silent behaviour change nobody asked for. Escape and
+ *     the footer buttons remain the ways out.
+ *   - `aria-describedby={undefined}` suppresses Radix's dev warning about a
+ *     missing `Dialog.Description`. This API has no description slot; the title
+ *     plus body content is the whole accessible name/among.
+ */
 export function Modal({
   title,
   children,
@@ -297,58 +321,43 @@ export function Modal({
   onClose: () => void
   footer?: ReactNode
 }): React.JSX.Element {
-  const ref = useRef<HTMLDivElement>(null)
+  /*
+   * Focus restoration is OURS, not Radix's, and removing this breaks
+   * UX-A11Y.3 ("dismissing the delete confirm returns focus to the invoking
+   * card") — which is an E2E test, so the unit suite will not catch it.
+   *
+   * Radix restores focus in `onCloseAutoFocus`, which runs while the dialog is
+   * closing. Every caller here renders `<Modal>` conditionally and drops it in
+   * the same tick that `onClose` clears their state, so the whole subtree
+   * unmounts before that lifecycle ever runs and focus lands on <body>. An
+   * effect cleanup is the one hook that still fires on unmount, which is why
+   * this is the same approach the hand-rolled modal used.
+   */
   const restoreTo = useRef<HTMLElement | null>(null)
-
   useEffect(() => {
     restoreTo.current = document.activeElement as HTMLElement | null
-    // Initial focus goes to the safest control, not the destructive one.
-    const first = ref.current?.querySelector<HTMLElement>('[data-autofocus]')
-    ;(first ?? ref.current)?.focus()
     return () => restoreTo.current?.focus?.()
   }, [])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
-        return
-      }
-      if (e.key !== 'Tab' || !ref.current) return
-      const focusables = ref.current.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      )
-      if (focusables.length === 0) return
-      const first = focusables[0]
-      const last = focusables[focusables.length - 1]
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault()
-        last.focus()
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault()
-        first.focus()
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/70 p-6">
-      <div
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        tabIndex={-1}
-        className="surface w-full max-w-md rounded-2xl p-5 shadow-2xl"
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogOverlay />
+      <DialogContent
+        aria-describedby={undefined}
+        onOpenAutoFocus={(e) => {
+          const content = e.currentTarget as HTMLElement | null
+          const safest = content?.querySelector<HTMLElement>('[data-autofocus]')
+          if (!safest) return // No marked control: let Radix do its thing.
+          e.preventDefault()
+          safest.focus()
+        }}
+        onPointerDownOutside={(e) => e.preventDefault()}
       >
-        <h2 className="text-base font-semibold text-text-primary">{title}</h2>
+        <DialogTitle className="text-base font-semibold text-text-primary">{title}</DialogTitle>
         <div className="mt-3 text-sm leading-relaxed text-text-secondary">{children}</div>
         {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -360,7 +369,8 @@ export function Toast({
   tone,
   onDismiss,
   action,
-  durationMs
+  durationMs,
+  repeats
 }: {
   message: string
   tone: 'ok' | 'err'
@@ -373,6 +383,12 @@ export function Toast({
   action?: { label: string; onAction: () => void }
   /** Overrides the default lifetime; an undo toast must outlive the 30 s window. */
   durationMs?: number
+  /**
+   * Repeat count for a message that fired several times in a row. Rendered as a
+   * badge rather than as extra cards, so repeating an action does not grow a
+   * column of identical bars over the view underneath.
+   */
+  repeats?: number
 }): React.JSX.Element {
   useEffect(() => {
     const t = setTimeout(onDismiss, durationMs ?? (tone === 'err' ? 6000 : 3200))
@@ -411,6 +427,14 @@ export function Toast({
       <span className="flex-1">
         <span className="font-semibold">{tone === 'err' ? 'Error: ' : 'Done: '}</span>
         {message}
+        {/* Inside the live region on purpose: "(x3)" is part of what happened,
+            and a screen reader that announced only the message would report a
+            repeat as a single event. */}
+        {repeats && repeats > 1 ? (
+          <span className="ml-1.5 rounded-full bg-surface-3 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums">
+            ×{repeats}
+          </span>
+        ) : null}
       </span>
       {action && (
         <button
