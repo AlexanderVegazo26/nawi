@@ -6,15 +6,19 @@ Electron + React + TypeScript. Windows-first, but the codebase is cross-platform
 
 ## Quick start
 
+For contributors building from source. If you just want to *use* Nawi, go to
+[Installing and first run](#installing-and-first-run).
+
 ```bash
 npm install
-node node_modules/electron/install.js   # Electron 44 fetches its binary separately
+npm run install-electron   # Electron 44 fetches its binary separately
 npm run dev
 ```
 
 > **Note on `npm install`:** Electron 44 no longer downloads its binary from a
-> `postinstall` hook — you run the line above once. If npm's `allowScripts`
-> policy blocks esbuild, run `npm install-scripts approve esbuild`.
+> `postinstall` hook — `npm run install-electron` (which runs
+> `node node_modules/electron/install.js`) does it, once. If npm's
+> `allowScripts` policy blocks esbuild, run `npm install-scripts approve esbuild`.
 
 ## Scripts
 
@@ -38,6 +42,9 @@ npm run dev
 | macOS | `.dmg` + `.zip` | x64, arm64 |
 | Linux | AppImage, `.deb`, `.rpm` | x64, arm64 (rpm x64 only) |
 
+Every platform ships **separate x64 and arm64 builds** (except the Linux `.rpm`,
+which is x64 only) — pick the one matching your hardware.
+
 The macOS `.zip` is required, not optional: `electron-updater` looks the update
 artifact up by its zip and auto-update is silently dead without one.
 
@@ -45,83 +52,141 @@ artifact up by its zip and auto-update is silently dead without one.
 on macOS. `.github/workflows/release.yml` runs the three-OS matrix that actually
 builds all of them; a local `npm run dist` only ever produces your own platform's.
 
-**Neither platform's build is code-signed yet.** Windows installers trigger a
-SmartScreen warning, and downloaded macOS builds are blocked by Gatekeeper
-("Nawi is damaged") — a failure that does *not* reproduce when building and
-running locally, because quarantine is only applied to downloads. Signing turns
-on by providing `CSC_LINK` / `CSC_KEY_PASSWORD` (Windows) and `APPLE_ID` /
-`APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` plus `notarize: true` (macOS).
-No application icon is set either, so all three ship the default Electron icon.
+**No build is code-signed yet.** What that means for you as a *user* is in
+[Installing and first run](#installing-and-first-run), per platform. For a
+maintainer: signing turns on by providing `CSC_LINK` / `CSC_KEY_PASSWORD`
+(Windows) and `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` plus
+`notarize: true` (macOS). No application icon is set either, so all three ship
+the default Electron icon.
 
 ## Installing and first run
 
-Nawi needs permission to record your screen, and the OS decides how that is
-granted. The steps differ per platform, and the macOS one has a step people
-routinely miss.
+Audience: someone installing a released build and taking their first capture.
+Contributors running from source want [Quick start](#quick-start) instead.
+
+Two things behave differently on every platform, and both bite on first run:
+**who grants screen-recording permission**, and **whether system audio can be
+recorded at all**. Here is the whole matrix before the per-OS steps.
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Per-app screen permission | None — the OS does not ask | Yes: TCC, granted in System Settings | Your desktop environment / portal |
+| Relaunch after granting | No | **Yes** | No |
+| System audio recorded | **Yes** (loopback) | No | No |
+| Microphone | Prompted when you first record with it on | Prompted when you first record with it on | Prompted when you first record with it on |
+
+> **First run, any platform: take a screenshot before you try a recording.**
+> A failed *screenshot* is the only action that can raise Nawi's permission
+> recovery card — the panel with the exact settings path, a button that opens
+> it, and a re-try button. A failed *recording* never raises it; you get a
+> transient error message and nothing else. So a screenshot is the diagnostic
+> worth running first.
+>
+> Even for a screenshot the card is not guaranteed: Nawi raises it only when the
+> OS reports screen access as denied, restricted, or unreadable. On a
+> never-yet-asked Mac, and possibly on Windows, the OS may report something else
+> and you will get the transient error message instead. If that happens, the
+> per-OS steps below still apply — follow them by hand.
+
+> **Known cosmetic defect:** the recovery card is titled *"Aperture needs
+> screen recording access"* (or, on Windows, *"Aperture couldn't read your
+> screen"*). **Aperture is a stale pre-rename product name.** This is the right
+> card for Nawi, not another application; it is tracked as a defect.
 
 ### Windows
 
-1. Run the NSIS installer (`.exe`). **SmartScreen will warn you** — the build is
-   not code-signed yet. Choose **More info → Run anyway**.
-2. Launch Nawi. **No per-app screen-capture permission exists on Windows**, so
-   capture works immediately with nothing to grant.
-3. Microphone and webcam are prompted only at the moment you first enable them,
-   never at startup. Denying either leaves screen recording working.
+1. Pick the NSIS installer (`.exe`) for your architecture — **arm64** for
+   Windows-on-ARM, **x64** otherwise — and run it. **SmartScreen will warn you**,
+   because the build is not code-signed. Choose **More info → Run anyway**.
+2. Launch Nawi and take a screenshot. **Windows has no per-app screen-capture
+   permission**, so there is nothing to grant and nothing to relaunch for.
+3. Record. **System audio is captured on Windows and only on Windows** — Nawi
+   asks the OS for the loopback device. The *Record system audio* track is on by
+   default.
+4. Microphone and webcam are prompted **when you press Record with that track
+   ticked** — not when you tick it, and never at startup. Denying either leaves
+   the screen recording running; the HUD shows that track as failed.
 
-System audio capture is supported here and only here — Nawi uses the Windows
-loopback device. On macOS and Linux, recordings degrade to video-only.
+**If a capture fails anyway**, that is not a permission problem, because Windows
+has none to give. Nawi's recovery card, if it appears, says exactly that and
+names the real causes: a display driver, a remote/RDP session, or workplace
+group policy. Its **Open System Settings** button lands on
+**Settings → Privacy & security** — the closest honest destination, since
+Windows exposes no screen-capture privacy page.
 
 ### macOS
 
 1. Open the `.dmg` and drag Nawi to Applications. Pick the build matching your
    hardware: **arm64** for Apple Silicon, **x64** for Intel.
-2. **Gatekeeper will block it** — the build is not signed or notarized, so a
-   downloaded copy is quarantined and reports *"Nawi is damaged and can't be
-   opened."* It is not damaged. Clear the quarantine flag:
+2. **Gatekeeper will block it.** The build is neither signed nor notarized, so a
+   *downloaded* copy is quarantined and macOS reports *"Nawi is damaged and
+   can't be opened"* (exact wording varies by macOS version). It is not damaged.
+   Clear the quarantine flag:
    ```bash
-   xattr -d com.apple.quarantine /Applications/Nawi.app
+   xattr -dr com.apple.quarantine /Applications/Nawi.app
    ```
-   This does not reproduce when building locally, because quarantine is applied
-   only to downloads.
-3. Launch Nawi, then grant screen recording in
-   **System Settings → Privacy & Security → Screen & System Audio Recording**.
-   The in-app permission screen has a button that deep-links straight there.
-4. **Relaunch Nawi.** macOS reads the TCC grant at process start, so the
-   permission does not take effect in the running instance. Nawi detects this
-   case and says so rather than leaving you looking at a dead capture button.
-
-System audio is not captured on macOS; recordings are video plus microphone.
+   Building and running locally never reproduces this, because quarantine is
+   applied only to downloads.
+3. Launch Nawi and **take a screenshot** (Capture region / full screen). This is
+   what triggers macOS's screen-recording request — Nawi deliberately does not
+   ask at install or at launch.
+4. Grant it in **System Settings → Privacy & Security → Screen & System Audio
+   Recording**, then switch **Nawi** on. If the recovery card appeared, its
+   **Open System Settings** button deep-links straight to that pane.
+5. **Relaunch Nawi.** macOS reads the grant at process start, so it does not take
+   effect in the already-running instance. The card carries a **Relaunch now**
+   button next to the note *"Already granted it? macOS sometimes needs … to
+   relaunch before it takes effect."*
+   Be aware of what that button is and is not: it appears on **every** macOS
+   permission card, because Nawi flags the possibility from the platform alone.
+   It does **not** detect that you specifically are in the
+   granted-but-not-relaunched state. If capture still fails after you have
+   granted access, relaunch — the app will not work it out for you.
+6. Record. **System audio is not captured on macOS.** The *Record system audio*
+   track is on by default, so a default recording shows that track in an error
+   state reading *"System audio is not available on this platform."* That is
+   expected, not a fault: the video and any microphone track record normally.
+   Untick the track to keep the HUD clean.
+7. Microphone and webcam are prompted **when you press Record with that track
+   ticked** — one at a time, and never together. Denying either leaves the screen
+   recording running.
 
 ### Linux
 
-1. Install the package for your distribution — `.AppImage` (any), `.deb`
-   (Debian/Ubuntu), or `.rpm` (Fedora/RHEL, x64 only). For the AppImage, mark it
-   executable first:
+1. Install the package for your distribution — `.AppImage` (x64/arm64), `.deb`
+   (Debian/Ubuntu, x64/arm64), or `.rpm` (Fedora/RHEL, **x64 only**). An
+   AppImage must be marked executable before it will run:
    ```bash
    chmod +x Nawi-*.AppImage && ./Nawi-*.AppImage
    ```
-2. Screen capture goes through your desktop environment's screen-sharing
-   settings rather than an app-level permission. On Wayland the portal prompts on
-   first capture; on X11 it generally just works.
-
-System audio is not captured on Linux; recordings are video plus microphone.
-
-### Building from source (any platform)
-
-```bash
-npm install
-npm run install-electron   # Electron 44 fetches its binary separately
-npm run dev
-```
-
-`npm run dist` builds installers for **your own platform only** — electron-builder
-cannot cross-compile. Use the release workflow's three-OS matrix for the rest.
+2. Screen capture goes through **your desktop environment's screen-sharing
+   settings**, not an app-level permission — that is the wording Nawi itself
+   uses, because it has no way to name your particular desktop's settings app.
+   (Whether your compositor prompts via a portal on first capture is a property
+   of your desktop environment, not of Nawi, and is not something this repo can
+   confirm for you.)
+3. If a capture fails, the recovery card points at those settings — but its
+   **Open System Settings** button cannot work on Linux and will tell you it
+   could not open settings. That is by design, not a crash; open them yourself.
+4. Record. **System audio is not captured on Linux**, and the default-on *Record
+   system audio* track shows *"System audio is not available on this platform."*
+   — same as macOS, and equally expected. Microphone and webcam are prompted when
+   you press Record with that track ticked.
 
 ### Putting the `nawi` CLI on your PATH
 
-The installers deliberately do not modify system PATH, since that leaves residue
-on uninstall. See [Agent access](#agent-access--mcp-and-cli) below for the shipped
-binary's location on each platform, or install from the repo with `npm install -g .`.
+Nawi ships a `nawi` command-line front end, but **the installers deliberately do
+not modify your system PATH** — an installer mutating machine-wide PATH leaves
+residue behind on uninstall. Two ways to get it:
+
+- `npm install -g .` from a clone of this repo, or
+- point your shell at the copy inside the installed app. It is unpacked from the
+  asar precisely so plain `node` can run it:
+  - Windows — `<install dir>\resources\app.asar.unpacked\out\cli\index.js`
+  - macOS — `/Applications/Nawi.app/Contents/Resources/app.asar.unpacked/out/cli/index.js`
+  - Linux — `<install dir>/resources/app.asar.unpacked/out/cli/index.js`
+
+What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
@@ -155,14 +220,10 @@ not running.
 It **will not start the app for you** — a shell command silently opening a GUI
 is a surprise nobody consented to. That refusal is inherited from the MCP bridge.
 
-The installers do **not** put `nawi` on your `PATH`; mutating system PATH
-from an installer leaves residue behind on uninstall. Get it on PATH either by
-installing from the repo (`npm install -g .`), or by pointing at the shipped
-copy, which is unpacked from the asar precisely so plain `node` can run it:
-
-- Windows — `<install dir>\resources\app.asar.unpacked\out\cli\index.js`
-- macOS — `/Applications/Nawi.app/Contents/Resources/app.asar.unpacked/out/cli/index.js`
-- Linux — `<install dir>/resources/app.asar.unpacked/out/cli/index.js`
+The installers do **not** put `nawi` on your `PATH` — see
+[Putting the `nawi` CLI on your PATH](#putting-the-nawi-cli-on-your-path) for the
+shipped binary's location on each platform and why the installer leaves PATH
+alone.
 
 ## What works today
 
@@ -286,8 +347,13 @@ CDP selectors and the MCP projection/revision model.
   [`docs/BACKLOG-video.md`](docs/BACKLOG-video.md) for the queue and
   `docs/DRAFT-video-export-VEX.md` for the requirements.
 - Video captures show a placeholder tile in the library rather than a poster frame.
-- System-audio capture (`audio: 'loopback'`) is Windows-only and degrades to
-  video-only elsewhere.
+- System-audio capture (`audio: 'loopback'`) is Windows-only. Elsewhere the
+  recording continues video-only, and because the track is enabled by default the
+  user sees it in an error state ("System audio is not available on this
+  platform") on every default macOS/Linux recording.
+- A screen-permission failure during a *recording* produces a transient error
+  message, not the UX-PRM.2 recovery card; only a *screenshot* failure raises the
+  card. The recovery card also still uses the pre-rename product name "Aperture".
 - Mic and system audio are mixed down to a single track at record time, so they
   cannot be separated, muted independently or re-balanced afterwards.
 - The library is a flat JSON index. That's correct at this scale and keeps the app
