@@ -53,3 +53,6 @@ desktop.ini
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+
+# Vendored third-party documentation — not this project's content.
+docs/playwright-release-notes-js.md
