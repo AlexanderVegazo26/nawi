@@ -82,16 +82,23 @@ recorded at all**. Here is the whole matrix before the per-OS steps.
 > transient error message and nothing else. So a screenshot is the diagnostic
 > worth running first.
 >
-> Even for a screenshot the card is not guaranteed: Nawi raises it only when the
-> OS reports screen access as denied, restricted, or unreadable. On a
-> never-yet-asked Mac, and possibly on Windows, the OS may report something else
-> and you will get the transient error message instead. If that happens, the
-> per-OS steps below still apply — follow them by hand.
+> **On Windows the card never appears at all.** Measured, not inferred: Windows
+> reports screen access as `granted` unconditionally, and the card is raised only
+> for `denied`, `restricted` or `unknown`. So every failed capture on Windows —
+> driver, remote session, group policy — produces the transient message and
+> nothing more. The per-OS steps below are the whole recovery path here; follow
+> them by hand.
+>
+> On macOS the card is likely but not guaranteed: a first-ever attempt may report
+> "not yet asked", which also falls through to the transient message.
 
-> **Known cosmetic defect:** the recovery card is titled *"Aperture needs
-> screen recording access"* (or, on Windows, *"Aperture couldn't read your
-> screen"*). **Aperture is a stale pre-rename product name.** This is the right
-> card for Nawi, not another application; it is tracked as a defect.
+> **Known defect: the card is titled "Aperture", not "Nawi."** It reads *"Aperture
+> needs screen recording access"* (on Windows, *"Aperture couldn't read your
+> screen"*). This is the right card for Nawi, not another application. Aperture is
+> the project codename, and the card's copy is transcribed verbatim from a
+> normative specification block that was never renamed — so the fix belongs in the
+> spec first, and the test that asserts the string is faithfully pinning the spec
+> rather than encoding a typo.
 
 ### Windows
 
@@ -108,9 +115,10 @@ recorded at all**. Here is the whole matrix before the per-OS steps.
    the screen recording running; the HUD shows that track as failed.
 
 **If a capture fails anyway**, that is not a permission problem, because Windows
-has none to give. Nawi's recovery card, if it appears, says exactly that and
-names the real causes: a display driver, a remote/RDP session, or workplace
-group policy. Its **Open System Settings** button lands on
+has none to give. The real causes are a display driver, a remote/RDP session, or
+workplace group policy. Note that Nawi's recovery card — which names exactly
+those causes — **cannot be raised on Windows**, so you will see only the
+transient message. Were it shown, its **Open System Settings** button would land on
 **Settings → Privacy & security** — the closest honest destination, since
 Windows exposes no screen-capture privacy page.
 
@@ -351,9 +359,13 @@ CDP selectors and the MCP projection/revision model.
   recording continues video-only, and because the track is enabled by default the
   user sees it in an error state ("System audio is not available on this
   platform") on every default macOS/Linux recording.
-- A screen-permission failure during a *recording* produces a transient error
-  message, not the UX-PRM.2 recovery card; only a *screenshot* failure raises the
-  card. The recovery card also still uses the pre-rename product name "Aperture".
+- A screen-permission failure during a *recording* reaches only a console log —
+  it does not raise the UX-PRM.2 recovery card and does not surface a message the
+  user can act on. Only a *screenshot* failure raises the card, and on Windows not
+  even then: the OS reports access as granted unconditionally, which is outside
+  the card's trigger condition, so the card is unreachable on that platform.
+- The recovery card is titled "Aperture", the project codename. The copy is
+  transcribed verbatim from a normative spec block that was never renamed.
 - Mic and system audio are mixed down to a single track at record time, so they
   cannot be separated, muted independently or re-balanced afterwards.
 - The library is a flat JSON index. That's correct at this scale and keeps the app
