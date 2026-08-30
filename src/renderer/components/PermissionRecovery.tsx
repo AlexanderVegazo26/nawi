@@ -38,6 +38,39 @@ interface Copy {
  */
 export function platformCopy(state: PermissionState): Copy {
   if (state.platform === 'darwin') {
+    /**
+     * The card is raised by *a capture that already failed*, so the reported
+     * status only chooses the wording — never whether the user sees anything.
+     * Two macOS states make the §4 block untrue as written:
+     *
+     *  - `not-determined`: nothing has been denied, macOS simply has not asked
+     *    yet. This is the first-ever-attempt case the card exists for.
+     *  - `granted`: the grant is present and the capture failed anyway, so
+     *    "needs screen recording access" would send the user to toggle a switch
+     *    that is already on. The relaunch footnote is the useful part here,
+     *    because a TCC grant is read at process start.
+     *
+     * The product name is kept as the §4 block spells it; correcting it is a
+     * spec change, not a code change.
+     */
+    if (state.screen === 'not-determined') {
+      return {
+        heading: 'Aperture needs screen recording access',
+        line1: 'macOS has not asked yet — it will the first time, and until then nothing can see your screen.',
+        line2: 'Nothing is captured until you press the hotkey.',
+        footnote:
+          'Already granted it? macOS sometimes needs Aperture to relaunch before it takes effect.'
+      }
+    }
+    if (state.screen === 'granted') {
+      return {
+        heading: 'Aperture couldn’t read your screen',
+        line1: 'macOS reports the access as granted, so this is usually a grant that needs a relaunch to take effect.',
+        line2: 'Nothing is captured until you press the hotkey.',
+        footnote:
+          'Already granted it? macOS sometimes needs Aperture to relaunch before it takes effect.'
+      }
+    }
     // Verbatim from PRD-002 §4.
     return {
       heading: 'Aperture needs screen recording access',
@@ -69,10 +102,22 @@ export function platformCopy(state: PermissionState): Copy {
 
 export function PermissionRecovery({
   state,
+  detail,
   onRecheck,
   notify
 }: {
   state: PermissionState
+  /**
+   * What actually failed, verbatim.
+   *
+   * The card is now raised by any failed capture, not only by one the OS models
+   * as a denial — so without this line a missing encoder or a lost source would
+   * be rendered as a permission problem. Showing the real message keeps the
+   * card general instead of making it wrong, and it is deliberately not
+   * string-matched to pick different copy: that would be a fragile, unfenced
+   * classifier over messages nothing constrains.
+   */
+  detail?: string | null
   /** Re-runs whatever failed. UX-PRM.2's "[I've done this — check again]". */
   onRecheck: () => void
   notify: (msg: string, tone?: 'ok' | 'err') => void
@@ -106,6 +151,24 @@ export function PermissionRecovery({
       <h2 className="text-lg font-semibold text-text-primary">{copy.heading}</h2>
       <p className="mt-2 text-sm leading-relaxed text-text-secondary">{copy.line1}</p>
       <p className="mt-1 text-sm leading-relaxed text-text-secondary">{copy.line2}</p>
+
+      {detail && (
+        /*
+         * Clamped and wrapped at the point of *display*, not only at ingest.
+         * The text originates in a renderer and is rendered inside a card that
+         * looks like a system dialog, so a long unbroken string would push the
+         * card's own buttons off screen — a legitimate-looking surface whose
+         * actionable parts an attacker controls the visibility of. `break-words`
+         * stops a single long token doing the same thing horizontally.
+         */
+        <p
+          data-testid="permission-recovery-detail"
+          className="mt-3 max-h-24 overflow-y-auto break-words rounded-lg bg-surface-2 px-3 py-2 text-left text-xs text-text-secondary"
+        >
+          What went wrong: {detail.slice(0, 300)}
+          {detail.length > 300 ? '…' : ''}
+        </p>
+      )}
 
       <p className="mt-3 rounded-lg bg-surface-2 px-3 py-2 text-xs text-text-secondary">
         {state.settingsPath}

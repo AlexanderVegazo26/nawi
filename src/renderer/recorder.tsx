@@ -30,8 +30,21 @@ const engine = new ScreenRecorder(
       const res = await window.api.finalizeRecording({ recordingId, ...info })
       if (!res.ok) throw new Error(res.error)
     },
-    onFailed: (message) => {
-      console.error('[recorder]', message)
+    onFailed: (message, kind) => {
+      console.error('[recorder]', kind, message)
+      // A refused *request* is not a broken capture, and must not be reported
+      // as one: main answers a report by ending the recording, which for a
+      // duplicated start would truncate and finalize the healthy recording the
+      // engine had just declined to disturb. The refusal is already carried in
+      // the status the engine emits, whose phase stays 'recording'.
+      if (kind === 'start-refused') return
+      // Otherwise: this window is never shown, so a console line is a dead end
+      // (UX-PRM.2). The status publish that precedes this only broadcasts
+      // `recordingStatus` — and it publishes `phase: 'idle'`, which makes main
+      // hide the HUD in the same call, so the HUD's error line is written into a
+      // window on its way out. Main's `fail()` broadcast is the only surface a
+      // user can act on.
+      void window.api.reportRecordingFailure(message)
     }
   },
   {

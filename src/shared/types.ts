@@ -446,6 +446,11 @@ export interface NawiApi {
   abortRecording(recordingId: string): Promise<IpcResult<null>>
   /** Recorder → main: publishes the status the HUD and main window render. */
   publishRecordingStatus(status: RecordingStatus): Promise<IpcResult<null>>
+  /**
+   * Recorder → main: a failure that began in the recorder window, routed to the
+   * same broadcast main-origin failures use so it reaches a visible surface.
+   */
+  reportRecordingFailure(message: string): Promise<IpcResult<null>>
   /** Recorder → main: the command queue it should act on. Returns an unsubscribe function. */
   onRecordCommand(cb: (command: string) => void): () => void
   /** Recorder → main: the request to begin, delivered when main is ready. */

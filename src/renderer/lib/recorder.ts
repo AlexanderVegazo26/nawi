@@ -80,12 +80,27 @@ function describeMediaError(err: unknown, what: string): string {
   }
 }
 
+/**
+ * Why a failure needs a kind.
+ *
+ * `capture-failed` means the recording is broken and must end; main turns it
+ * into the recovery card and stops the engine. `start-refused` means only that
+ * a *request* was declined while a healthy recording continues — and treating
+ * that as capture-broken truncates and finalizes the very recording it was
+ * refusing to disturb, emitting both a failure and a saved-recording for it.
+ *
+ * The distinction is not hypothetical: main's already-in-progress gate reads a
+ * mirrored status, so it is stale for one IPC round trip after the engine goes
+ * active, and that window is exactly when the engine's own guard is reachable.
+ */
+export type FailureKind = 'capture-failed' | 'start-refused'
+
 export interface RecorderCallbacks {
   onStatus: (status: RecordingStatus) => void
   /** Called with the recording id and its chunk; must resolve before the next chunk. */
   onChunk: (recordingId: string, chunk: Uint8Array) => Promise<void>
   onFinished: (recordingId: string, info: { width: number; height: number; durationMs: number }) => Promise<void>
-  onFailed: (message: string) => void
+  onFailed: (message: string, kind: FailureKind) => void
 }
 
 /**
@@ -153,6 +168,23 @@ export class ScreenRecorder {
    */
   private done: Promise<void> = Promise.resolve()
   private settleDone: (() => void) | null = null
+  /**
+   * A chunk write that failed, remembered rather than only reported.
+   *
+   * `finishInner` awaits the chunk queue with `.catch(() => undefined)`, which
+   * swallows exactly the rejection `ondataavailable` just reported. Without
+   * this field the failure is invisible at the point the outcome is decided, so
+   * the same recording was reported failed *and* finalized — two contradictory
+   * broadcasts, and a library item missing its tail chunk.
+   */
+  private chunkFailure: string | null = null
+  /**
+   * Guards `finish` against re-entry.
+   *
+   * A chunk failure ends the recording by stopping the MediaRecorder, whose
+   * `onstop` calls `finish(null)`. Both must not run the ending twice.
+   */
+  private finishing = false
 
   constructor(
     private readonly cb: RecorderCallbacks,
@@ -213,7 +245,23 @@ export class ScreenRecorder {
   /* ---------------- start ---------------- */
 
   async start(options: StartRecordingOptions): Promise<void> {
-    if (this.active) throw new Error('A recording is already in progress')
+    if (this.active) {
+      // Reported, not thrown. The only caller is `void engine.start(options)`
+      // in `recorder.tsx`: a rejection there is an unhandled rejection that
+      // reaches no user and no log the user can see, which is precisely the
+      // dead end UX-PRM.2 forbids — and this guard sits on the retry path the
+      // recovery card offers.
+      const message = 'A recording is already in progress'
+      // Emitted, so the live recording's own status carries the refusal and the
+      // HUD can say so — the phase stays 'recording', which is the truth.
+      this.emit(message)
+      // Reported as a refusal, never as a capture failure. This is the one
+      // `onFailed` site reached while the engine is still capturing, so a
+      // consumer that responds by stopping the engine would destroy a healthy
+      // recording. See `FailureKind`.
+      this.cb.onFailed(message, 'start-refused')
+      return
+    }
     this.lastOptions = options
     this.reset()
     this.tracks.system.enabled = options.tracks.system
@@ -231,7 +279,7 @@ export class ScreenRecorder {
       const message = err instanceof Error ? err.message : String(err)
       this.phase = 'idle'
       this.emit(message)
-      this.cb.onFailed(message)
+      this.cb.onFailed(message, 'capture-failed')
       return
     }
 
@@ -256,6 +304,8 @@ export class ScreenRecorder {
     this.recordingId = null
     this.mimeType = ''
     this.chunkQueue = Promise.resolve()
+    this.chunkFailure = null
+    this.finishing = false
     for (const kind of Object.keys(this.tracks) as TrackKind[]) {
       this.tracks[kind] = emptyTrack(kind === 'screen')
     }
@@ -400,7 +450,7 @@ export class ScreenRecorder {
       this.phase = 'idle'
       const message = 'This build has no supported video encoder for recording.'
       this.emit(message)
-      this.cb.onFailed(message)
+      this.cb.onFailed(message, 'capture-failed')
       return
     }
     this.mimeType = mimeType
@@ -413,7 +463,7 @@ export class ScreenRecorder {
       this.phase = 'idle'
       const message = err instanceof Error ? err.message : String(err)
       this.emit(message)
-      this.cb.onFailed(message)
+      this.cb.onFailed(message, 'capture-failed')
       return
     }
 
@@ -433,7 +483,7 @@ export class ScreenRecorder {
       this.teardown()
       this.phase = 'idle'
       this.emit(opened.error)
-      this.cb.onFailed(opened.error)
+      this.cb.onFailed(opened.error, 'capture-failed')
       return
     }
     this.recordingId = opened.value.recordingId
@@ -455,12 +505,30 @@ export class ScreenRecorder {
           await this.cb.onChunk(id, bytes)
         })
         .catch((err: unknown) => {
-          // A failed write means the recording is no longer being persisted.
-          // Saying so beats continuing to look like it is recording.
           console.error('[recorder] chunk write failed', err)
-          this.cb.onFailed(
-            `Could not write the recording to disk: ${err instanceof Error ? err.message : String(err)}`
-          )
+          // Reported once per recording, not once per chunk. At a 1 s
+          // timeslice, a full disk otherwise fires a report every second — and
+          // now that a report is a user-facing surface, that is a toast, a
+          // forced view switch and a recovery card every second.
+          if (this.chunkFailure) return
+          this.chunkFailure = `Could not write the recording to disk: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+          // A failed write means the recording is no longer being persisted, so
+          // it has to *end* — not merely be reported while MediaRecorder keeps
+          // running against a file nothing is written to. Ending it through the
+          // recorder's own stop is what takes the same `finish` path every
+          // other ending uses: the phase reaches 'idle', the 250 ms tick stops
+          // re-publishing 'recording', and the retry the recovery card offers
+          // is not refused by main's already-in-progress gate.
+          //
+          // Deferred out of this callback deliberately. This callback *is* the
+          // chunk queue, and `finishInner` awaits that queue; ending inline
+          // deadlocks — `recorder.stop()` fires `onstop` -> `finish` ->
+          // `await this.chunkQueue`, which cannot settle until this callback
+          // returns. A timeout, not a microtask, so the queue promise is
+          // genuinely settled rather than merely scheduled.
+          setTimeout(() => this.endBecauseChunkFailed(), 0)
         })
     }
 
@@ -483,6 +551,31 @@ export class ScreenRecorder {
       this.emit()
     }, 250)
     this.emit()
+  }
+
+  /**
+   * Ends a recording whose bytes stopped reaching disk.
+   *
+   * Stopping the MediaRecorder drives `onstop` -> `finish(null)`, and
+   * `finishInner` folds `chunkFailure` in, so the ending takes its error branch
+   * exactly as if the failure had been passed down. If the recorder is already
+   * gone, `finish` is called directly — the queue has settled by then.
+   */
+  private endBecauseChunkFailed(): void {
+    const recorder = this.recorder
+    if (recorder && recorder.state !== 'inactive') {
+      this.sealSegment()
+      // Moved off 'recording' immediately, exactly as `stop()` and `pause()` do
+      // after their own seal. `sealSegment` guards only on the phase, and
+      // `segmentStartedAt` is not advanced — so leaving the phase alone here
+      // let `finishInner`'s own seal add the same interval a second time. The
+      // single-seal invariant held elsewhere only because every other caller
+      // changes the phase in the same breath.
+      this.phase = 'stopping'
+      recorder.stop()
+      return
+    }
+    void this.finish(this.chunkFailure)
   }
 
   /** UX-REC.5 — warn, never stop. */
@@ -644,13 +737,33 @@ export class ScreenRecorder {
 
   /** Every ending routes through here, so no path can finish silently. */
   private async finish(error: string | null): Promise<void> {
+    // A chunk failure ends the recording by stopping the MediaRecorder, and
+    // that stop fires `onstop` -> `finish(null)`. Running the ending twice
+    // would emit a second terminal status and, on a clean stop, finalize twice.
+    if (this.finishing) {
+      // Await the ending already in flight rather than settling `done` on its
+      // behalf. Settling early would falsify `stop()`'s contract — that a
+      // caller awaiting it knows the file is closed and the item exists — for
+      // work that has not finished. No caller relies on that today; a future
+      // one would have had no way to notice.
+      await this.done
+      return
+    }
+    this.finishing = true
+    // Captured for *this* ending rather than read at `finally` time. Reading it
+    // late couples the ending to whatever `settleDone` happens to be current: a
+    // `start()` arriving mid-`finish` would install a fresh resolver, and this
+    // `finally` would settle that one — leaving the original `stop()`'s promise
+    // unresolved forever. Unreachable today (main's gate rejects a start while
+    // the phase is 'stopping'), but the capture costs one line and makes the
+    // ending robust rather than merely unreachable.
+    const settle = this.settleDone
+    this.settleDone = null
     try {
       await this.finishInner(error)
     } finally {
       // Settled in a `finally` so a throw anywhere above cannot leave `stop()`
       // awaiting a promise that never resolves.
-      const settle = this.settleDone
-      this.settleDone = null
       settle?.()
     }
   }
@@ -668,7 +781,7 @@ export class ScreenRecorder {
     this.accumulatedMs += performance.now() - this.segmentStartedAt
   }
 
-  private async finishInner(error: string | null): Promise<void> {
+  private async finishInner(requested: string | null): Promise<void> {
     this.sealSegment()
     const id = this.recordingId
     const durationMs = Math.round(this.accumulatedMs)
@@ -676,10 +789,22 @@ export class ScreenRecorder {
     const height = this.height
 
     this.phase = 'stopping'
-    this.emit(error)
+    this.emit(requested)
 
     // Wait for every queued chunk to land before telling main to close the file.
     await this.chunkQueue.catch(() => undefined)
+
+    /*
+     * The outcome is decided *after* the queue settles, not before.
+     *
+     * `stop()` calls `requestData()` and the tail chunk it produces can still
+     * be in flight when this runs — so a failure read any earlier is read as
+     * null, and the `.catch(() => undefined)` above then swallows the very
+     * rejection that would have told us. That is how one recording came to be
+     * reported failed by `ondataavailable` and finalized here at the same time:
+     * two contradictory broadcasts, and a library item missing its tail chunk.
+     */
+    const error = requested ?? this.chunkFailure
     this.teardown()
 
     this.recordingId = null
@@ -687,7 +812,7 @@ export class ScreenRecorder {
 
     if (error) {
       this.emit(error)
-      this.cb.onFailed(error)
+      this.cb.onFailed(error, 'capture-failed')
       return
     }
     if (!id) {
@@ -699,7 +824,7 @@ export class ScreenRecorder {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       this.emit(message)
-      this.cb.onFailed(message)
+      this.cb.onFailed(message, 'capture-failed')
       return
     }
     this.emit()

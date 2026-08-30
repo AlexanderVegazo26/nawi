@@ -57,6 +57,7 @@ const api: NawiApi = {
   finalizeRecording: (req) => ipcRenderer.invoke(IPC.finalizeRecording, req),
   abortRecording: (recordingId) => ipcRenderer.invoke(IPC.abortRecording, recordingId),
   publishRecordingStatus: (status) => ipcRenderer.invoke(IPC.publishRecordingStatus, status),
+  reportRecordingFailure: (message) => ipcRenderer.invoke(IPC.reportRecordingFailure, message),
   onRecordCommand: (cb) => subscribe<string>(IPC.recordDispatch, cb),
   onRecordRequest: (cb) => subscribe<StartRecordingOptions>(IPC.recordRequest, cb),
 

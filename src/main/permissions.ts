@@ -12,17 +12,26 @@ import type { PermissionState, ScreenAccess } from '@shared/types'
  * ## What is actually knowable, per platform
  *
  * `systemPreferences.getMediaAccessStatus('screen')` is the only API Electron
- * offers here, and it is meaningful on macOS. It is called inside a try/catch
- * and anything unexpected degrades to `'unknown'` rather than to `'granted'`:
- * an API that throws must not be able to report permission as present.
+ * offers here, and it is meaningful on macOS. The try/catch and the `'unknown'`
+ * fallback below are a guard against a platform that does not implement it, not
+ * a description of what any platform we ship on actually does — measured on
+ * Electron 44, Windows never reaches either: the call returns a clean
+ * `'granted'` for screen, microphone and camera, unconditionally, and does not
+ * throw. `e2e/permission-recovery.spec.ts` asserts that — but only when the
+ * suite is run *on Windows*, and CI runs the E2E job on ubuntu only, so this is
+ * a local check rather than a merge gate. An unpinned assumption here is what
+ * made the recovery card unreachable on Windows in the first place; a Windows
+ * E2E job is the thing that would turn this into a real fence.
  *
- * On Windows, screen capture is not gated behind a per-app OS permission the
- * way it is on macOS, so a `'granted'` reading there says nothing useful and a
- * capture can still fail for reasons the OS does not model as a permission
- * (graphics-capture failure, group policy, a secure desktop). The recovery card
- * is therefore driven by *an actual failed capture*, never by the status alone.
- * That ordering is the important part: status-first would show the card to
- * nobody on Windows and to the wrong people on macOS.
+ * So on Windows a status reading carries no information at all: screen capture
+ * is not gated behind a per-app OS permission, and a capture can still fail for
+ * reasons the OS does not model as a permission (graphics-capture failure,
+ * group policy, a secure desktop, a remote session). The recovery card is
+ * therefore driven by *an actual failed capture*, never by the status alone,
+ * and once a capture has failed the status only chooses the wording — a status
+ * that gated *reachability* showed the card to nobody on Windows, and a
+ * status-first check would show it to everyone on macOS before the first
+ * attempt. See `CaptureView.onCaptureFailed`.
  */
 
 /** Where the user has to go, in the OS's own vocabulary (UX-PRM.1). */
@@ -41,8 +50,10 @@ export function screenPermission(): PermissionState {
   const platform = process.platform
   let status: ScreenAccess = 'unknown'
   try {
-    // Not available on every platform; a throw here is a normal outcome, not a
-    // bug, and must resolve to 'unknown'.
+    // Defensive: not guaranteed on every platform, and a throw must resolve to
+    // 'unknown' rather than to 'granted' — an API that failed must not be able
+    // to report permission as present. Measured not to throw on Windows; macOS
+    // and Linux behaviour here is unmeasured.
     const raw = systemPreferences.getMediaAccessStatus('screen')
     status =
       raw === 'granted' || raw === 'denied' || raw === 'restricted' || raw === 'not-determined'

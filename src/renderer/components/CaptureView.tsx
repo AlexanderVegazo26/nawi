@@ -30,14 +30,34 @@ const TRACK_TOGGLES: Array<{ key: keyof TrackSelection; label: string; hint: str
   }
 ]
 
+/**
+ * A recording failure handed down from App, which owns the `recordingFailed`
+ * subscription because this component is only mounted on the capture view.
+ *
+ * `seq` makes a repeat explicit rather than leaving it to object identity: two
+ * identical denials in a row carry the same message, and anything that compared
+ * by value — a bare string prop, a memo, a future `useMemo` on the way down —
+ * would drop the second one and show the user nothing. It is also what a reader
+ * sees when asking whether a repeated failure re-raises the card; the e2e
+ * covers that case directly.
+ */
+export interface RecordingFailure {
+  message: string
+  seq: number
+}
+
 export function CaptureView({
   onCaptured,
   notify,
-  recording
+  recording,
+  recordingFailure,
+  onRecordingFailureHandled
 }: {
   onCaptured: (item: LibraryItem, openEditor: boolean) => void
   notify: (msg: string, tone?: 'ok' | 'err') => void
   recording: RecordingStatus
+  recordingFailure: RecordingFailure | null
+  onRecordingFailureHandled: () => void
 }): React.JSX.Element {
   const [busy, setBusy] = useState<Busy>(null)
   const [picker, setPicker] = useState<'window' | 'record' | null>(null)
@@ -59,6 +79,17 @@ export function CaptureView({
    * silently.
    */
   const retryRef = useRef<(() => void) | null>(null)
+  /** The message the card is explaining, shown verbatim so the card is never wrong. */
+  const [permissionDetail, setPermissionDetail] = useState<string | null>(null)
+  /**
+   * The last source a recording was requested for.
+   *
+   * Held so "check again" can re-run *that* recording. A recording failure
+   * arrives from main, long after `startRecording`'s `sourceId` argument is out
+   * of scope; without this the retry button would clear the card and do
+   * nothing, which is the same dead end in a new place.
+   */
+  const lastRecordSourceRef = useRef<string | null>(null)
   /** UX-STA.5 — the pending disk-pressure warning, and what it is gating. */
   const [pressure, setPressure] = useState<{ info: DiskPressure; sourceId: string } | null>(null)
 
@@ -83,23 +114,35 @@ export function CaptureView({
   /**
    * UX-PRM.2 — turn a failed capture into a recovery card instead of a toast.
    *
-   * Driven by an *actual failure*, never by the permission status alone. On
-   * Windows `getMediaAccessStatus('screen')` cannot report a denial (see
-   * `src/main/permissions.ts`), so a status-first check would show this to
-   * nobody there; on macOS a status check that ran before the first capture
-   * attempt would show it to everyone. Asking only after something failed is
-   * the ordering that works on both.
+   * Driven by an *actual failure*, never by the permission status alone: this
+   * only runs once a capture has already failed, so the gate "is something
+   * actually broken for this user" is passed before we get here. The status
+   * therefore chooses the *wording* (see `platformCopy`), never the
+   * reachability.
+   *
+   * It used to gate on `denied | restricted | unknown`, which made the card
+   * unreachable on Windows and skipped `not-determined` everywhere. Measured on
+   * Electron 44 (asserted by `e2e/permission-recovery.spec.ts`, though only
+   * when that suite is run on Windows — CI runs it on ubuntu, so it is not yet
+   * a merge gate): `systemPreferences.getMediaAccessStatus('screen')` returns `'granted'`
+   * unconditionally on Windows and does not throw — so every Windows failure,
+   * including the display-driver / remote-session / group-policy causes the
+   * Windows copy was written to explain, fell through to a toast.
+   *
+   * The one thing raising the card on any status costs is that a non-permission
+   * failure would otherwise be rendered as a permission problem; the real error
+   * goes to the card as a detail line so it stays honest rather than becoming
+   * a permission-flavoured lie.
+   *
+   * A failed status *read* still falls back to the toast: with no platform and
+   * no settings path there is no card to render.
    */
   const onCaptureFailed = useCallback(
     async (error: string, retry: () => void): Promise<void> => {
       const res = await window.api.getScreenPermission()
-      const denied = res.ok && (res.value.screen === 'denied' || res.value.screen === 'restricted')
-      // `unknown` covers Windows and any platform where the API says nothing.
-      // A capture that failed with nothing else to blame is still worth the
-      // recovery card, because the alternative is the dead-end toast.
-      const unhelpfulStatus = res.ok && res.value.screen === 'unknown'
-      if (res.ok && (denied || unhelpfulStatus)) {
+      if (res.ok) {
         retryRef.current = retry
+        setPermissionDetail(error)
         setPermission(res.value)
         return
       }
@@ -163,6 +206,7 @@ export function CaptureView({
   const startRecording = useCallback(
     async (sourceId: string) => {
       setPicker(null)
+      lastRecordSourceRef.current = sourceId
       // Persist the choice before starting, so it survives even if the
       // recording itself fails — the user should not have to re-tick after an
       // error.
@@ -175,8 +219,13 @@ export function CaptureView({
         }
       })
       const res = await window.api.startRecording({ sourceId, tracks, countdown })
-      // Failures after this point arrive through `onRecordingFailed` in App;
-      // this only reports a request main refused outright.
+      // This only reports a request main refused outright. Everything that
+      // fails *after* main accepts it fails inside the hidden recorder window,
+      // and reaches this component as the `recordingFailure` prop — App owns
+      // that subscription because this component is unmounted on the library
+      // view. It is not handled here, and until the recorder started reporting
+      // its failures to main at all (`reportRecordingFailure`) it was not
+      // handled anywhere.
       if (!res.ok) {
         notify(
           failureFrom(res.error, {
@@ -215,6 +264,35 @@ export function CaptureView({
     },
     [startRecording]
   )
+
+  /**
+   * UX-PRM.2 — a recording that failed gets the same recovery route as a
+   * screenshot that failed.
+   *
+   * Screenshots reach `onCaptureFailed` directly because they are awaited here.
+   * A recording is not: it runs in the hidden recorder window, so its failure
+   * comes back through main as a broadcast and arrives as a prop. Routing it
+   * into the *same* function is the point — one recovery surface, not a second
+   * one that drifts.
+   */
+  useEffect(() => {
+    if (!recordingFailure) return
+    onRecordingFailureHandled()
+    void onCaptureFailed(recordingFailure.message, () => {
+      const sourceId = lastRecordSourceRef.current
+      // One-shot. A recording can also be started from outside this picker (a
+      // hotkey, the CLI, an agent tool), and a ref left set would hand *that*
+      // failure the last source the picker happened to see — retrying a
+      // different source than the one that failed, silently.
+      lastRecordSourceRef.current = null
+      // Retrying through `requestRecording`, not `startRecording`, so the
+      // UX-STA.5 disk-pressure precheck still runs. Low disk is a leading cause
+      // of the failures that raise this card, so the retry is the last place
+      // that check should be skipped.
+      if (sourceId) void requestRecording(sourceId)
+      else setPicker('record')
+    })
+  }, [recordingFailure, onRecordingFailureHandled, onCaptureFailed, requestRecording])
 
   const cards: Array<{
     id: Busy | 'record'
@@ -316,6 +394,7 @@ export function CaptureView({
           <div className="mt-6">
             <PermissionRecovery
               state={permission}
+              detail={permissionDetail}
               notify={notify}
               onRecheck={() => {
                 // "Check again" means retry the thing that failed, not re-read
@@ -327,6 +406,7 @@ export function CaptureView({
                 const retry = retryRef.current
                 retryRef.current = null
                 setPermission(null)
+                setPermissionDetail(null)
                 retry?.()
               }}
             />

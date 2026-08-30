@@ -30,6 +30,15 @@ export const IPC = {
   finalizeRecording: 'record:finalize',
   abortRecording: 'record:abort',
   publishRecordingStatus: 'record:publish-status',
+  /**
+   * Recorder → main, for a failure that originated *in the recorder window*.
+   *
+   * A status publish is not enough: `publish()` only broadcasts `recordingStatus`,
+   * so a denied `getDisplayMedia` used to end at a `console.error` with no user-
+   * visible surface at all (UX-PRM.2 forbids exactly that dead end). This routes
+   * it into the same `fail()` path main-origin failures already take.
+   */
+  reportRecordingFailure: 'record:report-failure',
   /** main -> recorder window. */
   recordRequest: 'record:request',
   recordDispatch: 'record:dispatch',

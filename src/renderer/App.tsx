@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { LibraryItem, RecoverableRecordingInfo } from '@shared/types'
 import { idleStatus, type RecordingStatus } from '@shared/recording'
-import { CaptureView } from './components/CaptureView'
+import { CaptureView, type RecordingFailure } from './components/CaptureView'
 import { LibraryView } from './components/LibraryView'
 import { EditorView } from './components/EditorView'
 import { RecoveryBanner } from './components/RecoveryBanner'
@@ -55,6 +55,13 @@ export function App(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [toasts, setToasts] = useState<ToastMsg[]>([])
+  /**
+   * The last renderer-origin recording failure, handed to CaptureView so it can
+   * raise the permission-recovery card (UX-PRM.2). Held here rather than in
+   * CaptureView because that component is unmounted whenever the user is on the
+   * library view, and a subscription that does not exist misses the broadcast.
+   */
+  const [recordingFailure, setRecordingFailure] = useState<RecordingFailure | null>(null)
   /**
    * Mirrored from the hidden recorder window via main. This window no longer
    * owns a MediaRecorder at all — it only renders what the engine reports, so
@@ -154,13 +161,26 @@ export function App(): React.JSX.Element {
       setView('library')
       notify('Recording saved to library')
     })
-    const offFailed = window.api.onRecordingFailed((error) => notify(error, 'err'))
+    const offFailed = window.api.onRecordingFailed((error) => {
+      // The toast stays unconditional: it is the one surface that does not
+      // depend on which view is mounted, and a toast plus a card is a far
+      // cheaper problem than a failure with nowhere to appear.
+      notify(error, 'err')
+      // The card lives in CaptureView, which only exists on the capture view —
+      // a failure that arrived while the user was in the library would have
+      // nothing subscribed to it. Switching first is what makes it reachable.
+      setView('capture')
+      setRecordingFailure((prev) => ({ message: error, seq: (prev?.seq ?? 0) + 1 }))
+    })
     return () => {
       offStatus()
       offFinished()
       offFailed()
     }
   }, [notify])
+
+  /** Acked once CaptureView has raised the card, so one failure raises it once. */
+  const clearRecordingFailure = useCallback(() => setRecordingFailure(null), [])
 
   const stopRecording = useCallback(() => {
     void window.api.sendRecordCommand('stop')
@@ -439,7 +459,13 @@ export function App(): React.JSX.Element {
             pushing the layout past the viewport. */}
         <div className="min-h-0 flex-1">
           {view === 'capture' ? (
-            <CaptureView onCaptured={onCaptured} notify={notify} recording={recording} />
+            <CaptureView
+              onCaptured={onCaptured}
+              notify={notify}
+              recording={recording}
+              recordingFailure={recordingFailure}
+              onRecordingFailureHandled={clearRecordingFailure}
+            />
           ) : (
             <LibraryView
               items={items}

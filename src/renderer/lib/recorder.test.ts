@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RecorderBridge, RecorderCallbacks } from './recorder'
+import type { FailureKind, RecorderBridge, RecorderCallbacks } from './recorder'
 import type { RecordingStatus } from '@shared/recording'
 
 /**
@@ -153,20 +153,44 @@ interface Harness {
   chunks: Array<{ id: string; bytes: number[] }>
   finished: Array<{ id: string; durationMs: number }>
   failures: string[]
+  /**
+   * Every report with the kind the engine attached.
+   *
+   * `failures` alone cannot distinguish a broken capture from a refused
+   * request, and the two have opposite consequences: one must reach the user's
+   * recovery card and end the recording, the other must leave a healthy
+   * recording alone. Asserting only the observable end state hides a mislabel,
+   * because the engine self-terminates on the capture-broken paths regardless
+   * of what it called the failure.
+   */
+  reports: Array<{ message: string; kind: FailureKind }>
   recorder: () => FakeMediaRecorder
 }
 
 async function harness(
   overrides: Partial<RecorderBridge> = {},
-  chunkSink?: (id: string, chunk: Uint8Array) => Promise<void>
+  chunkSink?: (id: string, chunk: Uint8Array) => Promise<void>,
+  /**
+   * Mirrors what main does with a report, closing the loop the engine's own
+   * callbacks otherwise hide.
+   *
+   * Without this the harness makes `onFailed` a terminal sink, and every
+   * assertion stops one hop before the feedback edge: report ->
+   * `reportRecordingFailure` -> `fail()` -> `send(recordDispatch, 'stop')` ->
+   * `command('stop')` -> `engine.stop()`. A bug that only exists on that edge
+   * passes a green suite, which is exactly what happened.
+   */
+  mirrorMain = false
 ): Promise<Harness> {
   vi.resetModules()
   const { ScreenRecorder } = await import('./recorder')
+  let engineRef: { command: (c: string) => void } | null = null
 
   const statuses: RecordingStatus[] = []
   const chunks: Array<{ id: string; bytes: number[] }> = []
   const finished: Array<{ id: string; durationMs: number }> = []
   const failures: string[] = []
+  const reports: Array<{ message: string; kind: FailureKind }> = []
 
   const cb: RecorderCallbacks = {
     onStatus: (s) => statuses.push(s),
@@ -177,7 +201,16 @@ async function harness(
     onFinished: async (id, info) => {
       finished.push({ id, durationMs: info.durationMs })
     },
-    onFailed: (m) => failures.push(m)
+    onFailed: (m, kind) => {
+      failures.push(m)
+      reports.push({ message: m, kind })
+      // Models `src/renderer/recorder.tsx` plus main's response to a report:
+      // only a capture-broken failure is forwarded, and main answers one by
+      // dispatching 'stop' back to the engine. The kind is the engine's own
+      // claim about what happened, so this still discriminates on engine
+      // behaviour — mislabel the guard site and this loop ends a live recording.
+      if (mirrorMain && kind === 'capture-failed') engineRef?.command('stop')
+    }
   }
 
   const bridge: RecorderBridge = {
@@ -187,12 +220,16 @@ async function harness(
     ...overrides
   }
 
+  const engine = new ScreenRecorder(cb, bridge)
+  engineRef = engine as unknown as { command: (c: string) => void }
+
   return {
-    engine: new ScreenRecorder(cb, bridge),
+    engine,
     statuses,
     chunks,
     finished,
     failures,
+    reports,
     recorder: () => FakeMediaRecorder.instances[FakeMediaRecorder.instances.length - 1]
   }
 }
@@ -376,5 +413,189 @@ describe('countdown (PRD-002 Flow B)', () => {
     expect(FakeMediaRecorder.instances).toHaveLength(0)
     expect(h.finished).toEqual([])
     expect(h.statuses.at(-1)?.phase).toBe('idle')
+  })
+})
+
+/**
+ * A chunk-write failure is not a start-path failure, and the difference is the
+ * whole point of this block.
+ *
+ * Every other failure site in the engine sets `phase = 'idle'` and emits before
+ * reporting. `ondataavailable`'s `.catch` did neither: it reported and let the
+ * recording carry on. That was survivable while `onFailed` was a bare
+ * `console.error` in the recorder window, and stopped being survivable the
+ * moment that report became a user-facing surface.
+ */
+describe('a chunk-write failure ends the recording (FR-REC.3 / UX-PRM.2)', () => {
+  const ENOSPC = async (): Promise<void> => {
+    throw new Error('ENOSPC: no space left on device')
+  }
+
+  it('never reports the same recording as both failed and saved', async () => {
+    const h = await harness({}, ENOSPC)
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+
+    h.recorder().emit([1])
+    await h.engine.stop()
+
+    // `finishInner` awaits the chunk queue with `.catch(() => undefined)`, which
+    // swallows the very rejection that was just reported — so `error` stayed
+    // null and the recording was ALSO finalized. Downstream that is one
+    // recording broadcasting both `recordingFailed` and `recordingFinished`:
+    // two contradictory toasts, two competing view transitions, and a library
+    // item quietly missing its tail chunk.
+    expect(h.failures.some((f) => f.includes('ENOSPC'))).toBe(true)
+    expect(h.finished).toEqual([])
+  })
+
+  it('leaves the engine idle rather than still "recording" against a dead file', async () => {
+    const h = await harness({}, ENOSPC)
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+
+    h.recorder().emit([1])
+    // Let the queue reject and the engine act on it, without stopping manually:
+    // the point is that the engine ends itself.
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // While `active` stays true the 250 ms tick keeps publishing
+    // `phase: 'recording'`, which re-shows the HUD that main just hid and makes
+    // main refuse the retry the recovery card offers.
+    expect(h.engine.active).toBe(false)
+    expect(h.statuses.at(-1)?.phase).toBe('idle')
+  })
+
+  it('counts the recorded interval once, not twice', async () => {
+    const h = await harness({}, ENOSPC)
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+
+    now = 4_000
+    h.recorder().emit([1])
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // `sealSegment` guards only on `phase !== 'recording'` and does not advance
+    // `segmentStartedAt`, so a caller that seals without moving the phase lets
+    // `finishInner`'s own seal add the same interval again. Harmless while the
+    // error branch skips `onFinished`, and a silently doubled duration the
+    // moment any future change persists partial bytes on that path.
+    expect(h.statuses.at(-1)?.elapsedMs).toBe(4_000)
+  })
+
+  it('reports once, not once per failing chunk', async () => {
+    const h = await harness({}, ENOSPC)
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+
+    h.recorder().emit([1])
+    h.recorder().emit([2])
+    h.recorder().emit([3])
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // Each report becomes a toast, a forced view switch and a card. Once per
+    // second, for a full disk, is a user who cannot reach their library.
+    expect(h.failures).toHaveLength(1)
+  })
+
+  it('lets the next recording start instead of throwing past a fire-and-forget caller', async () => {
+    const h = await harness({}, ENOSPC)
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+    h.recorder().emit([1])
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // This is the retry the recovery card's "check again" performs. The caller
+    // is `void engine.start(...)` in recorder.tsx, so a throw here is an
+    // unhandled rejection reported nowhere — the original dead end, relocated.
+    await expect(
+      h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+    ).resolves.toBeUndefined()
+
+    // Discriminating: `resolves.toBeUndefined()` alone is also satisfied by the
+    // already-active guard, so a regression that left the engine active after a
+    // chunk failure would keep this green. The retry must have genuinely
+    // started a recording, not been refused as a duplicate.
+    expect(h.failures.some((f) => /already in progress/i.test(f))).toBe(false)
+    expect(FakeMediaRecorder.instances).toHaveLength(2)
+  })
+})
+
+describe('the already-active guard reports rather than throws', () => {
+  it('tells the caller through onFailed instead of rejecting into a void call', async () => {
+    const h = await harness()
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+
+    // recorder.tsx calls this as `void engine.start(options)`. A rejection has
+    // nowhere to go; a report reaches the user.
+    await expect(
+      h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+    ).resolves.toBeUndefined()
+    expect(h.failures.some((f) => /already in progress/i.test(f))).toBe(true)
+  })
+})
+
+/**
+ * A duplicated start must refuse the *request* without disturbing the capture.
+ *
+ * Main's already-in-progress gate reads `status.phase`, a mirror of what the
+ * recorder last published, so it is stale for one IPC round trip after the
+ * engine goes active — and that window is exactly and only when the engine's
+ * own guard is reachable. A double hotkey, an agent tool, or the recovery
+ * card's retry racing a still-starting capture all land here.
+ *
+ * These run with `mirrorMain`, because the bug lives on the edge where main
+ * turns a report into a stop.
+ */
+describe('a refused duplicate start does not end the live recording', () => {
+  it('does not finalize a healthy recording when a second start is refused', async () => {
+    const h = await harness({}, undefined, true)
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+    h.recorder().emit([1])
+
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+    await new Promise((r) => setTimeout(r, 0))
+
+    // "Your request was refused" is not "your capture is broken". Treating it
+    // as the latter truncates and finalizes a recording that was fine — and
+    // emits both a failure and a saved-recording for it, the very pair the
+    // chunk-failure fix exists to prevent.
+    expect(h.finished).toEqual([])
+    expect(h.engine.active).toBe(true)
+    expect(h.recorder().calls).not.toContain('stop')
+
+    // The label is what `recorder.tsx` filters on, so pin it directly rather
+    // than only its consequence: this is the report that must NOT reach main.
+    const report = h.reports.find((r) => /already in progress/i.test(r.message))
+    expect(report).toBeDefined()
+    expect(report?.kind).toBe('start-refused')
+  })
+
+  it('labels a broken capture capture-failed, so it reaches the recovery card', async () => {
+    /*
+     * The kind is the assertion, deliberately.
+     *
+     * Asserting the end state here proves nothing about the label:
+     * `endBecauseChunkFailed` seals, moves the phase and stops the recorder on
+     * its own before any report leaves the engine, so `active === false` and
+     * `finished === []` hold even if this path were mislabelled
+     * 'start-refused' — and a mislabel is exactly the regression that matters,
+     * because `recorder.tsx` drops a 'start-refused' report and the user's
+     * broken recording would then reach no surface at all.
+     */
+    const h = await harness(
+      {},
+      async () => {
+        throw new Error('ENOSPC: no space left on device')
+      },
+      true
+    )
+    await h.engine.start({ sourceId: 'screen:0', tracks: NO_TRACKS, countdown: false })
+    h.recorder().emit([1])
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    const report = h.reports.find((r) => r.message.includes('ENOSPC'))
+    expect(report).toBeDefined()
+    expect(report?.kind).toBe('capture-failed')
   })
 })

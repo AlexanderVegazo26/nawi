@@ -64,6 +64,14 @@ let trayPhase = false
 
 /** Last status the recorder published. A window opening late asks for this. */
 let status: RecordingStatus = idleStatus()
+/**
+ * The renderer-origin failure already broadcast for the current recording
+ * attempt, so a repeat cannot be turned into a second toast, view switch and
+ * card. Cleared when a new recording starts, which is what keeps this a
+ * per-attempt guard: it can never swallow the report for a *different* attempt,
+ * including the retry the recovery card offers.
+ */
+let reportedFailure: string | null = null
 
 function requireHost(): RecordingHost {
   if (!host) throw new Error('recording orchestrator is not installed')
@@ -453,6 +461,9 @@ export function install(
       throw new Error('A recording is already in progress')
     }
     const options = asStartOptions(raw)
+    // A new attempt: whatever the last one reported must not suppress this
+    // one's failure, even if it fails identically.
+    reportedFailure = null
     const win = await ensureRecorderWindow()
     // The HUD comes up before the first frame so the countdown has somewhere to
     // render, and so the user is never recording with nothing on screen saying so.
@@ -560,6 +571,69 @@ export function install(
   handleWithSender(IPC.publishRecordingStatus, (sender, raw: unknown) => {
     if (!isRecorder(sender)) throw new Error('not permitted')
     publish(sanitizeStatus(raw))
+    return null
+  })
+
+  /**
+   * A renderer-origin failure, given the same treatment as a main-origin one.
+   *
+   * Gated on `isRecorder` like the rest of the data plane: any renderer being
+   * able to broadcast "your recording failed" is a spoofable surface, not a
+   * convenience.
+   *
+   * ## Why this does not copy `onRecorderGone`'s `phase === 'idle'` guard
+   *
+   * That guard is right there and wrong here. The engine sets `phase = 'idle'`
+   * and publishes *before* it reports, so by the time this arrives main's own
+   * status is normally already idle — an idle guard would drop the report the
+   * card exists for. Worse, the status publish and this report travel on
+   * different channels, so which arrives first is not even ordered: a guard on
+   * phase would drop failures nondeterministically.
+   *
+   * ## What replaces it
+   *
+   * `fail()` only repaints: console, broadcast, publish(idle). It hides the HUD
+   * and sets the tray to not-recording without stopping anything. A renderer
+   * that reported a failure while still capturing would therefore have talked
+   * main into suppressing the recording indicators of a capture still running —
+   * which, in a screen-capture product, is the interesting attack rather than a
+   * cosmetic bug. So the report also *ends* the capture: the engine is told to
+   * stop through the same command channel the HUD's stop button uses.
+   *
+   * Residual, stated rather than papered over: a fully compromised recorder
+   * renderer can ignore that dispatch and keep its own MediaRecorder running.
+   * Main cannot reach inside a renderer to stop a MediaRecorder; what it can do
+   * is refuse to keep persisting and refuse to let the UI lie for longer than
+   * the round trip. Ending the capture from main entirely would mean destroying
+   * the recorder window, which would also destroy the recoverable bytes of an
+   * ordinary, honest failure — the FR-REC.3 case this whole path protects.
+   */
+  handleWithSender(IPC.reportRecordingFailure, (sender, raw: unknown) => {
+    if (!isRecorder(sender)) throw new Error('not permitted')
+    const message = typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 2000) : null
+    const text = message ?? 'The recording stopped because of an error.'
+
+    /*
+     * Repeat suppression, keyed on what this handler has already broadcast for
+     * this attempt — deliberately NOT on `status`. The engine publishes its
+     * failing status before it reports, so `status.error` already holds this
+     * very message by the time the report arrives; keying on it suppressed the
+     * first and only report of every start-path failure, which is the whole
+     * defect this path exists to fix.
+     *
+     * The engine now reports a chunk failure once per recording, but main must
+     * not depend on a renderer's restraint: each report costs the user a toast,
+     * a forced view switch and a card, so an unthrottled renderer could pin
+     * them on the capture view indefinitely.
+     */
+    if (reportedFailure === text) return null
+    reportedFailure = text
+
+    fail(text)
+    // Not just repaint: end the capture. See the note above.
+    if (recorderWindow && !recorderWindow.isDestroyed()) {
+      recorderWindow.webContents.send(IPC.recordDispatch, 'stop')
+    }
     return null
   })
 
