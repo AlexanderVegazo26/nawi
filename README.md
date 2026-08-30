@@ -75,22 +75,32 @@ recorded at all**. Here is the whole matrix before the per-OS steps.
 | System audio recorded | **Yes** (loopback) | No | No |
 | Microphone | Prompted when you first record with it on | Prompted when you first record with it on | Prompted when you first record with it on |
 
-> **First run, any platform: take a screenshot before you try a recording.**
-> A failed *screenshot* is the only action that can raise Nawi's permission
-> recovery card — the panel with the exact settings path, a button that opens
-> it, and a re-try button. A failed *recording* never raises it; you get a
-> transient error message and nothing else. So a screenshot is the diagnostic
-> worth running first.
+> **If a capture fails, you get the recovery card — on every platform, and for a
+> screenshot or a recording alike.** That is the panel naming the exact settings
+> path, with a button that opens it, a re-check button, and a *What went wrong*
+> line quoting the underlying error verbatim. It is raised by a capture that
+> actually failed, not by a permission status, so it is reachable on Windows
+> (where the OS reports screen access as `granted` unconditionally) and on a
+> first-ever macOS attempt (where the OS has not been asked yet).
 >
-> **On Windows the card never appears at all.** Measured, not inferred: Windows
-> reports screen access as `granted` unconditionally, and the card is raised only
-> for `denied`, `restricted` or `unknown`. So every failed capture on Windows —
-> driver, remote session, group policy — produces the transient message and
-> nothing more. The per-OS steps below are the whole recovery path here; follow
-> them by hand.
+> Two honest caveats. If Nawi cannot even *read* the permission status, there is
+> no settings path to put on a card and you get a transient error message
+> instead — rare, but it is the one path with no card. And a failed *recording*
+> raises the card **and** a transient message, while a failed *screenshot*
+> raises one or the other; that difference is cosmetic, not a difference in what
+> you can do about it.
 >
-> On macOS the card is likely but not guaranteed: a first-ever attempt may report
-> "not yet asked", which also falls through to the transient message.
+> Because the card quotes the real error, a failure that is not about permission
+> at all — no supported video encoder, a lost source, no disk — says so on the
+> card rather than being dressed up as a permission problem. Read that line
+> before you go looking for a toggle.
+>
+> **How far this is verified:** by reading the code and by unit tests over the
+> per-platform card copy, plus one end-to-end assertion that pins what Windows
+> reports. That assertion only runs when the E2E suite is run *on* Windows, and
+> CI runs it on ubuntu only, so it is a local check rather than a merge gate.
+> Nobody has exercised this flow on a real macOS or Linux machine — the macOS
+> and Linux wording below is verified as *copy*, not as observed behaviour.
 
 > **Known defect: the card is titled "Aperture", not "Nawi."** It reads *"Aperture
 > needs screen recording access"* (on Windows, *"Aperture couldn't read your
@@ -116,11 +126,14 @@ recorded at all**. Here is the whole matrix before the per-OS steps.
 
 **If a capture fails anyway**, that is not a permission problem, because Windows
 has none to give. The real causes are a display driver, a remote/RDP session, or
-workplace group policy. Note that Nawi's recovery card — which names exactly
-those causes — **cannot be raised on Windows**, so you will see only the
-transient message. Were it shown, its **Open System Settings** button would land on
-**Settings → Privacy & security** — the closest honest destination, since
-Windows exposes no screen-capture privacy page.
+workplace group policy — and Nawi's recovery card names exactly those, since a
+failed capture is what raises it here rather than a permission status. Its
+**Open System Settings** button lands on **Settings → Privacy & security**: the
+closest honest destination, since Windows exposes no screen-capture privacy
+page, and there is no relaunch prompt because the macOS grant-then-relaunch
+state does not exist on Windows. The card's *What went wrong* line is the useful
+part on this platform — it quotes the actual error, which is what tells driver
+apart from policy.
 
 ### macOS
 
@@ -139,8 +152,8 @@ Windows exposes no screen-capture privacy page.
    what triggers macOS's screen-recording request — Nawi deliberately does not
    ask at install or at launch.
 4. Grant it in **System Settings → Privacy & Security → Screen & System Audio
-   Recording**, then switch **Nawi** on. If the recovery card appeared, its
-   **Open System Settings** button deep-links straight to that pane.
+   Recording**, then switch **Nawi** on. The recovery card's **Open System
+   Settings** button deep-links straight to that pane.
 5. **Relaunch Nawi.** macOS reads the grant at process start, so it does not take
    effect in the already-running instance. The card carries a **Relaunch now**
    button next to the note *"Already granted it? macOS sometimes needs … to
@@ -359,11 +372,20 @@ CDP selectors and the MCP projection/revision model.
   recording continues video-only, and because the track is enabled by default the
   user sees it in an error state ("System audio is not available on this
   platform") on every default macOS/Linux recording.
-- A screen-permission failure during a *recording* reaches only a console log —
-  it does not raise the UX-PRM.2 recovery card and does not surface a message the
-  user can act on. Only a *screenshot* failure raises the card, and on Windows not
-  even then: the OS reports access as granted unconditionally, which is outside
-  the card's trigger condition, so the card is unreachable on that platform.
+- The UX-PRM.2 recovery card is raised by any failed capture whose
+  permission-status *read* succeeds. If that read itself fails there is no
+  platform and no settings path to render, so the failure falls back to a
+  transient message with no card. Narrow, but it is the remaining hole.
+- The macOS relaunch hint is a platform constant, not a detection: every macOS
+  user with a failed capture is told a relaunch may be needed, whether or not
+  they are actually in the granted-but-not-relaunched state.
+- The Windows E2E assertion pinning what `getMediaAccessStatus('screen')`
+  reports only runs when the suite runs on Windows; CI runs E2E on
+  `ubuntu-latest` only (`.github/workflows/ci.yml`), so it is a local check, not
+  a merge gate. A Windows E2E job is what would make it a fence.
+- The renderer→main round trip that carries a recorder-origin failure back to
+  the recovery card is not covered by any test for a *duplicated* start; the
+  race window is one IPC round trip. Untested, not known-broken.
 - The recovery card is titled "Aperture", the project codename. The copy is
   transcribed verbatim from a normative spec block that was never renamed.
 - Mic and system audio are mixed down to a single track at record time, so they
