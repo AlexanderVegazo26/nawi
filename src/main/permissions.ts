@@ -17,11 +17,10 @@ import type { PermissionState, ScreenAccess } from '@shared/types'
  * a description of what any platform we ship on actually does — measured on
  * Electron 44, Windows never reaches either: the call returns a clean
  * `'granted'` for screen, microphone and camera, unconditionally, and does not
- * throw. `e2e/permission-recovery.spec.ts` asserts that — but only when the
- * suite is run *on Windows*, and CI runs the E2E job on ubuntu only, so this is
- * a local check rather than a merge gate. An unpinned assumption here is what
- * made the recovery card unreachable on Windows in the first place; a Windows
- * E2E job is the thing that would turn this into a real fence.
+ * throw. `e2e/permission-recovery.spec.ts` asserts that on Windows, and CI runs
+ * the E2E job on a `windows-latest` runner alongside ubuntu, so it is a merge
+ * gate rather than a local check. An unpinned assumption here is exactly what
+ * made the recovery card unreachable on Windows in the first place.
  *
  * So on Windows a status reading carries no information at all: screen capture
  * is not gated behind a per-app OS permission, and a capture can still fail for

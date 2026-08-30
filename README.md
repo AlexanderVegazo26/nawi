@@ -97,8 +97,8 @@ recorded at all**. Here is the whole matrix before the per-OS steps.
 >
 > **How far this is verified:** by reading the code and by unit tests over the
 > per-platform card copy, plus one end-to-end assertion that pins what Windows
-> reports. That assertion only runs when the E2E suite is run *on* Windows, and
-> CI runs it on ubuntu only, so it is a local check rather than a merge gate.
+> reports. CI runs the E2E suite on both ubuntu and Windows runners, so that
+> assertion is a merge gate.
 > Nobody has exercised this flow on a real macOS or Linux machine — the macOS
 > and Linux wording below is verified as *copy*, not as observed behaviour.
 
@@ -379,10 +379,6 @@ CDP selectors and the MCP projection/revision model.
 - The macOS relaunch hint is a platform constant, not a detection: every macOS
   user with a failed capture is told a relaunch may be needed, whether or not
   they are actually in the granted-but-not-relaunched state.
-- The Windows E2E assertion pinning what `getMediaAccessStatus('screen')`
-  reports only runs when the suite runs on Windows; CI runs E2E on
-  `ubuntu-latest` only (`.github/workflows/ci.yml`), so it is a local check, not
-  a merge gate. A Windows E2E job is what would make it a fence.
 - The renderer→main round trip that carries a recorder-origin failure back to
   the recovery card is not covered by any test for a *duplicated* start; the
   race window is one IPC round trip. Untested, not known-broken.

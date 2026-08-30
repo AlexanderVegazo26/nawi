@@ -39,9 +39,20 @@ jobs:
       - run: npm run test:unit
 
   e2e:
-    name: E2E (Playwright + Electron)
+    name: E2E (${{ matrix.os }})
     needs: verify
-    runs-on: ubuntu-latest
+    # Windows is not redundant with Linux here. `getMediaAccessStatus('screen')`
+    # returns 'granted' unconditionally on Windows, and the permission recovery
+    # card's reachability was rewritten around that measurement — but the
+    # assertion that pins it (e2e/permission-recovery.spec.ts, the `win32`
+    # branch) is unreachable on a Linux runner, where the else branch only
+    # checks membership in a five-value list and passes for any reading. Until
+    # this job existed, the measurement the fix rests on was a local check.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -52,19 +63,31 @@ jobs:
       - run: npm run install-electron
 
       - name: Install Playwright browsers and OS dependencies
-        # Electron ships its own Chromium, so only the shared libraries matter
-        # here — but `--with-deps` is the supported way to get them.
+        # `--with-deps` installs Chromium's shared libraries. Electron ships its
+        # own Chromium but links against the same GTK stack, so on Linux this is
+        # what makes the binary loadable at all — a missing libgtk-3.so.0 exits
+        # 127 and reads as "Process failed to launch!", which looks like a
+        # product bug rather than a missing package.
         run: npx playwright install --with-deps chromium
 
-      # Electron needs a display. Without xvfb the app never opens a window and
-      # every spec fails on a timeout that looks like a product bug.
-      - name: Run E2E suite
+      # Electron needs a display. The Linux runner is headless, so without xvfb
+      # the app never opens a window and every spec fails on a timeout. Windows
+      # runners have a desktop session, so the wrapper is neither needed nor
+      # available there.
+      - name: Run E2E suite (Linux)
+        if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum npm run test:e2e
+
+      - name: Run E2E suite (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:e2e
 
       - uses: actions/upload-artifact@v5
         if: failure()
         with:
-          name: playwright-report
+          # Per-OS name, or the second uploader collides with the first and the
+          # failure you most want is the one you cannot download.
+          name: playwright-report-${{ matrix.os }}
           path: |
             playwright-report/
             test-results/

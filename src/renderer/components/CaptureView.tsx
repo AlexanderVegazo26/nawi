@@ -122,9 +122,9 @@ export function CaptureView({
    *
    * It used to gate on `denied | restricted | unknown`, which made the card
    * unreachable on Windows and skipped `not-determined` everywhere. Measured on
-   * Electron 44 (asserted by `e2e/permission-recovery.spec.ts`, though only
-   * when that suite is run on Windows — CI runs it on ubuntu, so it is not yet
-   * a merge gate): `systemPreferences.getMediaAccessStatus('screen')` returns `'granted'`
+   * Electron 44 (asserted by `e2e/permission-recovery.spec.ts`, which CI runs on
+   * a `windows-latest` runner as well as ubuntu, so it is a merge gate):
+   * `systemPreferences.getMediaAccessStatus('screen')` returns `'granted'`
    * unconditionally on Windows and does not throw — so every Windows failure,
    * including the display-driver / remote-session / group-policy causes the
    * Windows copy was written to explain, fell through to a toast.
