@@ -39,10 +39,15 @@ test.afterAll(async () => {
  * could silently be the opposite of what two code comments claimed. Read in the
  * *main* process, because that is the only place `systemPreferences` exists.
  *
- * On Windows the assertion is exact: all three media kinds report `'granted'`
+ * On Windows the screen assertion is exact: `'screen'` reports `'granted'`
  * unconditionally, and nothing throws. If a future Electron starts modelling
  * screen capture as a Windows permission, this goes red and the reachability
  * decision in `CaptureView` has to be revisited.
+ *
+ * Microphone and camera are NOT unconditional on Windows: they follow the
+ * machine's privacy settings (the GitHub Windows runner reports `'denied'` for
+ * the microphone). No product code reads them, so they are only required to be
+ * read without throwing and to be a documented status.
  */
 test('the OS media-access status this platform reports is what the code assumes', async () => {
   const raw = await app.evaluate(({ systemPreferences }) => {
@@ -57,9 +62,13 @@ test('the OS media-access status this platform reports is what the code assumes'
   })
 
   if (raw.platform === 'win32') {
-    expect(raw.screen).toBe('granted')
-    expect(raw.mic).toBe('granted')
-    expect(raw.camera).toBe('granted')
+    expect(raw.screen, 'Windows screen access is expected to be granted unconditionally').toBe('granted')
+    for (const kind of ['mic', 'camera'] as const) {
+      expect(
+        ['granted', 'denied', 'restricted', 'not-determined', 'unknown'],
+        `Windows ${kind} access status should be a documented value (privacy-setting dependent)`
+      ).toContain(raw[kind])
+    }
   }
 
   /*

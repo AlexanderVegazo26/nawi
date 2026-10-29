@@ -87,6 +87,47 @@ async function openEditorOnAFreshCapture(): Promise<void> {
   await expect(win.locator(canvasSel)).toBeVisible({ timeout: 20_000 })
 }
 
+/**
+ * Puts a known, busy pattern on the primary display for a capture to grab.
+ *
+ * A full-screen capture records whatever the desktop shows once the main window
+ * hides. On a headless runner (xvfb, or an X root under Xwayland) that is a bare
+ * black root window, so a test that needs real pixels in the source cannot rely
+ * on the desktop: it has to put them there. Closed again with `hideBackdrop`.
+ */
+async function showBackdrop(): Promise<void> {
+  await app.evaluate(async ({ BrowserWindow, screen }) => {
+    const { bounds } = screen.getPrimaryDisplay()
+    const backdrop = new BrowserWindow({
+      ...bounds,
+      frame: false,
+      focusable: false,
+      skipTaskbar: true,
+      show: false,
+      backgroundColor: '#ffffff'
+    })
+    ;(globalThis as { __nawiBackdrop?: { destroy(): void } }).__nawiBackdrop = backdrop
+    // Coloured stripes: no stretch of the screen is a single colour, let alone black.
+    const html =
+      '<body style="margin:0;height:100vh;background:repeating-linear-gradient(45deg,' +
+      '#e63946 0 24px,#f1fa8c 24px 48px,#2a9d8f 48px 72px,#457b9d 72px 96px)"></body>'
+    await backdrop.loadURL(`data:text/html,${encodeURIComponent(html)}`)
+    backdrop.showInactive()
+    // Two frames, so the pattern is composited before anyone captures the screen.
+    await backdrop.webContents.executeJavaScript(
+      'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))'
+    )
+  })
+}
+
+async function hideBackdrop(): Promise<void> {
+  await app.evaluate(() => {
+    const g = globalThis as { __nawiBackdrop?: { destroy(): void } }
+    g.__nawiBackdrop?.destroy()
+    delete g.__nawiBackdrop
+  })
+}
+
 /** Image-pixel size of the editor canvas (not its CSS size). */
 async function canvasPixelSize(): Promise<{ width: number; height: number }> {
   return win.evaluate((sel) => {
@@ -190,9 +231,14 @@ test('FR-ANN.1 — a freehand stroke is hit-testable and moves with its points',
  * ------------------------------------------------------------------ */
 
 test('FR-ANN.3 — exported PNG bytes contain no original pixels under a solid redaction', async () => {
-  // Fresh capture, no leftover annotations.
+  // Fresh capture, no leftover annotations, of a screen that has real pixels on it.
   await clearLibrary()
-  await openEditorOnAFreshCapture()
+  await showBackdrop()
+  try {
+    await openEditorOnAFreshCapture()
+  } finally {
+    await hideBackdrop()
+  }
 
   const size = await canvasPixelSize()
   const rect = {
