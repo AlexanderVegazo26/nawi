@@ -694,6 +694,24 @@ async function registerShortcuts(): Promise<void> {
   for (const action of HOTKEY_ACTIONS) bind(current.hotkeys[action], action)
 }
 
+/**
+ * The sources the display-media handler resolves a picked id against.
+ *
+ * On X11, `desktopCapturer.getSources` intermittently answers with an empty list
+ * (Chromium logs "Failed to initialize pixel buffer") for a source it listed a
+ * moment earlier. Treating that as "the source is gone" failed the recording
+ * with "Invalid capture constraints" in roughly half the attempts under xvfb. An
+ * empty list cannot be a real answer while the user has a display, so it is
+ * retried briefly; a non-empty list without the picked id is still final.
+ */
+async function recordableSources(): Promise<Electron.DesktopCapturerSource[]> {
+  for (let attempt = 1; ; attempt += 1) {
+    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] })
+    if (sources.length > 0 || attempt >= 5) return sources
+    await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+  }
+}
+
 app.whenReady().then(() => {
   registerProtocol()
 
@@ -707,7 +725,7 @@ app.whenReady().then(() => {
           const wantsAudio = pendingRecordingAudio
           pendingRecordingSourceId = null
           pendingRecordingAudio = false
-          const real = await desktopCapturer.getSources({ types: ['screen', 'window'] })
+          const real = await recordableSources()
           const match = real.find((s) => s.id === wanted)
           // Deliberately no `?? real[0]` fallback: silently recording a
           // different source than the user picked is a confidentiality problem.

@@ -196,6 +196,17 @@ test.describe('crash recovery', () => {
     await expect(second.win.getByText('A recording was interrupted.')).toBeVisible({ timeout: 20_000 })
     await second.win.getByRole('button', { name: 'Recover to library' }).click()
 
+    // The click only starts the recovery (remux and library write happen in
+    // main), so the library is read once it has landed, not straight after.
+    await expect
+      .poll(
+        async () => {
+          const r = await second.win.evaluate(() => window.api.listLibrary())
+          return r.ok ? r.value.length : `listLibrary failed: ${r.error}`
+        },
+        { message: 'the recovered recording should appear in the library', timeout: 20_000 }
+      )
+      .toBe(1)
     const items = await second.win.evaluate(() => window.api.listLibrary())
     expect(items.ok).toBe(true)
     if (items.ok) {
