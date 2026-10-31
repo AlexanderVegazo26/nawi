@@ -269,6 +269,18 @@ alone.
   capture back into the editor.
 - **Export** — PNG/JPEG with annotations flattened, copy-to-clipboard, or save the
   original asset untouched. **Stills only** — see Known gaps.
+- **Flow file format** (`*.nawi.yaml`, version 1) — the editable, versionable
+  form of a recorded process: a target (browser URL or desktop app), `vars`, and
+  steps (`click`, `fill`, `press`, `select`, `hover`, `scroll`, `navigate`,
+  `wait`, `assert`, `screenshot`), each target carrying several ranked locators
+  plus an optional box and reference crop. `src/shared/flow` parses and
+  validates it (unknown keys, duplicate step ids and unresolved `${vars.*}` are
+  errors reported as `file:line:col path: message`), writes it back with the
+  author's comments kept, and publishes a JSON Schema at
+  [`docs/schemas/flow.v1.schema.json`](docs/schemas/flow.v1.schema.json) for
+  editor validation (`# yaml-language-server: $schema=...`). Secrets are
+  referenced as `${secret.name}`, never stored. Example:
+  `src/shared/flow/__fixtures__/create-invoice.nawi.yaml`.
 
 ## Keyboard shortcuts
 
@@ -359,6 +371,9 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
+- **Flows are a file format only so far.** Nothing records into a flow, replays
+  one, or edits one in the UI yet, and no CLI/MCP tool reads them; those land as
+  separate slices (recording → flow, replayer, run records, flow editor).
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a
   recording cannot be trimmed, shortened or re-exported without leaving the app.

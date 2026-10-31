@@ -34,7 +34,7 @@ import * as disk from './disk'
 import * as capture from './capture'
 import * as settings from './settings'
 import * as recording from './recording/orchestrator'
-import { answerDisplayMedia } from './recording/display-media'
+import { answerDisplayMedia, listSourcesFor } from './recording/display-media'
 import { startMcpServer, type McpServerHandle } from './mcp/server'
 import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
@@ -696,26 +696,13 @@ async function registerShortcuts(): Promise<void> {
 }
 
 /**
- * The sources the display-media handler resolves a picked id against.
- *
- * On X11, `desktopCapturer.getSources` intermittently answers with an empty list
- * (Chromium logs "Failed to initialize pixel buffer") for a source it listed a
- * moment earlier. Treating that as "the source is gone" failed the recording
- * with "Invalid capture constraints" in roughly half the attempts under xvfb. An
- * empty list cannot be a real answer while the user has a display, so it is
- * retried briefly (up to ~2.8 s); a non-empty list without the picked id is
- * still final.
- *
- * Screens and windows are listed together on purpose: without a window manager
- * (xvfb) there are no window sources at all, so a window-only query is empty
- * every time and would spend the whole retry window before denying.
+ * One listing of the given kinds, ids only: thumbnails are never requested
+ * (the handler matches ids, and rendering a 150x150 thumbnail per source is
+ * wasted work on every start). Which kinds, and when an empty answer is
+ * retried, is decided in `listSourcesFor` (display-media.ts).
  */
-async function recordableSources(): Promise<Electron.DesktopCapturerSource[]> {
-  for (let attempt = 1; ; attempt += 1) {
-    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] })
-    if (sources.length > 0 || attempt >= 8) return sources
-    await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
-  }
+function listSources(kinds: Array<'screen' | 'window'>): Promise<Electron.DesktopCapturerSource[]> {
+  return desktopCapturer.getSources({ types: kinds, thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false })
 }
 
 app.whenReady().then(() => {
@@ -729,11 +716,18 @@ app.whenReady().then(() => {
       const wantsAudio = pendingRecordingAudio
       pendingRecordingSourceId = null
       pendingRecordingAudio = false
+      // Logged at each stage so a recording that never starts says where it stopped.
+      console.log(`[displayMedia] request for ${String(wanted)}`)
       void answerDisplayMedia({
         wanted,
         wantsAudio,
         platform: process.platform,
-        sources: recordableSources,
+        sources: async () => {
+          const startedAt = Date.now()
+          const sources = await listSourcesFor(wanted, listSources)
+          console.log(`[displayMedia] listed ${sources.length} source(s) in ${Date.now() - startedAt} ms`)
+          return sources
+        },
         callback
       })
     },

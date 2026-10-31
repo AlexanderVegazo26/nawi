@@ -16,6 +16,13 @@ import { tmpdir } from 'node:os'
 let app: ElectronApplication
 let win: Page
 let userDataDir: string
+/**
+ * Console output of main and of every window, the hidden recorder included
+ * (`[displayMedia]`, `[recording]`, `[recorder]` lines). A failure here is
+ * otherwise only "element not found", with nothing saying whether the request
+ * was denied, never answered, or answered and not broadcast.
+ */
+const logs: string[] = []
 
 test.beforeAll(async () => {
   userDataDir = await fs.mkdtemp(join(tmpdir(), 'nawi-prm-'))
@@ -23,8 +30,36 @@ test.beforeAll(async () => {
     args: ['.', `--user-data-dir=${userDataDir}`],
     cwd: process.cwd()
   })
+  app.on('console', (msg) => logs.push(`[main ${msg.type()}] ${msg.text()}`))
+  app.on('window', (page) => {
+    const name = page.url().split('/').pop() || 'window'
+    page.on('console', (msg) => logs.push(`[${name} ${msg.type()}] ${msg.text()}`))
+  })
   win = await app.firstWindow()
+  win.on('console', (msg) => logs.push(`[main-window ${msg.type()}] ${msg.text()}`))
   await win.waitForLoadState('domcontentloaded')
+})
+
+test.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return
+  // Logs first, then a bounded status read: a wedged renderer must not stop
+  // the hook from printing what it already has.
+  const consoleTail = `App console, last 60 lines:\n${logs.slice(-60).join('\n') || '(none)'}`
+  console.log(`\n--- ${testInfo.title} ---\n${consoleTail}\n`)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const status = await Promise.race([
+    win
+      .evaluate(() => window.api.getRecordingStatus())
+      .then((s) => JSON.stringify(s))
+      .catch((err: unknown) => `unavailable (${String(err)})`),
+    new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve('unavailable (no answer within 3 s)'), 3_000)
+    })
+  ]).finally(() => clearTimeout(timer))
+  const report = `Recording status at failure: ${status}\n\n${consoleTail}`
+  // Printed so it lands in the CI log next to the failure, and attached for the HTML report.
+  console.log(`Recording status at failure: ${status}\n`)
+  await testInfo.attach('app-console.txt', { body: report, contentType: 'text/plain' })
 })
 
 test.afterAll(async () => {
