@@ -706,13 +706,13 @@ async function registerShortcuts(): Promise<void> {
  * retried briefly (up to ~2.8 s); a non-empty list without the picked id is
  * still final.
  *
- * Only the picked id's kind is listed, as the picker's `listSources(['screen'])`
- * did: enumerating windows too adds a second X11 query that can fail on its own.
+ * Screens and windows are listed together on purpose: without a window manager
+ * (xvfb) there are no window sources at all, so a window-only query is empty
+ * every time and would spend the whole retry window before denying.
  */
-async function recordableSources(wanted: string | null): Promise<Electron.DesktopCapturerSource[]> {
-  const types: Array<'screen' | 'window'> = wanted?.startsWith('window') ? ['window'] : ['screen']
+async function recordableSources(): Promise<Electron.DesktopCapturerSource[]> {
   for (let attempt = 1; ; attempt += 1) {
-    const sources = await desktopCapturer.getSources({ types })
+    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] })
     if (sources.length > 0 || attempt >= 8) return sources
     await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
   }
@@ -733,7 +733,7 @@ app.whenReady().then(() => {
         wanted,
         wantsAudio,
         platform: process.platform,
-        sources: () => recordableSources(wanted),
+        sources: recordableSources,
         callback
       })
     },
