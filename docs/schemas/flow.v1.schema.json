@@ -181,7 +181,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -309,7 +310,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -437,7 +439,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -569,7 +572,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -701,7 +705,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -833,7 +838,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -1008,7 +1014,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -1140,7 +1147,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [
@@ -1286,7 +1294,8 @@
                   },
                   "image": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "Relative path inside the flow's folder: no leading / or \\, drive letter, scheme, \"..\" segment, \"%\" or control characters (enforced by parseFlow; the loader must also resolve and contain it)."
                   }
                 },
                 "required": [

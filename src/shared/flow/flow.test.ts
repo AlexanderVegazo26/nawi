@@ -159,6 +159,16 @@ describe('flow files — validation errors carry path and line:col', () => {
     expect(onlyError(loginWith('  email: "${env.TEST_EMAIL}"', '  constructor: x\n  email: "${env.TEST_EMAIL}"')).line).toBe(6)
   })
 
+  it('refuses a reserved var name on write, so nothing it writes fails to read', () => {
+    const flow: Flow = { version: 1, name: 'x', target: { kind: 'desktop', app: 'A' }, vars: { constructor: 'x' }, steps: [] }
+    expect(() => stringifyFlow(flow)).toThrow(/reserved name/)
+  })
+
+  it('refuses __proto__ reached through an alias key', () => {
+    const errors = errorsOf(loginWith('  email: "${env.TEST_EMAIL}"', '  email: "${env.TEST_EMAIL}"\n  *k : x').replace('# login flow', '# login flow\nx-anchor: &k __proto__'))
+    expect(errors.map((e) => e.message).join('\n')).toContain('"__proto__" is a reserved name')
+  })
+
   it.each([
     ['../outside.png'],
     ['steps/../../etc/passwd'],
@@ -166,7 +176,10 @@ describe('flow files — validation errors carry path and line:col', () => {
     ['C:\\Users\\me\\x.png'],
     ['\\\\server\\share\\x.png'],
     ['file:///etc/passwd'],
-    ['https://example.com/x.png']
+    ['https://example.com/x.png'],
+    ['%2e%2e/outside.png'],
+    ['steps/%2E%2E%2Fx.png'],
+    ['steps/x\u0000.png']
   ])('rejects a reference image path outside the flow folder: %s', (image) => {
     const text = loginWith(
       '      selectors: [ { testid: login-email }, { role: textbox, name: Email } ]',
@@ -247,9 +260,13 @@ const tricky = fc.oneof(
 )
 const visible = tricky.filter((s) => /\S/.test(s))
 const noPlaceholder = tricky.filter((s) => !s.includes('${'))
-const name = fc
-  .stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,8}$/)
-  .filter((n) => !['constructor', 'prototype'].includes(n))
+// Reserved names are deliberately NOT filtered out: the arbitrary includes them
+// (stringify must refuse them, see the property below), so nothing here hides a
+// flow that writes but does not read back.
+const name = fc.oneof(
+  { weight: 9, arbitrary: fc.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,8}$/) },
+  { weight: 1, arbitrary: fc.constantFrom('__proto__', 'constructor', 'prototype') }
+)
 const assetPath = fc
   .array(fc.stringMatching(/^[A-Za-z0-9_ -][A-Za-z0-9_. -]{0,8}$/).filter((seg) => seg !== '..'), { minLength: 1, maxLength: 3 })
   .map((segs) => segs.join('/'))
@@ -333,9 +350,16 @@ const flowArb: fc.Arbitrary<Flow> = fc
   )
 
 describe('flow files — round trip (property)', () => {
-  it('parse(stringify(flow)) equals the flow, and stringify is stable', () => {
+  it('stringify either refuses the flow or writes text that parses back to it, stably', () => {
+    let refused = 0
     fc.assert(
       fc.property(flowArb, (flow) => {
+        const reserved = Object.keys(flow.vars ?? {}).filter((k) => ['__proto__', 'constructor', 'prototype'].includes(k))
+        if (reserved.length > 0) {
+          refused += 1
+          expect(() => stringifyFlow(flow), `vars ${reserved.join(', ')} must be refused on write`).toThrow(/reserved name/)
+          return
+        }
         const text = stringifyFlow(flow)
         const r = parseFlow(text)
         if (!r.ok) throw new Error(`stringified flow did not parse:\n${formatFlowErrors(r.errors)}\n---\n${text}`)
@@ -345,5 +369,6 @@ describe('flow files — round trip (property)', () => {
       }),
       { seed: 20261031, numRuns: 300 }
     )
+    expect(refused, 'the arbitrary should exercise reserved var names').toBeGreaterThan(0)
   })
 })

@@ -1,7 +1,7 @@
-import { Document, isMap, isPair, isScalar, isSeq, LineCounter, parseDocument, visit } from 'yaml'
+import { Document, isAlias, isMap, isPair, isScalar, isSeq, LineCounter, parseDocument, visit } from 'yaml'
 import type { Node as YamlNode } from 'yaml'
 import type { z } from 'zod'
-import { FlowSchema, type Flow } from './schema'
+import { FlowSchema, RESERVED_KEYS, type Flow } from './schema'
 
 /**
  * Flow files as YAML text.
@@ -114,7 +114,28 @@ export function formatFlowDocument(document: Document): string {
   return document.toString(FLOW_TO_STRING)
 }
 
-const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+function findReservedKey(value: unknown, seen = new Set<unknown>()): string | null {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return null
+  seen.add(value)
+  if (value instanceof Map) {
+    for (const [k, v] of value) {
+      if (typeof k === 'string' && RESERVED_KEYS.has(k)) return k
+      const inKey = findReservedKey(k, seen)
+      if (inKey !== null) return inKey
+      const inValue = findReservedKey(v, seen)
+      if (inValue !== null) return inValue
+    }
+    return null
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findReservedKey(item, seen)
+      if (found !== null) return found
+    }
+  }
+  return null
+}
 
 /** Parse and validate a flow file. Never throws on bad input. */
 export function parseFlow(text: string): ParseFlowResult {
@@ -138,11 +159,13 @@ export function parseFlow(text: string): ParseFlowResult {
   const reserved: FlowError[] = []
   visit(doc, {
     Pair(_, pair) {
-      if (isScalar(pair.key) && RESERVED_KEYS.has(String(pair.key.value))) {
-        const pos = lineCounter.linePos(pair.key.range?.[0] ?? 0)
+      // An alias key (`*k: v`) resolves to the anchored scalar, so check that too.
+      const key = isAlias(pair.key) ? pair.key.resolve(doc) : pair.key
+      if (isScalar(key) && RESERVED_KEYS.has(String(key.value))) {
+        const pos = lineCounter.linePos((pair.key as YamlNode).range?.[0] ?? 0)
         reserved.push({
           path: '(yaml)',
-          message: `"${String(pair.key.value)}" is a reserved name and cannot be used as a key`,
+          message: `"${String(key.value)}" is a reserved name and cannot be used as a key`,
           line: pos.line,
           col: pos.col
         })
@@ -150,6 +173,20 @@ export function parseFlow(text: string): ParseFlowResult {
     }
   })
   if (reserved.length > 0) return { ok: false, errors: reserved }
+  // Belt and braces for any other route to such a key (a key built from a
+  // collection, a future merge-key setting): read the data as Maps, where a
+  // `__proto__` key is an ordinary entry, and refuse it wherever it ended up.
+  try {
+    const hidden = findReservedKey(doc.toJS({ maxAliasCount: 50, mapAsMap: true }))
+    if (hidden !== null) {
+      return {
+        ok: false,
+        errors: [{ path: '(yaml)', message: `"${hidden}" is a reserved name and cannot be used as a key`, line: 1, col: 1 }]
+      }
+    }
+  } catch {
+    // Reported with its position by the plain conversion below.
+  }
 
   let data: unknown
   try {
@@ -169,6 +206,11 @@ export function parseFlow(text: string): ParseFlowResult {
  * file this writes always parses back to an equal flow.
  */
 export function stringifyFlow(flow: Flow): string {
+  // Checked on the input's own keys: validation reads `vars` as a record and
+  // would drop a `__proto__` entry silently instead of refusing it.
+  for (const key of Object.keys(flow.vars ?? {})) {
+    if (RESERVED_KEYS.has(key)) throw new Error(`vars.${key}: is a reserved name (__proto__, constructor, prototype)`)
+  }
   const valid = FlowSchema.parse(flow)
   const doc = new Document(valid)
   visit(doc, {

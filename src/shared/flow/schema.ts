@@ -50,9 +50,18 @@ const stepId = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, 'must be 1-64 letters, digits, "_" or "-", starting with a letter or digit')
 
+/**
+ * Keys that are not data in a JS object: `obj.__proto__ = x` sets the
+ * prototype, and `constructor`/`prototype` shadow built-ins. Refused as any key
+ * (by `parseFlow`) and as var names (here), so a flow `stringifyFlow` writes
+ * always parses back.
+ */
+export const RESERVED_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
+
 const varName = z
   .string()
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'must be a letter or "_" followed by letters, digits or "_"')
+  .refine((n) => !RESERVED_KEYS.has(n), { message: 'is a reserved name (__proto__, constructor, prototype)' })
 
 /**
  * One locator. A step lists several, most stable first (FR-STA.6's ranking:
@@ -77,12 +86,18 @@ const pixel = z.number().finite()
 const relativeAssetPath = z
   .string()
   .regex(/\S/, 'must not be empty or blank')
+  .describe(
+    'Relative path inside the flow\'s folder: no leading / or \\, drive letter, scheme, ".." segment, "%" or control characters (enforced by parseFlow; the loader must also resolve and contain it).'
+  )
   .refine(
     (p) =>
       !/^[\\/]/.test(p) &&
       !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(p) &&
-      !p.split(/[\\/]/).includes('..'),
-    { message: 'must be a relative path inside the flow\'s folder (no leading "/", drive letter, scheme or "..")' }
+      !p.split(/[\\/]/).includes('..') &&
+      // Percent-encoding and control characters have no place in a file name
+      // here, and `%2e%2e` is how a dot-segment check is usually walked around.
+      !/%|[\u0000-\u001f\u007f]/.test(p),
+    { message: 'must be a relative path inside the flow\'s folder (no leading "/", drive letter, scheme, "..", "%" or control characters)' }
   )
 
 export const StepTargetSchema = z.strictObject({
