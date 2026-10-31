@@ -41,7 +41,7 @@
     "@vitejs/plugin-react": "6.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "electron": "44.9.3",
+    "electron": "45.0.0",
     "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
     "react": "19.3.1",

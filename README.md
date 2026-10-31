@@ -11,11 +11,11 @@ For contributors building from source. If you just want to *use* Nawi, go to
 
 ```bash
 npm install
-npm run install-electron   # Electron 44 fetches its binary separately
+npm run install-electron   # Electron (44+) fetches its binary separately
 npm run dev
 ```
 
-> **Note on `npm install`:** Electron 44 no longer downloads its binary from a
+> **Note on `npm install`:** Since Electron 44, Electron no longer downloads its binary from a
 > `postinstall` hook — `npm run install-electron` (which runs
 > `node node_modules/electron/install.js`) does it, once.
 
