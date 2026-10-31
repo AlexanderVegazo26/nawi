@@ -68,6 +68,23 @@ export const SelectorSchema = z.union([
 
 const pixel = z.number().finite()
 
+/**
+ * Assets a flow points at (reference crops) live next to the flow file. A path
+ * that is absolute, has a drive letter or scheme, or climbs out with `..` would
+ * let a shared flow make the app read an arbitrary file, so it is refused here,
+ * before anything loads it.
+ */
+const relativeAssetPath = z
+  .string()
+  .regex(/\S/, 'must not be empty or blank')
+  .refine(
+    (p) =>
+      !/^[\\/]/.test(p) &&
+      !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(p) &&
+      !p.split(/[\\/]/).includes('..'),
+    { message: 'must be a relative path inside the flow\'s folder (no leading "/", drive letter, scheme or "..")' }
+  )
+
 export const StepTargetSchema = z.strictObject({
   selectors: z.array(SelectorSchema).min(1, 'needs at least one selector'),
   /** Recorded box `[x, y, width, height]` in CSS px, for the vision fallback. */
@@ -75,7 +92,7 @@ export const StepTargetSchema = z.strictObject({
     .tuple([pixel, pixel, pixel.nonnegative(), pixel.nonnegative()])
     .optional(),
   /** Reference crop relative to the flow file, for visual diff and vision replay. */
-  image: nonEmpty.optional()
+  image: relativeAssetPath.optional()
 })
 
 export const ExpectSchema = z
@@ -188,6 +205,8 @@ export function placeholderProblems(
 
 /** The fields of a step that are interpolated at run time. */
 const INTERPOLATED_FIELDS = ['value', 'url', 'key'] as const
+/** Assertion expectations are interpolated too (`expect: { url: "${env.BASE}/x" }`). */
+const INTERPOLATED_EXPECT_FIELDS = ['url', 'text'] as const
 
 /**
  * Cross-field rules a per-field schema cannot express: unique step ids and
@@ -225,6 +244,16 @@ export const FlowSchema = FlowShape.superRefine((flow, ctx) => {
       if (typeof value !== 'string') continue
       for (const message of placeholderProblems(value, declared, true)) {
         ctx.addIssue({ code: 'custom', path: ['steps', i, field], message })
+      }
+    }
+
+    if (step.action === 'assert') {
+      for (const field of INTERPOLATED_EXPECT_FIELDS) {
+        const value = step.expect[field]
+        if (value === undefined) continue
+        for (const message of placeholderProblems(value, declared, true)) {
+          ctx.addIssue({ code: 'custom', path: ['steps', i, 'expect', field], message })
+        }
       }
     }
   })

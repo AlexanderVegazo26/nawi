@@ -114,6 +114,8 @@ export function formatFlowDocument(document: Document): string {
   return document.toString(FLOW_TO_STRING)
 }
 
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
 /** Parse and validate a flow file. Never throws on bad input. */
 export function parseFlow(text: string): ParseFlowResult {
   const lineCounter = new LineCounter()
@@ -128,6 +130,26 @@ export function parseFlow(text: string): ParseFlowResult {
       })
     }
   }
+
+  // `__proto__` as a key is not data: converting it to a JS object sets the
+  // prototype instead of adding a key, so `vars: { __proto__: x }` would vanish
+  // and every `${vars.__proto__}` would then read as "undeclared". Refuse these
+  // keys anywhere, at their position.
+  const reserved: FlowError[] = []
+  visit(doc, {
+    Pair(_, pair) {
+      if (isScalar(pair.key) && RESERVED_KEYS.has(String(pair.key.value))) {
+        const pos = lineCounter.linePos(pair.key.range?.[0] ?? 0)
+        reserved.push({
+          path: '(yaml)',
+          message: `"${String(pair.key.value)}" is a reserved name and cannot be used as a key`,
+          line: pos.line,
+          col: pos.col
+        })
+      }
+    }
+  })
+  if (reserved.length > 0) return { ok: false, errors: reserved }
 
   let data: unknown
   try {

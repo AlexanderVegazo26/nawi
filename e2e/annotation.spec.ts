@@ -136,6 +136,18 @@ async function canvasPixelSize(): Promise<{ width: number; height: number }> {
   }, canvasSel)
 }
 
+/**
+ * Saves and waits for THIS save to land. "Saved to library" is not enough: an
+ * earlier test's toast can still be on screen, so it would pass before the
+ * save IPC returns and the test would read the library's old annotations.
+ * The Unsaved badge clears only once saveAnnotations has answered ok.
+ */
+async function saveAndWait(): Promise<void> {
+  await expect(win.getByText('Unsaved'), 'nothing to save: the edit before this save did not register').toBeVisible()
+  await win.getByRole('button', { name: 'Save' }).click()
+  await expect(win.getByText('Unsaved'), 'the save never completed (Unsaved badge still shown)').toBeHidden()
+}
+
 /** Converts an image-space point to page coordinates for the mouse. */
 async function toPage(x: number, y: number): Promise<{ x: number; y: number }> {
   const box = (await win.locator(canvasSel).boundingBox())!
@@ -173,9 +185,7 @@ test('FR-ANN.1 — freehand draws a multi-point stroke that persists', async () 
   }
   await win.mouse.up()
 
-  await expect(win.getByText('Unsaved')).toBeVisible()
-  await win.getByRole('button', { name: 'Save' }).click()
-  await expect(win.getByText('Saved to library').first()).toBeVisible()
+  await saveAndWait()
 
   const stroke = await win.evaluate(async () => {
     const r = await window.api.listLibrary()
@@ -195,6 +205,7 @@ test('FR-ANN.1 — freehand draws a multi-point stroke that persists', async () 
 test('FR-ANN.1 — a freehand stroke is hit-testable and moves with its points', async () => {
   // Select the stroke by clicking ON the ink, then drag it.
   await win.getByRole('button', { name: 'Select' }).click()
+  await expect(win.getByRole('button', { name: 'Select' })).toHaveAttribute('aria-pressed', 'true')
 
   const before = await win.evaluate(async () => {
     const r = await window.api.listLibrary()
@@ -209,8 +220,7 @@ test('FR-ANN.1 — a freehand stroke is hit-testable and moves with its points',
   await win.mouse.down()
   await win.mouse.move(grab.x + 40, grab.y + 25, { steps: 10 })
   await win.mouse.up()
-  await win.getByRole('button', { name: 'Save' }).click()
-  await expect(win.getByText('Saved to library').first()).toBeVisible()
+  await saveAndWait()
 
   const after = await win.evaluate(async () => {
     const r = await window.api.listLibrary()
@@ -412,8 +422,7 @@ test('UX-ANN.4 — blur and redact are separate tools producing separate shape k
   await win.locator('nav[aria-label="Annotation tools"]').press('x')
   await drag({ x: 200, y: 40 }, { x: 330, y: 110 })
 
-  await win.getByRole('button', { name: 'Save' }).click()
-  await expect(win.getByText('Saved to library').first()).toBeVisible()
+  await saveAndWait()
 
   const kinds = await win.evaluate(async () => {
     const r = await window.api.listLibrary()
@@ -442,8 +451,7 @@ test('UX-ANN.2 — deleting badge 3 of 5 renumbers the rest, derived not stored'
     const p = await toPage(80 + i * 90, 90)
     await win.mouse.click(p.x, p.y)
   }
-  await win.getByRole('button', { name: 'Save' }).click()
-  await expect(win.getByText('Saved to library').first()).toBeVisible()
+  await saveAndWait()
 
   const ids = await win.evaluate(async () => {
     const r = await window.api.listLibrary()
@@ -467,8 +475,7 @@ test('UX-ANN.2 — deleting badge 3 of 5 renumbers the rest, derived not stored'
   await win.mouse.click(third.x, third.y)
   await win.locator(canvasSel).press('Delete')
 
-  await win.getByRole('button', { name: 'Save' }).click()
-  await expect(win.getByText('Saved to library').first()).toBeVisible()
+  await saveAndWait()
 
   const remaining = await win.evaluate(async () => {
     const r = await window.api.listLibrary()
@@ -587,8 +594,7 @@ test('UX-A11Y.7 — under reduced motion the renumber is instant and still annou
     await expect(live).toContainText('renumbered')
     await expect(live).toContainText('2 badges now')
 
-    await win.getByRole('button', { name: 'Save' }).click()
-    await expect(win.getByText('Saved to library').first()).toBeVisible()
+    await saveAndWait()
 
     const count = await win.evaluate(async () => {
       const r = await window.api.listLibrary()

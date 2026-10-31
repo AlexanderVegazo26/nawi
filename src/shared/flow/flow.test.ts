@@ -138,6 +138,54 @@ describe('flow files — validation errors carry path and line:col', () => {
     expect(r.ok, r.ok ? '' : formatFlowErrors(r.errors)).toBe(true)
   })
 
+  it('checks placeholders in assertion expectations too', () => {
+    const errors = errorsOf(
+      LOGIN +
+        '  - { id: s3, action: assert, expect: { url: "${vars.bse}/home" } }\n' +
+        '  - id: s4\n    action: assert\n    target: { selectors: [ { role: status } ] }\n    expect: { text: "Hi ${user.name}" }\n'
+    )
+    expect(errors.map((e) => [e.path, e.line]), formatFlowErrors(errors)).toEqual([
+      ['steps[2].expect.url', 15],
+      ['steps[3].expect.text', 19]
+    ])
+    expect(errors[0].message).toContain('declare "bse" under vars')
+    expect(errors[1].message).toContain('unknown namespace "user"')
+  })
+
+  it('refuses __proto__ (and other reserved names) as a key instead of silently dropping it', () => {
+    const e = onlyError(loginWith('  email: "${env.TEST_EMAIL}"', '  email: "${env.TEST_EMAIL}"\n  __proto__: "${env.X}"'))
+    expect(e).toMatchObject({ path: '(yaml)', line: 7, col: 3 })
+    expect(e.message).toContain('"__proto__" is a reserved name')
+    expect(onlyError(loginWith('  email: "${env.TEST_EMAIL}"', '  constructor: x\n  email: "${env.TEST_EMAIL}"')).line).toBe(6)
+  })
+
+  it.each([
+    ['../outside.png'],
+    ['steps/../../etc/passwd'],
+    ['/etc/passwd'],
+    ['C:\\Users\\me\\x.png'],
+    ['\\\\server\\share\\x.png'],
+    ['file:///etc/passwd'],
+    ['https://example.com/x.png']
+  ])('rejects a reference image path outside the flow folder: %s', (image) => {
+    const text = loginWith(
+      '      selectors: [ { testid: login-email }, { role: textbox, name: Email } ]',
+      `      selectors: [ { testid: login-email }, { role: textbox, name: Email } ]\n      image: ${JSON.stringify(image)}`
+    )
+    const e = onlyError(text)
+    expect(e).toMatchObject({ path: 'steps[0].target.image', line: 12 })
+    expect(e.message).toContain('relative path inside the flow')
+  })
+
+  it('accepts a reference image path inside the flow folder', () => {
+    const text = loginWith(
+      '      selectors: [ { testid: login-email }, { role: textbox, name: Email } ]',
+      '      selectors: [ { testid: login-email }, { role: textbox, name: Email } ]\n      image: steps/s1..v2.png'
+    )
+    const r = parseFlow(text)
+    expect(r.ok, r.ok ? '' : formatFlowErrors(r.errors)).toBe(true)
+  })
+
   it('rejects a blank selector value', () => {
     const e = onlyError(loginWith('{ testid: login-email }', '{ testid: " " }'))
     expect(e).toMatchObject({ path: 'steps[0].target.selectors[0].testid', line: 11, col: 30 })
@@ -198,7 +246,14 @@ const tricky = fc.oneof(
   fc.string({ unit: 'grapheme', maxLength: 10 })
 )
 const visible = tricky.filter((s) => /\S/.test(s))
-const name = fc.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,8}$/)
+const noPlaceholder = tricky.filter((s) => !s.includes('${'))
+const name = fc
+  .stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,8}$/)
+  .filter((n) => !['constructor', 'prototype'].includes(n))
+const assetPath = fc
+  .array(fc.stringMatching(/^[A-Za-z0-9_ -][A-Za-z0-9_. -]{0,8}$/).filter((seg) => seg !== '..'), { minLength: 1, maxLength: 3 })
+  .map((segs) => segs.join('/'))
+  .filter((p) => /\S/.test(p) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(p))
 
 const selector: fc.Arbitrary<Selector> = fc.oneof(
   visible.map((v) => ({ testid: v })),
@@ -213,7 +268,7 @@ const target = fc.record(
   {
     selectors: fc.array(selector, { minLength: 1, maxLength: 3 }),
     bbox: fc.tuple(px, px, size, size),
-    image: visible
+    image: assetPath
   },
   { requiredKeys: ['selectors'] }
 )
@@ -242,8 +297,8 @@ function stepFor(id: string, action: (typeof FLOW_ACTIONS)[number]): fc.Arbitrar
         return fc.oneof(fc.record({ target }), fc.record({ ms: fc.integer({ min: 1, max: 600_000 }) }))
       case 'assert':
         return fc.oneof(
-          fc.record({ target, expect: fc.record({ visible: fc.boolean(), text: tricky }, { requiredKeys: ['visible'] }) }),
-          fc.record({ expect: fc.record({ url: tricky }) })
+          fc.record({ target, expect: fc.record({ visible: fc.boolean(), text: noPlaceholder }, { requiredKeys: ['visible'] }) }),
+          fc.record({ expect: fc.record({ url: fc.oneof(noPlaceholder, fc.constant('${env.BASE_URL}/done')) }) })
         )
       case 'screenshot':
         return fc.record({ target }, { requiredKeys: [] })
