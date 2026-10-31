@@ -9,6 +9,9 @@
   "author": "Alexander Rodriguez",
   "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=26"
+  },
   "type": "module",
   "scripts": {
     "install-electron": "node node_modules/electron/install.js",
