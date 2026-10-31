@@ -137,6 +137,9 @@ test('annotations draw on the canvas, persist, and mark the document dirty', asy
 
   await win.getByRole('button', { name: 'Save' }).click()
   await expect(win.getByText('Saved to library')).toBeVisible()
+  // The badge clears only once saveAnnotations has answered ok; reading the
+  // library before that can see the previous annotations.
+  await expect(win.getByText('Unsaved'), 'the save never completed (Unsaved badge still shown)').toBeHidden()
 
   const shapes = await win.evaluate(async () => {
     const res = await window.api.listLibrary()
@@ -154,6 +157,9 @@ test('undo removes the annotation and the change round-trips to disk', async () 
   await win.getByRole('button', { name: 'Undo (Ctrl+Z)', exact: true }).click()
   await expect(win.getByText('Unsaved')).toBeVisible()
   await win.getByRole('button', { name: 'Save' }).click()
+  // No toast wait here: the previous test's "Saved to library" may still be on
+  // screen. The badge clearing is this save's own completion signal.
+  await expect(win.getByText('Unsaved'), 'the save never completed (Unsaved badge still shown)').toBeHidden()
 
   const shapes = await win.evaluate(async () => {
     const res = await window.api.listLibrary()

@@ -30,6 +30,65 @@ export interface DisplayMediaRequest<S> {
   sources: () => Promise<S[]>
   callback: (streams: DisplayMediaStreams<S> | null) => void
   log?: Pick<Console, 'error' | 'warn'>
+  /**
+   * How long the source list may take before the request is denied. Listing
+   * has been seen to never answer on a Linux CI X server; without a bound the
+   * renderer's `getDisplayMedia` waits forever and the user's recording neither
+   * starts nor fails (no card, no message: a dead end, UX-PRM.2).
+   */
+  sourcesTimeoutMs?: number
+}
+
+export type SourceKind = 'screen' | 'window'
+
+/**
+ * Which capturer to ask for a picked id. Ids are `screen:<n>:<n>` or
+ * `window:<n>:<n>`; anything else is asked of both.
+ *
+ * Per kind, because the kinds behave differently under X11 with no window
+ * manager (CI): a window listing takes ~3 s and is always empty, and a combined
+ * listing waits for it and is sometimes empty even with a screen present. A
+ * screen-only listing answers in milliseconds.
+ */
+export function sourceKindsFor(wanted: string | null): SourceKind[] {
+  if (wanted?.startsWith('screen:')) return ['screen']
+  if (wanted?.startsWith('window:')) return ['window']
+  return ['screen', 'window']
+}
+
+/**
+ * Lists the sources for `wanted`. An empty *screen* listing is retried briefly
+ * (Chromium intermittently answers [] with "Failed to initialize pixel buffer"
+ * while a display exists, which cannot be a real answer). An empty *window*
+ * listing is a real answer (the window closed, or there is no window manager)
+ * and is final: retrying it only spent ~3 s per attempt before denying.
+ */
+export async function listSourcesFor<S>(
+  wanted: string | null,
+  list: (kinds: SourceKind[]) => Promise<S[]>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  attempts = 8
+): Promise<S[]> {
+  const kinds = sourceKindsFor(wanted)
+  const retryEmpty = kinds.length === 1 && kinds[0] === 'screen'
+  for (let attempt = 1; ; attempt += 1) {
+    const sources = await list(kinds)
+    if (sources.length > 0 || !retryEmpty || attempt >= attempts) return sources
+    await sleep(100 * attempt)
+  }
+}
+
+/** Generous: a healthy listing takes well under a second, including its empty-list retries. */
+export const SOURCES_TIMEOUT_MS = 8_000
+
+class SourcesTimeout extends Error {}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SourcesTimeout(`listing capture sources did not answer within ${ms} ms`)), ms)
+  })
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer))
 }
 
 export async function answerDisplayMedia<S extends SourceLike>(req: DisplayMediaRequest<S>): Promise<void> {
@@ -42,7 +101,7 @@ export async function answerDisplayMedia<S extends SourceLike>(req: DisplayMedia
   }
 
   try {
-    const real = await req.sources()
+    const real = await withTimeout(req.sources(), req.sourcesTimeoutMs ?? SOURCES_TIMEOUT_MS)
     const match = real.find((s) => s.id === req.wanted)
     // Deliberately no `?? real[0]` fallback: silently recording a different
     // source than the user picked is a confidentiality problem. Denying the
@@ -71,7 +130,11 @@ export async function answerDisplayMedia<S extends SourceLike>(req: DisplayMedia
       answer({ video: match })
     }
   } catch (err) {
-    log.error('[displayMedia]', err)
+    if (err instanceof SourcesTimeout) {
+      log.error(`[displayMedia] ${err.message}; denying the request for ${String(req.wanted)}`)
+    } else {
+      log.error('[displayMedia]', err)
+    }
     // If the callback itself threw, it has been consumed: calling it again
     // only throws "One-time callback was called more than once".
     if (!answered) {
