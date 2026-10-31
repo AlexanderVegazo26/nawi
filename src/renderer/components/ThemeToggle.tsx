@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 import type { ThemePreference } from '@shared/settings'
-import { applyTheme } from '../lib/theme'
+import { getThemePreference, setThemePreference, subscribeThemePreference } from '../lib/theme'
 
 const ORDER: ThemePreference[] = ['system', 'light', 'dark']
 
@@ -30,29 +30,18 @@ const ICON: Record<ThemePreference, React.JSX.Element> = {
  * theme they are in. `title` carries the action instead.
  */
 export function ThemeToggle(): React.JSX.Element {
-  const [theme, setTheme] = useState<ThemePreference>('system')
-
-  useEffect(() => {
-    let alive = true
-    void window.api.getSettings().then((res) => {
-      if (alive && res.ok) setTheme(res.value.theme)
-    })
-    const stop = window.api.onSettingsChanged((next) => setTheme(next.theme))
-    return () => {
-      alive = false
-      stop()
-    }
-  }, [])
+  // The shared store, not local state: main's broadcasts and the initial read go
+  // through it with the stale-write guard, see lib/theme.ts.
+  const theme = useSyncExternalStore(
+    subscribeThemePreference,
+    getThemePreference,
+    getThemePreference
+  )
 
   const next = ORDER[(ORDER.indexOf(theme) + 1) % ORDER.length]
 
   const cycle = (): void => {
-    // Paint immediately, then persist. The capture path's "never wait for the
-    // product" rule applies to a theme click too, and main broadcasts the
-    // authoritative value back either way.
-    applyTheme(next)
-    setTheme(next)
-    void window.api.updateSettings({ theme: next })
+    void setThemePreference(next)
   }
 
   return (

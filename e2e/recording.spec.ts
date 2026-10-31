@@ -29,14 +29,53 @@ import { tmpdir } from 'node:os'
 
 const RECORDINGS = ['library', 'recordings']
 
-async function launch(userDataDir: string): Promise<{ app: ElectronApplication; win: Page }> {
+interface Launched {
+  app: ElectronApplication
+  win: Page
+  /** Main-process and renderer console output, for failure messages. */
+  logs: string[]
+}
+
+async function launch(userDataDir: string): Promise<Launched> {
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${userDataDir}`],
     cwd: process.cwd()
   })
+  const logs: string[] = []
+  app.on('console', (msg) => logs.push(`[main ${msg.type()}] ${msg.text()}`))
   const win = await app.firstWindow()
+  win.on('console', (msg) => logs.push(`[renderer ${msg.type()}] ${msg.text()}`))
   await win.waitForLoadState('domcontentloaded')
-  return { app, win }
+  return { app, win, logs }
+}
+
+/**
+ * Waits for the engine to report `recording`, not merely that the request was
+ * accepted.
+ *
+ * On ubuntu CI the phase has been seen to stay `idle` for the whole 30 s with
+ * nothing else to go on. So the polled value carries `status.error` (the engine
+ * records why a start failed there), and a timeout appends the app's console
+ * output (`[recording]`, `[displayMedia]`), so the failure names its cause.
+ */
+async function waitForRecording({ win, logs }: Launched): Promise<void> {
+  try {
+    await expect
+      .poll(
+        async () => {
+          const s = await win.evaluate(() => window.api.getRecordingStatus())
+          if (!s.ok) return `unknown (getRecordingStatus failed: ${s.error})`
+          return s.value.error ? `${s.value.phase} (error: ${s.value.error})` : s.value.phase
+        },
+        { timeout: 30_000, intervals: [250] }
+      )
+      .toBe('recording')
+  } catch (err) {
+    if (err instanceof Error) {
+      err.message += `\n\nApp console, last 40 lines:\n${logs.slice(-40).join('\n') || '(none)'}`
+    }
+    throw err
+  }
 }
 
 interface VideoProbe {
@@ -152,17 +191,7 @@ test.describe('crash recovery', () => {
     , sources.value[0].id)
     expect(started.ok).toBe(true)
 
-    // Wait until the engine says it is really recording, not merely that the
-    // request was accepted.
-    await expect
-      .poll(
-        async () => {
-          const s = await first.win.evaluate(() => window.api.getRecordingStatus())
-          return s.ok ? s.value.phase : 'unknown'
-        },
-        { timeout: 30_000, intervals: [250] }
-      )
-      .toBe('recording')
+    await waitForRecording(first)
 
     // Several chunk intervals, so there is genuinely more than one chunk on disk.
     await first.win.waitForTimeout(5_000)
@@ -259,7 +288,8 @@ test.describe('crash recovery', () => {
 
   test('a normally stopped recording is MP4, and plays and scrubs over capture://', async () => {
     test.setTimeout(90_000)
-    const { app, win } = await launch(userDataDir)
+    const launched = await launch(userDataDir)
+    const { app, win } = launched
 
     const sources = await win.evaluate(() => window.api.listSources(['screen']))
     if (!sources.ok || sources.value.length === 0) {
@@ -279,15 +309,7 @@ test.describe('crash recovery', () => {
     )
     expect(started.ok).toBe(true)
 
-    await expect
-      .poll(
-        async () => {
-          const s = await win.evaluate(() => window.api.getRecordingStatus())
-          return s.ok ? s.value.phase : 'unknown'
-        },
-        { timeout: 30_000, intervals: [250] }
-      )
-      .toBe('recording')
+    await waitForRecording(launched)
 
     // FR-REC.2: pause and resume mid-recording, so the finalized file is one
     // that actually went through the pause path rather than a straight run.

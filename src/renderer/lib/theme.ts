@@ -32,6 +32,78 @@ export function cssVar(name: string, fallback: string): string {
 }
 
 /**
+ * The renderer's one copy of the preference.
+ *
+ * The rail toggle reads it (`useSyncExternalStore`) and `startThemeSync` keeps it
+ * in step with main, so the icon and the painted theme cannot disagree. It used
+ * to be two copies, each setting itself from every `settings:changed`, and that
+ * raced: a click paints and persists optimistically, and the broadcast of an
+ * *older* write (the previous click's, or anyone's from before the click) landed
+ * afterwards and painted the old theme back. Two quick clicks could end on the
+ * first one's theme, and the next click then cycled from the wrong place.
+ */
+let current: ThemePreference = 'system'
+const subscribers = new Set<() => void>()
+/**
+ * Local writes main has not answered yet. Main applies writes in order and
+ * broadcasts each before replying to it, so while one is in flight every
+ * broadcast describes a state the user has already clicked past.
+ */
+let inFlight = 0
+/** Bumped by every local write, so a read that started before one can tell it is stale. */
+let writes = 0
+
+function publish(next: ThemePreference): void {
+  current = next
+  applyTheme(next)
+  for (const fn of subscribers) fn()
+}
+
+export function getThemePreference(): ThemePreference {
+  return current
+}
+
+export function subscribeThemePreference(fn: () => void): () => void {
+  subscribers.add(fn)
+  return () => {
+    subscribers.delete(fn)
+  }
+}
+
+/**
+ * Paints the preference now, then persists it.
+ *
+ * Never waits for main before painting (the capture path's "never wait for the
+ * product" rule applies to a theme click too), and never rejects. When the last
+ * write in flight settles, main's saved value is applied, so a value main
+ * sanitized or a write that failed cannot leave the UI claiming a theme that is
+ * not on disk.
+ */
+export async function setThemePreference(next: ThemePreference): Promise<void> {
+  inFlight++
+  writes++
+  publish(next)
+  let saved: ThemePreference | null = null
+  try {
+    const res = await window.api.updateSettings({ theme: next })
+    if (res.ok) saved = res.value.theme
+  } catch {
+    // Treated like a failed write: fall through to re-reading what is on disk.
+  } finally {
+    inFlight--
+  }
+  // A newer click is still in flight; its answer is the one that counts.
+  if (inFlight > 0) return
+  if (saved !== null) {
+    publish(saved)
+    return
+  }
+  const before = writes
+  const res = await window.api.getSettings().catch(() => null)
+  if (res?.ok && inFlight === 0 && writes === before) publish(res.value.theme)
+}
+
+/**
  * Reads the persisted preference, applies it, and keeps it applied.
  *
  * Called before React mounts so the first paint is already the right theme —
@@ -39,10 +111,14 @@ export function cssVar(name: string, fallback: string): string {
  * for symmetry; the app-lifetime subscription never actually uses it.
  */
 export async function startThemeSync(): Promise<() => void> {
-  const stop = window.api.onSettingsChanged((next) => applyTheme(next.theme))
+  const stop = window.api.onSettingsChanged((next) => {
+    if (inFlight === 0) publish(next.theme)
+  })
+  const before = writes
   const res = await window.api.getSettings()
   // A failure to read settings must not leave the app unrendered — the OS
   // preference is a correct answer, and it is what the absent attribute gives us.
-  if (res.ok) applyTheme(res.value.theme)
+  // A click that landed while the read was in flight is newer than its answer.
+  if (res.ok && writes === before) publish(res.value.theme)
   return stop
 }
