@@ -7,10 +7,9 @@
   // aborts with "No import alias found" otherwise. tsconfig.web.json remains
   // the authority for the renderer build.
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@/*": ["src/renderer/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@/*": ["./src/renderer/*"]
     }
   }
 }

@@ -12,10 +12,9 @@
     "esModuleInterop": true,
     "isolatedModules": true,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@/*": ["src/renderer/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@/*": ["./src/renderer/*"]
     },
     "types": ["vite/client"]
   },
