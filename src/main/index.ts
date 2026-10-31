@@ -34,6 +34,7 @@ import * as disk from './disk'
 import * as capture from './capture'
 import * as settings from './settings'
 import * as recording from './recording/orchestrator'
+import { answerDisplayMedia } from './recording/display-media'
 import { startMcpServer, type McpServerHandle } from './mcp/server'
 import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
@@ -702,12 +703,17 @@ async function registerShortcuts(): Promise<void> {
  * moment earlier. Treating that as "the source is gone" failed the recording
  * with "Invalid capture constraints" in roughly half the attempts under xvfb. An
  * empty list cannot be a real answer while the user has a display, so it is
- * retried briefly; a non-empty list without the picked id is still final.
+ * retried briefly (up to ~2.8 s); a non-empty list without the picked id is
+ * still final.
+ *
+ * Only the picked id's kind is listed, as the picker's `listSources(['screen'])`
+ * did: enumerating windows too adds a second X11 query that can fail on its own.
  */
-async function recordableSources(): Promise<Electron.DesktopCapturerSource[]> {
+async function recordableSources(wanted: string | null): Promise<Electron.DesktopCapturerSource[]> {
+  const types: Array<'screen' | 'window'> = wanted?.startsWith('window') ? ['window'] : ['screen']
   for (let attempt = 1; ; attempt += 1) {
-    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] })
-    if (sources.length > 0 || attempt >= 5) return sources
+    const sources = await desktopCapturer.getSources({ types })
+    if (sources.length > 0 || attempt >= 8) return sources
     await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
   }
 }
@@ -718,44 +724,18 @@ app.whenReady().then(() => {
   // Our own picker chooses the source, so the OS picker never appears.
   session.defaultSession.setDisplayMediaRequestHandler(
     (_request, callback) => {
-      void (async () => {
-        try {
-          // The handler needs the real Electron source object, not our DTO.
-          const wanted = pendingRecordingSourceId
-          const wantsAudio = pendingRecordingAudio
-          pendingRecordingSourceId = null
-          pendingRecordingAudio = false
-          const real = await recordableSources()
-          const match = real.find((s) => s.id === wanted)
-          // Deliberately no `?? real[0]` fallback: silently recording a
-          // different source than the user picked is a confidentiality problem.
-          // Denying the request surfaces a real error in the renderer instead.
-          if (!match) {
-            console.error('[displayMedia] requested source is no longer available')
-            callback({})
-            return
-          }
-          // System audio needs an explicit `audio` key. Omitting it — as this
-          // handler used to — means the renderer's `audio: true` request is
-          // answered video-only and every recording is silent, with nothing
-          // anywhere reporting a problem. `'loopback'` is Windows-only; on other
-          // platforms we degrade to video rather than passing a value Electron
-          // does not support there.
-          if (wantsAudio && process.platform === 'win32') {
-            callback({ video: match, audio: 'loopback' })
-          } else {
-            if (wantsAudio) {
-              console.warn(
-                `[displayMedia] system audio is not supported on ${process.platform}; recording video only`
-              )
-            }
-            callback({ video: match })
-          }
-        } catch (err) {
-          console.error('[displayMedia]', err)
-          callback({})
-        }
-      })()
+      // The handler needs the real Electron source object, not our DTO.
+      const wanted = pendingRecordingSourceId
+      const wantsAudio = pendingRecordingAudio
+      pendingRecordingSourceId = null
+      pendingRecordingAudio = false
+      void answerDisplayMedia({
+        wanted,
+        wantsAudio,
+        platform: process.platform,
+        sources: () => recordableSources(wanted),
+        callback
+      })
     },
     { useSystemPicker: false }
   )
