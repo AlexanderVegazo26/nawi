@@ -1,19 +1,18 @@
 import { resolve } from 'node:path'
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import pkg from './package.json' with { type: 'json' }
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
     // Inlined into the CLI so `nawi --version` cannot drift from the
     // package, and so the packaged CLI has no package.json path to resolve at
     // runtime from inside app.asar.unpacked. See src/cli/globals.d.ts.
     define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     build: {
       outDir: 'out',
-      rollupOptions: {
+      rolldownOptions: {
         input: {
           'main/index': resolve(__dirname, 'src/main/index.ts'),
           'mcp/stdio-bridge': resolve(__dirname, 'src/mcp/stdio-bridge.ts'),
@@ -29,9 +28,8 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
     build: {
-      rollupOptions: {
+      rolldownOptions: {
         input: { index: resolve(__dirname, 'src/preload/index.ts') },
         // Sandboxed preload scripts cannot be ES modules, and the package is
         // type: module — so emit CommonJS with an explicit .js name.
@@ -45,7 +43,7 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     build: {
-      rollupOptions: {
+      rolldownOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
           overlay: resolve(__dirname, 'src/renderer/overlay.html'),

@@ -17,8 +17,7 @@ npm run dev
 
 > **Note on `npm install`:** Electron 44 no longer downloads its binary from a
 > `postinstall` hook — `npm run install-electron` (which runs
-> `node node_modules/electron/install.js`) does it, once. If npm's
-> `allowScripts` policy blocks esbuild, run `npm install-scripts approve esbuild`.
+> `node node_modules/electron/install.js`) does it, once.
 
 ## Scripts
 

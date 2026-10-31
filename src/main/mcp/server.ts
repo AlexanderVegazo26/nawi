@@ -40,7 +40,7 @@ import * as settings from '../settings'
  * JSON-RPC framing is hand-rolled over `node:http`. The `@modelcontextprotocol/sdk`
  * package was installed and inspected first: its Streamable-HTTP transport pulls
  * express 5, hono, ajv, jose, cors, eventsource and pkce-challenge into runtime
- * `dependencies`, and `externalizeDepsPlugin()` would ship all of it in the asar
+ * `dependencies`, and electron-vite's dependency externalization would ship all of it in the asar
  * — a large surface for the three methods actually needed (`initialize`,
  * `tools/list`, `tools/call`). The milestone plan pre-authorized this fallback.
  */
