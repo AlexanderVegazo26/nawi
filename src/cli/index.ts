@@ -46,7 +46,8 @@ const COMMANDS: Record<string, { tool: string; summary: string }> = {
   search: { tool: 'search_captures', summary: 'Search captures: --query.' },
   annotate: { tool: 'annotate', summary: 'Add an annotation to a capture.' },
   redact: { tool: 'redact', summary: 'Redact a region of a capture.' },
-  export: { tool: 'export_guide', summary: 'Export captures as a guide.' }
+  export: { tool: 'export_guide', summary: 'Export captures as a guide.' },
+  'export-flow': { tool: 'export_flow', summary: 'Turn a recording into a flow file: --capture_id.' }
 }
 
 const USAGE = `nawi — command-line access to a running Nawi.

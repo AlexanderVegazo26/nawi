@@ -22,7 +22,10 @@ let endpoint: { url: string; token: string; port: number }
 
 const BRIDGE = join(process.cwd(), 'out', 'mcp', 'stdio-bridge.js')
 
-/** The FR-AGT.1 surface. Named here so the kill-switch test cannot quietly skip one. */
+/**
+ * The FR-AGT.1 surface plus `export_flow` (roadmap F2). Named here so the
+ * kill-switch test cannot quietly skip one.
+ */
 const TOOL_NAMES = [
   'capture_screen',
   'capture_region',
@@ -35,7 +38,8 @@ const TOOL_NAMES = [
   'search_captures',
   'annotate',
   'redact',
-  'export_guide'
+  'export_guide',
+  'export_flow'
 ]
 
 /* ------------------------------------------------------------------ *
@@ -149,7 +153,7 @@ test('FR-SEC.1 — the endpoint declares itself as non-egress', async () => {
   expect(parsed.egress).toBe(false)
 })
 
-test('initialize and tools/list expose exactly the twelve FR-AGT.1 tools', async () => {
+test('initialize and tools/list expose exactly the twelve FR-AGT.1 tools plus export_flow', async () => {
   const init = await rpc('initialize', { protocolVersion: '2025-06-18' })
   expect(init.status).toBe(200)
   expect((init.body.result as { serverInfo: { name: string } }).serverInfo.name).toBe('nawi')
@@ -218,6 +222,15 @@ test('capture_screen produces a real capture with a DC-2 complete sidecar', asyn
   )
 })
 
+test('export_flow says a capture without input events has nothing to turn into a flow, and why', async () => {
+  const shot = await callTool('capture_screen', { name: 'flow probe' })
+  const reply = await rpc('tools/call', { name: 'export_flow', arguments: { capture_id: shot.capture_id } })
+  expect(reply.body.error, 'a screen grab has no input events, so export_flow must refuse').toBeTruthy()
+  expect(reply.body.error.data?.code).toBe('UNAVAILABLE')
+  expect(reply.body.error.data?.reason).toBe('unsupported_surface')
+  expect(await callToolExpectingError('export_flow', { capture_id: '11111111-2222-4333-8444-000000000000' })).toBe('NOT_FOUND')
+})
+
 test('capture_element refuses without a browser instead of grabbing the whole screen', async () => {
   const before = (await callTool('list_captures')).total as number
   const code = await callToolExpectingError('capture_element', { selector: '#checkout-submit' })
@@ -273,7 +286,7 @@ test('FR-AGT.3 — the same idempotency_key returns the same capture_id and one 
  * UX-AGT.3 — the kill switch
  * ------------------------------------------------------------------ */
 
-test('UX-AGT.3 — while paused, every one of the twelve tools returns AGENT_ACCESS_PAUSED', async () => {
+test('UX-AGT.3 — while paused, every one of the thirteen tools returns AGENT_ACCESS_PAUSED', async () => {
   const before = (await callTool('list_captures')).total as number
   await setPaused(true)
   try {

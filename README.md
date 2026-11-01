@@ -210,10 +210,10 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes twelve tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes thirteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer`, `list_captures`, `search_captures`, `annotate`,
-`redact`, and `export_guide`. The MCP server, its dispatch layer, the state
+`redact`, `export_guide`, and `export_flow` (CLI: `nawi export-flow --capture_id <id>`). The MCP server, its dispatch layer, the state
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 
@@ -281,6 +281,14 @@ alone.
   editor validation (`# yaml-language-server: $schema=...`). Secrets are
   referenced as `${secret.name}`, never stored. Example:
   `src/shared/flow/__fixtures__/create-invoice.nawi.yaml`.
+- **Recording → flow** (`export_flow` over MCP, `nawi export-flow` on the CLI) —
+  turns a capture's harvested input events into flow YAML: clicks, one `fill`
+  per field with its final value (`select` for a `<select>`), named keys such as
+  Enter, each with its ranked selectors. Fields marked secret at capture become
+  `${secret.<name>}` placeholders (their values were never recorded). Scrolls,
+  resizes, modifier and editing keys, and the click that only focused a field are
+  left out and counted in the reply, with warnings to review. It returns the
+  YAML and writes nothing. Converter: `src/shared/flow/from-recording.ts`.
 
 ## Keyboard shortcuts
 
@@ -371,9 +379,13 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Flows are a file format only so far.** Nothing records into a flow, replays
-  one, or edits one in the UI yet, and no CLI/MCP tool reads them; those land as
-  separate slices (recording → flow, replayer, run records, flow editor).
+- **Flows can be written and exported, not yet replayed or edited in the UI.**
+  The app's own recordings don't run the CDP state harvest yet
+  (`src/main/harvest` is built and tested but not wired into a capture path), so
+  `export_flow` only has input events to work with on captures whose sidecar
+  carries them (for example DC-4 sidecars written by another tool). Wiring the
+  harvest into browser recordings, the replayer, run records and the flow editor
+  land as separate slices.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a
   recording cannot be trimmed, shortened or re-exported without leaving the app.
