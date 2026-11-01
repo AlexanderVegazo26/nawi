@@ -290,7 +290,7 @@ function shrinkEntry(entry: ProjectedEntry, budget: number): ProjectedEntry {
  * skipped rather than aborting the query: one corrupt line in a 40 MB harvest
  * must not make the whole state layer unreadable.
  */
-async function* readEntries(
+export async function* readEntries(
   revisionDir: string,
   source: unknown
 ): AsyncGenerator<Record<string, unknown>> {

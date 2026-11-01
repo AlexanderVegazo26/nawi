@@ -11,6 +11,7 @@ import type { AnnotationDoc, LibraryItem, Shape } from '@shared/types'
 import { defineTool, type ToolDefinition } from './dispatch'
 import { ToolError, notImplemented } from './errors'
 import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
+import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
 
 /**
@@ -599,6 +600,50 @@ const exportGuide = defineTool({
   }
 })
 
+/**
+ * Roadmap F2: a recording's input events as a flow file. Derived on demand and
+ * written nowhere: a sealed sidecar revision never changes (DC-6), and the flow
+ * a person edits belongs next to their other flows, not inside the capture.
+ */
+const exportFlow = defineTool({
+  name: 'export_flow',
+  description:
+    'Turn a browser recording\'s captured input events into an editable flow file (*.nawi.yaml, version 1): ' +
+    'clicks, filled fields (one step per field, final value), choices in selects and named keys, each with its ' +
+    'ranked selectors. Fields the app marked secret become ${secret.<name>} placeholders: their values were never ' +
+    'recorded. Scrolls, resizes and modifier keys are left out and counted. Returns the YAML text and writes nothing.',
+  idempotent: false,
+  schema: z.object({
+    capture_id: z.string().min(1).max(200),
+    revision: z.string().max(16).optional().describe('e.g. "v1". Defaults to the current revision.'),
+    name: z.string().max(200).optional().describe('Flow name. Defaults to "Recording <created_at>".')
+  }),
+  async run(args) {
+    const item = await requireItem(args.capture_id)
+    const sidecar = await library.readSidecar(args.capture_id, args.revision)
+    const revision = args.revision ?? item.sidecarRevision
+    if (!sidecar || !revision || !item.sidecarDir) {
+      throw new ToolError(
+        'UNAVAILABLE',
+        'That capture has no state layer, so there are no input events to turn into a flow.',
+        { capture_id: item.id, has_sidecar: Boolean(sidecar) }
+      )
+    }
+    try {
+      return { capture_id: item.id, ...(await flowFromSidecar({ revisionDir: join(item.sidecarDir, revision), sidecar, revision, name: args.name })) }
+    } catch (err) {
+      if (err instanceof NoInputEventsError) {
+        throw new ToolError(
+          'UNAVAILABLE',
+          'That capture has no input events (only browser recordings with state harvest have them).',
+          { capture_id: item.id, reason: err.reason }
+        )
+      }
+      throw err
+    }
+  }
+})
+
 /** The FR-AGT.1 surface, in the order the requirement lists them. */
 export const TOOLS: ToolDefinition[] = [
   captureScreen,
@@ -612,7 +657,8 @@ export const TOOLS: ToolDefinition[] = [
   searchCaptures,
   annotate,
   redact,
-  exportGuide
+  exportGuide,
+  exportFlow
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)
