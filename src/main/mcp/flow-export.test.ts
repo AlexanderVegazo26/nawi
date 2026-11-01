@@ -111,13 +111,25 @@ describe('flowFromSidecar', () => {
     expect(out.warnings[0]).toBe('Only the first 2 input events were read; the flow covers the start of the recording only.')
   })
 
-  it('does not follow an input_events path that leaves the revision directory', async () => {
-    const out = await flowFromSidecar({
+  it('refuses an input_events path that leaves the revision directory, instead of returning an empty flow', async () => {
+    const err = await flowFromSidecar({
       revisionDir: join(dir, 'nested'),
       sidecar: recording({ input_events: { path: '../input_events.ndjson', count: 5 } }),
       revision: 'v1',
       name: 'x'
-    })
-    expect(out.events, 'a "../" path must be refused, not read').toBe(0)
+    }).catch((e: unknown) => e)
+    expect(err, 'a "../" path must be refused, not read').toBeInstanceOf(NoInputEventsError)
+    expect((err as NoInputEventsError).reason).toBe('unreadable')
+  })
+
+  it('says the events file is unreadable when the sidecar names one that is missing', async () => {
+    const err = await flowFromSidecar({
+      revisionDir: dir,
+      sidecar: recording({ input_events: { path: 'gone.ndjson', count: 5 } }),
+      revision: 'v1',
+      name: 'x'
+    }).catch((e: unknown) => e)
+    expect(err, 'a missing input_events file must not export as an empty flow').toBeInstanceOf(NoInputEventsError)
+    expect((err as NoInputEventsError).reason).toBe('unreadable')
   })
 })

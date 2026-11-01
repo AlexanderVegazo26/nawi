@@ -1,5 +1,9 @@
 import { flowFromRecording, stringifyFlow, FLOW_FILE_SUFFIX, type FlowTarget, type SkipReason } from '@shared/flow'
 import type { SidecarRead, UnavailableReason } from '@shared/sidecar/types'
+import { access, constants } from 'node:fs/promises'
+import { join } from 'node:path'
+import { isNdjsonRef } from '@shared/sidecar/types'
+import { isSafeRelPath } from '../sidecar/paths'
 import { readEntries } from './projection'
 
 /**
@@ -16,7 +20,8 @@ import { readEntries } from './projection'
 export const MAX_EXPORT_EVENTS = 50_000
 
 export class NoInputEventsError extends Error {
-  constructor(readonly reason: UnavailableReason | 'not_harvested') {
+  /** `unreadable`: the sidecar names an events file that is missing, unreadable or outside the revision. */
+  constructor(readonly reason: UnavailableReason | 'not_harvested' | 'unreadable') {
     super(`no input events (${reason})`)
   }
 }
@@ -48,6 +53,19 @@ export async function flowFromSidecar(options: {
   if (source === null) {
     const reason = sidecar.state_layer.unavailable.find((u) => u.source === 'input_events')?.reason
     throw new NoInputEventsError(reason ?? 'not_harvested')
+  }
+
+  // readEntries yields nothing for a file it can't open (get_state_layer reports
+  // that as an empty page); an export would turn it into an empty flow that
+  // looks like a recording with no input, so check the file first.
+  if (isNdjsonRef(source as never)) {
+    const path = (source as { path?: unknown }).path
+    if (typeof path !== 'string' || !isSafeRelPath(path)) throw new NoInputEventsError('unreadable')
+    try {
+      await access(join(options.revisionDir, path), constants.R_OK)
+    } catch {
+      throw new NoInputEventsError('unreadable')
+    }
   }
 
   const events: Record<string, unknown>[] = []

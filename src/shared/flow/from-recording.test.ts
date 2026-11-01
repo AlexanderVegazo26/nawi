@@ -210,6 +210,39 @@ describe('flowFromRecording: other controls', () => {
   })
 })
 
+describe('flowFromRecording: review fixes', () => {
+  it('merges typing after a click back into the same field into one fill with the final value', () => {
+    clock = 0
+    const result = flowFromRecording([typed(EMAIL, 'Jon'), ev('click', EMAIL), typed(EMAIL, 'John')], OPTIONS)
+    expect(
+      result.flow.steps.map((s) => [s.action, 'value' in s ? s.value : null]),
+      'a caret-moving click inside a field being filled must not split it into two fills'
+    ).toEqual([['fill', 'John']])
+    expect(result.skipped).toEqual({ focus_click: 1 })
+    expect(result.merged).toBe(1)
+  })
+
+  it('leaves out an input event with no value instead of writing an empty fill that would clear the field', () => {
+    clock = 0
+    const editor = { ...EMAIL, role: 'textbox', accessible_name: 'Message' }
+    const result = flowFromRecording([ev('input', { ...editor, text: null }), ev('click', SUBMIT)], OPTIONS)
+    expect(
+      result.flow.steps.map((s) => s.action),
+      `a valueless, non-secret input must not become a fill; got ${JSON.stringify(result.flow.steps)}`
+    ).toEqual(['click'])
+    expect(result.skipped).toEqual({ unsupported: 1 })
+    expect(result.warnings).toContain(
+      '1 input event carried no value (for example typing in a rich-text editor) and were left out; add those steps by hand.'
+    )
+  })
+
+  it('still records a field cleared to an empty string as an empty fill', () => {
+    clock = 0
+    const { flow } = flowFromRecording([typed(EMAIL, 'a'), typed(EMAIL, '')], OPTIONS)
+    expect(flow.steps.map((s) => [s.action, 'value' in s ? s.value : null])).toEqual([['fill', '']])
+  })
+})
+
 describe('flowFromRecording: untrusted input', () => {
   it('skips malformed lines instead of throwing', () => {
     const { flow, skipped } = flowFromRecording(

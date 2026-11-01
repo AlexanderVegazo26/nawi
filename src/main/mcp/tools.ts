@@ -635,7 +635,9 @@ const exportFlow = defineTool({
       if (err instanceof NoInputEventsError) {
         throw new ToolError(
           'UNAVAILABLE',
-          'That capture has no input events (only browser recordings with state harvest have them).',
+          err.reason === 'unreadable'
+            ? 'That capture\'s input events file is missing or unreadable, so no flow can be made from it.'
+            : 'That capture has no input events (only browser recordings with state harvest have them).',
           { capture_id: item.id, reason: err.reason }
         )
       }

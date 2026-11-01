@@ -243,6 +243,7 @@ export function flowFromRecording(
   }
   const warnings: string[] = []
   let merged = 0
+  let valueless = 0
 
   const valid: RecordedEvent[] = []
   for (const raw of events) {
@@ -298,6 +299,14 @@ export function flowFromRecording(
           break
         }
         const redacted = event.value_redacted === true
+        if (!redacted && typeof target?.text !== 'string') {
+          // No value and not secret: the probe reads `value` only from form
+          // fields, so this is e.g. a rich-text editor. An empty fill would clear
+          // the field on replay, so the event is left out and counted instead.
+          valueless++
+          skip('unsupported')
+          break
+        }
         // A redacted event never carries a value; if one claims to, it is ignored.
         // Typed text is kept as is here, even with "${" in it: the recorder sends
         // one event per keystroke, so only the field's final value (checked after
@@ -306,6 +315,13 @@ export function flowFromRecording(
         const action = tagOf(target) === 'select' ? 'select' : 'fill'
         const verb = action === 'select' ? 'Choose an option in' : 'Fill'
         const label = `${verb} ${describe(target)}`
+        // A click that only focused this field is noise, even when it came back
+        // to a field already being filled (moving the caret): drop it first, so
+        // the input still merges into that field's fill.
+        if (steps.at(-1)?.targetKey === targetKey && steps.at(-1)?.step.action === 'click') {
+          steps.pop()
+          skip('focus_click')
+        }
         const last = steps.at(-1)
         if (last && last.targetKey === targetKey && last.step.action === action) {
           const prev = last.step as Extract<DraftStep, { action: 'fill' | 'select' }>
@@ -317,10 +333,6 @@ export function flowFromRecording(
           if (redacted || !last.secret) prev.value = value
           merged++
           break
-        }
-        if (last && last.targetKey === targetKey && last.step.action === 'click') {
-          steps.pop()
-          skip('focus_click')
         }
         steps.push({
           step: {
@@ -391,6 +403,12 @@ export function flowFromRecording(
     warnings.push('The start URL contained "${"; its "$" characters were written as %24.')
   }
 
+  if (valueless > 0) {
+    warnings.push(
+      `${valueless} input event${valueless === 1 ? '' : 's'} carried no value (for example typing in a rich-text editor) ` +
+        'and were left out; add those steps by hand.'
+    )
+  }
   if (writable.length === 0) {
     warnings.push('No replayable steps were found in this recording.')
   }
