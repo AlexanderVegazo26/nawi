@@ -36,6 +36,9 @@ jobs:
       # the real Electron would fail here rather than in the job that needs it.
       - run: npm run install-electron
       - run: npm run typecheck
+      # The CDP integration suite and the FR-SEC.2 redaction release gate drive a
+      # real Playwright Chromium; without it they skip (reported, not passed).
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:unit
 
   e2e:

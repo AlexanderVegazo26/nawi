@@ -28,6 +28,7 @@ const OTP_VALUE = '314159-otp-secret'
 const NESTED_SECRET_VALUE = 'inherited-secret-value'
 
 const executable = findBrowserExecutable(['playwright-chromium'])
+const TEST_BROWSER_ARGS = process.platform === 'linux' ? ['--no-sandbox'] : []
 
 /** A missing browser download is reported as a skip, never as a pass. */
 const describeWithBrowser = executable ? describe : describe.skip
@@ -47,6 +48,9 @@ describeWithBrowser('CDP client against a real Chromium (launched by our own lau
     browser = await launchDebugBrowser({
       prefer: ['playwright-chromium'],
       headless: true,
+      // Test browser only: hosts that restrict unprivileged user namespaces (Ubuntu 24.04+
+      // AppArmor, CI runners) abort Chromium's sandbox with SIGABRT. Playwright drops it the same way.
+      extraArgs: TEST_BROWSER_ARGS,
       startUrl: FIXTURE_URL
     })
 

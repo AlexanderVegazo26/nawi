@@ -128,6 +128,7 @@ const SURFACE: Surface = {
 }
 
 const executable = findBrowserExecutable(['playwright-chromium'])
+const TEST_BROWSER_ARGS = process.platform === 'linux' ? ['--no-sandbox'] : []
 /** A missing browser download is reported as a SKIP, never as a pass. */
 const describeGate = executable ? describe : describe.skip
 if (!executable) {
@@ -176,6 +177,9 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
     browser = await launchDebugBrowser({
       prefer: ['playwright-chromium'],
       headless: true,
+      // Test browser only: hosts that restrict unprivileged user namespaces (Ubuntu 24.04+
+      // AppArmor, CI runners) abort Chromium's sandbox with SIGABRT. Playwright drops it the same way.
+      extraArgs: TEST_BROWSER_ARGS,
       startUrl: 'about:blank'
     })
     client = await CdpClient.connect(await browser.endpoint.browserWebSocketUrl(), {
@@ -782,6 +786,9 @@ describeGate('a Tier A leak IS detected as a Tier A failure, not a routine redac
     browser = await launchDebugBrowser({
       prefer: ['playwright-chromium'],
       headless: true,
+      // Test browser only: hosts that restrict unprivileged user namespaces (Ubuntu 24.04+
+      // AppArmor, CI runners) abort Chromium's sandbox with SIGABRT. Playwright drops it the same way.
+      extraArgs: TEST_BROWSER_ARGS,
       startUrl: 'about:blank'
     })
     client = await CdpClient.connect(await browser.endpoint.browserWebSocketUrl(), {

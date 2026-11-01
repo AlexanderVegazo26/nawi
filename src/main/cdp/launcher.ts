@@ -120,26 +120,50 @@ const LINUX_CANDIDATES: ReadonlyArray<{ kind: BrowserKind; path: string }> = [
  * keeps it a devDependency.
  */
 function playwrightChromium(): BrowserExecutable | null {
-  const roots =
+  const root =
     process.platform === 'win32'
-      ? [join(homedir(), 'AppData/Local/ms-playwright')]
+      ? join(homedir(), 'AppData/Local/ms-playwright')
       : process.platform === 'darwin'
-        ? [join(homedir(), 'Library/Caches/ms-playwright')]
-        : [join(homedir(), '.cache/ms-playwright')]
-  const relative =
-    process.platform === 'win32'
-      ? 'chrome-win/chrome.exe'
-      : process.platform === 'darwin'
-        ? 'chrome-mac/Chromium.app/Contents/MacOS/Chromium'
-        : 'chrome-linux/chrome'
+        ? join(homedir(), 'Library/Caches/ms-playwright')
+        : join(homedir(), '.cache/ms-playwright')
+  return findPlaywrightChromium(root)
+}
 
-  for (const root of roots) {
-    if (!existsSync(root)) continue
-    const builds = readdirSync(root)
-      .filter((name) => /^chromium-\d+$/.test(name))
-      // Numeric, not lexicographic: "chromium-99" must not beat "chromium-1234".
-      .sort((a, b) => Number(b.slice(9)) - Number(a.slice(9)))
-    for (const build of builds) {
+/**
+ * Executable paths inside one `chromium-<build>` directory, newest layout
+ * first. Playwright moved to Chrome for Testing builds (`chrome-linux64`,
+ * `chrome-win64`, `chrome-mac-<arch>`); the older Chromium layout is kept so a
+ * cache from an older Playwright still resolves.
+ */
+export function playwrightChromiumRelativePaths(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): string[] {
+  if (platform === 'win32') return ['chrome-win64/chrome.exe', 'chrome-win/chrome.exe']
+  if (platform === 'darwin') {
+    const testing = 'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
+    return [
+      `chrome-mac-${arch === 'arm64' ? 'arm64' : 'x64'}/${testing}`,
+      'chrome-mac/Chromium.app/Contents/MacOS/Chromium'
+    ]
+  }
+  return [arch === 'arm64' ? 'chrome-linux-arm64/chrome' : 'chrome-linux64/chrome', 'chrome-linux/chrome']
+}
+
+/** Newest `chromium-<build>` under a Playwright browsers root that has an executable, or null. */
+export function findPlaywrightChromium(
+  root: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): BrowserExecutable | null {
+  if (!existsSync(root)) return null
+  const builds = readdirSync(root)
+    .filter((name) => /^chromium-\d+$/.test(name))
+    // Numeric, not lexicographic: "chromium-99" must not beat "chromium-1234".
+    .sort((a, b) => Number(b.slice(9)) - Number(a.slice(9)))
+  const relatives = playwrightChromiumRelativePaths(platform, arch)
+  for (const build of builds) {
+    for (const relative of relatives) {
       const candidate = join(root, build, relative)
       if (existsSync(candidate)) return { kind: 'playwright-chromium', path: candidate }
     }
