@@ -89,9 +89,11 @@ type RecordedTarget = z.infer<typeof TargetIn>
  * Selectors: the harvest's ranked candidates → flow selectors
  * ------------------------------------------------------------------ */
 
-const TESTID_RE = /^\[data-testid="((?:[^"\\]|\\.)*)"\]$/
+// The probe escapes only `"` (as `\"`), never a backslash, so the quoted part
+// is everything up to the closing `"]`: a value ending in `\` stays parseable.
+const TESTID_RE = /^\[data-testid="(.*)"\]$/s
 const PLAIN_ID_RE = /^#([A-Za-z_][A-Za-z0-9_-]*)$/
-const ROLE_NAME_RE = /^role=([^[\]"]+)\[name="((?:[^"\\]|\\.)*)"\]$/
+const ROLE_NAME_RE = /^role=([^[\]"]+)\[name="(.*)"\]$/s
 
 const unescapeQuotes = (s: string): string => s.replace(/\\"/g, '"')
 
@@ -218,6 +220,10 @@ interface Pending {
   step: DraftStep
   /** Identity of the element, for coalescing; null when the step has no target. */
   targetKey: string | null
+  /** fill/select only: the value is our `${secret.*}` placeholder, not typed text. */
+  secret?: boolean
+  /** fill/select only: how the field is described in its note. */
+  label?: string
 }
 
 function describe(target: RecordedTarget | null | undefined): string {
@@ -293,26 +299,22 @@ export function flowFromRecording(
         }
         const redacted = event.value_redacted === true
         // A redacted event never carries a value; if one claims to, it is ignored.
-        let value: string
-        if (redacted) {
-          value = `\${secret.${secretFor(targetKey, selectors)}}`
-        } else {
-          value = target?.text ?? ''
-          if (value.includes('${')) {
-            skip('placeholder_text')
-            warnings.push(
-              `A value typed into ${describe(target)} contains "\${", which flow files reserve for placeholders; ` +
-                'that fill was left out. Add it by hand, or put the value in a var.'
-            )
-            break
-          }
-        }
+        // Typed text is kept as is here, even with "${" in it: the recorder sends
+        // one event per keystroke, so only the field's final value (checked after
+        // the loop) says whether the fill can be written.
+        const value = redacted ? `\${secret.${secretFor(targetKey, selectors)}}` : target?.text ?? ''
         const action = tagOf(target) === 'select' ? 'select' : 'fill'
+        const verb = action === 'select' ? 'Choose an option in' : 'Fill'
+        const label = `${verb} ${describe(target)}`
         const last = steps.at(-1)
         if (last && last.targetKey === targetKey && last.step.action === action) {
           const prev = last.step as Extract<DraftStep, { action: 'fill' | 'select' }>
-          // Once a field has been secret it stays secret (a literal value never holds "${").
-          if (redacted || !prev.value.startsWith('${secret.')) prev.value = value
+          // Once a field has been secret it stays secret, and its note says so.
+          if (redacted && !last.secret) {
+            last.secret = true
+            prev.note = `${last.label ?? label} (secret, supplied at run time)`
+          }
+          if (redacted || !last.secret) prev.value = value
           merged++
           break
         }
@@ -320,15 +322,16 @@ export function flowFromRecording(
           steps.pop()
           skip('focus_click')
         }
-        const verb = action === 'select' ? 'Choose an option in' : 'Fill'
         steps.push({
           step: {
             action,
             target: stepTarget(),
             value,
-            note: redacted ? `${verb} ${describe(target)} (secret, supplied at run time)` : `${verb} ${describe(target)}`
+            note: redacted ? `${label} (secret, supplied at run time)` : label
           } as DraftStep,
-          targetKey
+          targetKey,
+          secret: redacted,
+          label
         })
         break
       }
@@ -368,6 +371,19 @@ export function flowFromRecording(
     }
   }
 
+  // A field whose final typed value holds "${" can't be written: a flow reads
+  // that as a placeholder. Leave the whole fill out, once per field, and say so.
+  const writable = steps.filter((p) => {
+    const step = p.step
+    if ((step.action !== 'fill' && step.action !== 'select') || p.secret || !step.value.includes('${')) return true
+    skip('placeholder_text')
+    warnings.push(
+      `The value typed into ${p.label?.replace(/^(Fill|Choose an option in) /, '') ?? 'a field'} contains "\${", which flow files reserve for ` +
+        'placeholders, so that step was left out. Add it by hand, or put the value in a var.'
+    )
+    return false
+  })
+
   let flowTarget = options.target
   if (flowTarget.kind === 'browser' && flowTarget.url.includes('${')) {
     // `$` is safe to percent-encode in a URL, and `${` would read as a placeholder.
@@ -375,7 +391,7 @@ export function flowFromRecording(
     warnings.push('The start URL contained "${"; its "$" characters were written as %24.')
   }
 
-  if (steps.length === 0) {
+  if (writable.length === 0) {
     warnings.push('No replayable steps were found in this recording.')
   }
   if (secretNames.size > 0) {
@@ -388,7 +404,7 @@ export function flowFromRecording(
     name: /\S/.test(options.name) ? options.name : 'Recording',
     ...(options.description !== undefined ? { description: options.description } : {}),
     target: flowTarget,
-    steps: steps.map((p, i) => ({ id: `s${i + 1}`, ...p.step }) as FlowStep)
+    steps: writable.map((p, i) => ({ id: `s${i + 1}`, ...p.step }) as FlowStep)
   }
 
   const checked = FlowSchema.safeParse(flow)

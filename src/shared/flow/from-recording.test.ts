@@ -243,14 +243,46 @@ describe('flowFromRecording: untrusted input', () => {
     expect(flow.steps.map((s) => s.action)).toEqual(['fill', 'click'])
   })
 
-  it('leaves out a typed value containing "${" with a warning, since it would read as a placeholder', () => {
+  it('leaves out a fill whose final value, typed key by key, contains "${", with one warning', () => {
+    // One input event per keystroke, as the recorder sends them: a, a$, a${, a${x, a${x}.
+    const keystrokes = ['a', 'a$', 'a${', 'a${x', 'a${x}'].map((text, i) => ({
+      t_ms: i + 1,
+      type: 'input',
+      target: { ...EMAIL, text },
+      value_redacted: false
+    }))
     const { flow, skipped, warnings } = flowFromRecording(
-      [{ t_ms: 1, type: 'input', target: { ...EMAIL, text: 'cost ${price}' }, value_redacted: false }],
+      [...keystrokes, { t_ms: 10, type: 'click', target: SUBMIT, value_redacted: false }],
       OPTIONS
     )
-    expect(flow.steps).toEqual([])
+    const values = flow.steps.flatMap((s) => ('value' in s ? [s.value] : []))
+    expect(values, 'no partial value such as "a$" may be left behind').toEqual([])
+    expect(flow.steps.map((s) => s.action)).toEqual(['click'])
     expect(skipped).toEqual({ placeholder_text: 1 })
-    expect(warnings[0]).toMatch(/contains "\$\{".*left out/)
+    expect(warnings).toEqual([
+      'The value typed into "Email" contains "${", which flow files reserve for placeholders, so that step was left out. Add it by hand, or put the value in a var.'
+    ])
+  })
+
+  it('keeps the final value when "${" was typed and then deleted, without a warning', () => {
+    const keystrokes = ['a', 'a$', 'a${', 'a$', 'a', 'ab'].map((text, i) => ({
+      t_ms: i + 1,
+      type: 'input',
+      target: { ...EMAIL, text },
+      value_redacted: false
+    }))
+    const { flow, skipped, warnings } = flowFromRecording(keystrokes, OPTIONS)
+    expect(flow.steps).toMatchObject([{ action: 'fill', value: 'ab' }])
+    expect(skipped).toEqual({})
+    expect(warnings).toEqual([])
+  })
+
+  it('marks a fill secret in its note when the field turns secret partway through typing', () => {
+    clock = 0
+    const { flow } = flowFromRecording([typed(PASSWORD, 'pa'), secret(PASSWORD)], OPTIONS)
+    expect(flow.steps).toMatchObject([
+      { action: 'fill', value: '${secret.password}', note: 'Fill the textbox (secret, supplied at run time)' }
+    ])
   })
 
   it('percent-encodes "$" in a start URL that would read as a placeholder', () => {
@@ -269,6 +301,9 @@ describe('toFlowSelector', () => {
     ['id', '#\\31 23', { css: '#\\31 23' }],
     ['role_name', 'role=button[name="Save \\"draft\\""]', { role: 'button', name: 'Save "draft"' }],
     ['role-name', 'role=link[name="Home"]', { role: 'link', name: 'Home' }],
+    ['role_name', 'role=button[name="C:\\"]', { role: 'button', name: 'C:\\' }],
+    ['role_name', 'role=button[name="a\\\\"b"]', { role: 'button', name: 'a\\"b' }],
+    ['testid', '[data-testid="dir\\"]', { testid: 'dir\\' }],
     ['css', 'main > button.primary', { css: 'main > button.primary' }],
     ['nth_child', 'body:nth-of-type(1) > a:nth-of-type(2)', { css: 'body:nth-of-type(1) > a:nth-of-type(2)' }]
   ])('maps %s %s', (strategy, value, expected) => {

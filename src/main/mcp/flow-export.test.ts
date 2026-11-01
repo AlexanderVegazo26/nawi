@@ -105,6 +105,12 @@ describe('flowFromSidecar', () => {
     expect((err as NoInputEventsError).reason).toBe('unsupported_surface')
   })
 
+  it('reads at most maxEvents input events and says the flow covers only the start', async () => {
+    const out = await flowFromSidecar({ revisionDir: dir, sidecar: recording(), revision: 'v1', name: 'x', maxEvents: 2 })
+    expect(out.events, 'reading must stop at the cap').toBe(2)
+    expect(out.warnings[0]).toBe('Only the first 2 input events were read; the flow covers the start of the recording only.')
+  })
+
   it('does not follow an input_events path that leaves the revision directory', async () => {
     const out = await flowFromSidecar({
       revisionDir: join(dir, 'nested'),

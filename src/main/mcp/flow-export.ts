@@ -8,6 +8,13 @@ import { readEntries } from './projection'
  * inline DC-4 array) and turn them into flow YAML.
  */
 
+/**
+ * The most input events one export reads. The harvest keeps at most 50 000 per
+ * recording, so this only bites on a hand-made or foreign sidecar, where it
+ * bounds memory; the reply then says the flow covers only the start.
+ */
+export const MAX_EXPORT_EVENTS = 50_000
+
 export class NoInputEventsError extends Error {
   constructor(readonly reason: UnavailableReason | 'not_harvested') {
     super(`no input events (${reason})`)
@@ -32,7 +39,10 @@ export async function flowFromSidecar(options: {
   sidecar: SidecarRead
   revision: string
   name?: string
+  /** Tests only: a smaller cap than MAX_EXPORT_EVENTS. */
+  maxEvents?: number
 }): Promise<FlowExport> {
+  const maxEvents = options.maxEvents ?? MAX_EXPORT_EVENTS
   const { sidecar } = options
   const source = sidecar.state_layer.input_events
   if (source === null) {
@@ -41,7 +51,14 @@ export async function flowFromSidecar(options: {
   }
 
   const events: Record<string, unknown>[] = []
-  for await (const entry of readEntries(options.revisionDir, source)) events.push(entry)
+  let truncated = false
+  for await (const entry of readEntries(options.revisionDir, source)) {
+    if (events.length >= maxEvents) {
+      truncated = true
+      break
+    }
+    events.push(entry)
+  }
 
   const surface = sidecar.surface
   const target: FlowTarget =
@@ -58,7 +75,9 @@ export async function flowFromSidecar(options: {
     events: events.length,
     merged: result.merged,
     skipped: result.skipped,
-    warnings: result.warnings,
+    warnings: truncated
+      ? [`Only the first ${maxEvents} input events were read; the flow covers the start of the recording only.`, ...result.warnings]
+      : result.warnings,
     flow_yaml: stringifyFlow(result.flow)
   }
 }
