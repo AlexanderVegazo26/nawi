@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Replay fixture</title>
+<style>
+  body { font: 14px sans-serif; margin: 0; padding: 16px; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); }
+  #tall { height: 2400px; }
+  #far { margin-top: 1600px; }
+</style>
+</head>
+<body>
+  <form id="login" data-testid="login-form">
+    <label for="email">Email</label>
+    <input id="email" data-testid="login-email" type="email">
+    <label for="password">Password</label>
+    <input id="password" type="password">
+    <label for="plan">Plan</label>
+    <select id="plan">
+      <option value="free">Free</option>
+      <option value="pro">Professional</option>
+      <option value="old" disabled>Legacy</option>
+    </select>
+    <button type="submit">Sign in</button>
+  </form>
+  <p id="welcome" role="status"></p>
+  <p id="echo" data-testid="echo"></p>
+
+  <button class="btn" id="a-btn">A</button>
+  <button class="btn" id="b-btn">B</button>
+  <p id="clicked" data-testid="clicked"></p>
+
+  <div id="late-slot"></div>
+  <button id="covered">Covered</button>
+  <p id="covered-count" data-testid="covered-count">0</p>
+  <button id="enable-me" disabled>Later</button>
+  <p id="hovered" data-testid="hovered"></p>
+  <span id="hover-me">Hover me</span>
+  <input id="readonly" value="fixed" readonly>
+  <a id="next" href="page2.html">Next page</a>
+  <p id="hidden-thing" style="display:none">Hidden</p>
+  <label for="agree" style="position:relative; display:inline-block; padding-left:24px">
+    <input id="agree" type="checkbox" style="position:absolute; left:0; top:0; width:20px; height:20px; margin:0; opacity:0">
+    <span class="box" style="position:absolute; left:0; top:0; width:20px; height:20px; z-index:1; background:#ddd"></span>
+    I agree
+  </label>
+  <input id="dob" type="date">
+  <button id="delete">Delete</button>
+  <p id="confirmed" data-testid="confirmed"></p>
+  <div id="tall"><p id="far">Far down</p></div>
+  <div id="overlay-host"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id)
+  $('login').addEventListener('submit', (e) => {
+    e.preventDefault()
+    $('welcome').textContent = 'Welcome ' + $('email').value + ', plan ' + $('plan').value
+    $('echo').textContent = 'pw:' + $('password').value
+  })
+  for (const b of document.querySelectorAll('.btn')) {
+    b.addEventListener('click', (e) => { if (e.isTrusted) $('clicked').textContent = b.id })
+  }
+  $('delete').addEventListener('click', () => { $('confirmed').textContent = String(confirm('Delete it?')) })
+  $('hover-me').addEventListener('mouseenter', () => { $('hovered').textContent = 'yes' })
+
+  const params = new URLSearchParams(location.search)
+  const lateMs = Number(params.get('late') || 300)
+  setTimeout(() => {
+    const b = document.createElement('button')
+    b.id = 'late'
+    b.textContent = 'Late'
+    b.addEventListener('click', () => { $('clicked').textContent = 'late' })
+    $('late-slot').appendChild(b)
+  }, lateMs)
+
+  if (params.has('overlay')) {
+    const o = document.createElement('div')
+    o.id = 'overlay'
+    $('overlay-host').appendChild(o)
+    setTimeout(() => o.remove(), 300)
+  }
+  $('covered').addEventListener('click', () => {
+    $('covered-count').textContent = String(Number($('covered-count').textContent) + 1)
+  })
+  setTimeout(() => { $('enable-me').disabled = false }, 300)
+  $('enable-me').addEventListener('click', () => { $('clicked').textContent = 'enabled' })
+</script>
+</body>
+</html>

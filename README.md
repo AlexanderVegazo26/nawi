@@ -289,6 +289,24 @@ alone.
   resizes, modifier and editing keys, and the click that only focused a field are
   left out and counted in the reply, with warnings to review. It returns the
   YAML and writes nothing. Converter: `src/shared/flow/from-recording.ts`.
+- **Flow replay engine** (`src/main/replay`) — runs a flow in a Chromium page
+  over raw CDP. Each step's locators are tried in order: the first one matching
+  exactly one element wins (one matching several is ambiguous and skipped). It
+  waits for the element to be visible, enabled and not covered, up to the step's
+  `timeout_ms` (default 5 s), then acts with real input events (click, hover,
+  fill, select by value or label, key chords such as `Control+a`, scroll,
+  navigate, wait, screenshot). Date/time inputs are filled by setting their
+  value, and a value in the wrong format fails the step. A `wait` with a target
+  waits up to its `ms`. `assert` checks visible/enabled, text
+  (whitespace-normalised, contains) and the exact URL. JavaScript dialogs are
+  dismissed and recorded on the step. `${env.*}` and
+  `${secret.*}` are resolved before the first step, and a missing one stops the
+  run before anything happens. Each step gets a result: status, timing, which
+  locator matched and what the earlier ones found, and a reason when it fails.
+  Typed values are never put in the result, and secret values are scrubbed from
+  messages (also when percent-encoded or whitespace-folded). The first failure stops the run. Only the top document is searched
+  (no iframes or shadow roots yet), and it is not yet reachable from the app,
+  CLI or MCP.
 
 ## Keyboard shortcuts
 
@@ -379,13 +397,14 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Flows can be written and exported, not yet replayed or edited in the UI.**
+- **Flows can be written, exported and replayed by the engine, but not yet
+  run from the app/CLI/MCP or edited in the UI.**
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so
   `export_flow` only has input events to work with on captures whose sidecar
   carries them (for example DC-4 sidecars written by another tool). Wiring the
-  harvest into browser recordings, the replayer, run records and the flow editor
-  land as separate slices.
+  harvest into browser recordings, `nawi run` / `run_flow`, run records and the
+  flow editor land as separate slices.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a
   recording cannot be trimmed, shortened or re-exported without leaving the app.

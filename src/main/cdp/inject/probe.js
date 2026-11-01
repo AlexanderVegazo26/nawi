@@ -406,6 +406,9 @@
     version: 1,
     markerAttribute: MARKER,
     describeSelectors: describeSelectors,
+    /** The same role/name approximation the recorded `role-name` candidates used, for the replayer to match them. */
+    roleOf: roleOf,
+    accessibleName: accessibleName,
     describeInput: describeInput,
     isSecret: isSecret,
     isSecretElement: isSecretElement,

@@ -190,8 +190,8 @@ export type FlowStep = z.infer<typeof StepSchema>
 export type FlowTarget = z.infer<typeof FlowTargetSchema>
 export type Flow = z.infer<typeof FlowShape>
 
-const PLACEHOLDER = /\$\{([^}]*)\}/g
-const REFERENCE = /^([A-Za-z_]+)\.([A-Za-z_][A-Za-z0-9_]*)$/
+export const PLACEHOLDER = /\$\{([^}]*)\}/g
+export const REFERENCE = /^([A-Za-z_]+)\.([A-Za-z_][A-Za-z0-9_]*)$/
 
 /** Every `${...}` in a string, with what is wrong with it (if anything). */
 export function placeholderProblems(
