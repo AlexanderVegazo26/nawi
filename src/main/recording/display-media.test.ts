@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { answerDisplayMedia, type DisplayMediaStreams, type SourceLike } from './display-media'
+import { describe, expect, it, vi } from 'vitest'
+import { answerDisplayMedia, listSourcesFor, sourceKindsFor, SOURCES_TIMEOUT_MS, type DisplayMediaStreams, type SourceLike } from './display-media'
 
 /**
  * The display-media answer, against a callback that behaves like Electron 45's:
@@ -155,5 +155,101 @@ describe('answerDisplayMedia', () => {
     })
     expect(linux.calls, 'non-Windows degrades to video only').toEqual([{ video: SCREEN }])
     expect(warnings.join('\n')).toContain('system audio is not supported on linux')
+  })
+
+  it('denies once, and says so, when listing sources never answers', async () => {
+    vi.useFakeTimers()
+    try {
+      const { calls, callback } = electronLikeCallback()
+      const { errors, log } = quietLog()
+      let lateAnswer: (sources: SourceLike[]) => void = () => undefined
+      const done = answerDisplayMedia({
+        wanted: SCREEN.id,
+        wantsAudio: false,
+        platform: 'linux',
+        sources: () => new Promise<SourceLike[]>((resolve) => (lateAnswer = resolve)),
+        callback,
+        log
+      })
+      await vi.advanceTimersByTimeAsync(SOURCES_TIMEOUT_MS - 1)
+      expect(calls, 'must not answer before the timeout').toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
+      await done
+      expect(calls, 'a stalled listing should be denied with null, once').toEqual([null])
+      expect(errors.join('\n')).toContain(`did not answer within ${SOURCES_TIMEOUT_MS} ms; denying the request for ${SCREEN.id}`)
+
+      // The listing finally answering must not reach the consumed callback.
+      lateAnswer([SCREEN])
+      await vi.runAllTimersAsync()
+      expect(calls).toEqual([null])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still grants a source that is listed just inside the timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { calls, callback } = electronLikeCallback()
+      const done = answerDisplayMedia({
+        wanted: SCREEN.id,
+        wantsAudio: false,
+        platform: 'linux',
+        sourcesTimeoutMs: 1_000,
+        sources: () => new Promise<SourceLike[]>((resolve) => setTimeout(() => resolve([SCREEN]), 999)),
+        callback
+      })
+      await vi.advanceTimersByTimeAsync(1_000)
+      await done
+      expect(calls).toEqual([{ video: SCREEN }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('listSourcesFor', () => {
+  function lister(answers: SourceLike[][]): { asked: string[][]; list: (kinds: string[]) => Promise<SourceLike[]> } {
+    const asked: string[][] = []
+    return {
+      asked,
+      list: async (kinds) => {
+        asked.push(kinds)
+        return answers[Math.min(asked.length - 1, answers.length - 1)]
+      }
+    }
+  }
+  const noSleep = async (): Promise<void> => undefined
+
+  it('asks only the capturer of the picked kind', () => {
+    expect(sourceKindsFor('screen:1:0')).toEqual(['screen'])
+    expect(sourceKindsFor('window:42:0')).toEqual(['window'])
+    expect(sourceKindsFor(null), 'nothing armed: ask both').toEqual(['screen', 'window'])
+    expect(sourceKindsFor('tab:3'), 'unknown prefix: ask both').toEqual(['screen', 'window'])
+  })
+
+  it('retries an empty screen listing until a screen appears', async () => {
+    const { asked, list } = lister([[], [], [SCREEN]])
+    await expect(listSourcesFor(SCREEN.id, list, noSleep)).resolves.toEqual([SCREEN])
+    expect(asked, 'two empty answers then the screen').toEqual([['screen'], ['screen'], ['screen']])
+  })
+
+  it('gives up on an empty screen listing after the attempt limit', async () => {
+    const { asked, list } = lister([[]])
+    await expect(listSourcesFor(SCREEN.id, list, noSleep, 8)).resolves.toEqual([])
+    expect(asked).toHaveLength(8)
+  })
+
+  it('takes an empty window listing as final (no window manager, or the window closed)', async () => {
+    const { asked, list } = lister([[]])
+    await expect(listSourcesFor(WINDOW.id, list, noSleep)).resolves.toEqual([])
+    expect(asked, 'one window listing, no retries').toEqual([['window']])
+  })
+
+  it('backs off 100 ms more per screen retry', async () => {
+    const waits: number[] = []
+    const { list } = lister([[], [], [SCREEN]])
+    await listSourcesFor(SCREEN.id, list, async (ms) => void waits.push(ms))
+    expect(waits).toEqual([100, 200])
   })
 })

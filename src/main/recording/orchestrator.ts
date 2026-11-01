@@ -469,6 +469,7 @@ export function install(
     // render, and so the user is never recording with nothing on screen saying so.
     showHud()
     win.webContents.send(IPC.recordRequest, options)
+    console.log(`[recording] start sent to the engine for ${options.sourceId}`)
     return null
   })
 
@@ -504,6 +505,7 @@ export function install(
       throw new Error('a capture source is required')
     }
     requireHost().armDisplayMedia(sourceId, withAudio === true)
+    console.log(`[recording] source armed: ${sourceId}`)
     return null
   })
 

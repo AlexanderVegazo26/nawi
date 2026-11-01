@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../../../../docs/schemas/flow.v1.schema.json
+version: 1
+name: Create invoice
+target: { kind: browser, url: "https://app.example.com/login" } # where the replay starts
+vars:
+  email: "${env.TEST_EMAIL}"
+  password: "${secret.app_password}" # never the password itself
+steps:
+  - id: s1
+    action: click
+    target:
+      selectors: [ { testid: login-email }, { role: textbox, name: Email }, { css: "#email" } ]
+      bbox: [ 412, 288, 320, 40 ]
+      image: steps/s1.png
+    note: Open the email field
+  - { id: s2, action: fill, target: { selectors: [ { role: textbox, name: Email } ] }, value: "${vars.email}" }
+  - id: s3
+    action: fill
+    target:
+      selectors:
+        - { role: textbox, name: Password }
+    value: "${vars.password}"
+  - { id: s4, action: press, key: Enter }
+  # The heading only renders after the redirect.
+  - id: s5
+    action: assert
+    target: { selectors: [ { role: heading, name: Invoices } ] }
+    expect: { visible: true }
+  - { id: s6, action: assert, expect: { url: "https://app.example.com/invoices" } }
