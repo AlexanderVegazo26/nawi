@@ -27,6 +27,12 @@
       <input type="email" id="email" value="not-a-secret@example.com" />
     </form>
 
+    <!-- Scoped CSS paths: an element's own id, and an id on an ancestor. -->
+    <div class="wrap"><input id="own-id" class="field" type="text" aria-label="Own id" /></div>
+    <section id="anchor-section" class="area">
+      <p class="lead"><a class="link" href="#x">Anchored link</a></p>
+    </section>
+
     <script>
       console.error('boom from fixture page')
     </script>

@@ -166,6 +166,28 @@ describeWithBrowser('CDP client against a real Chromium (launched by our own lau
       const testid = (ranked as NonNullable<typeof ranked>).find((c) => c.strategy === 'testid')
       expect(testid?.unique).toBe(true)
     })
+    it('emits a css candidate that selects the element itself, anchored at an id', async () => {
+      // Each case: the element, and the css path a replayer would use to find it again.
+      for (const [target, expected] of [
+        ['#own-id', 'input#own-id'],
+        ['#anchor-section a', 'section#anchor-section > p.lead > a.link']
+      ] as const) {
+        const result = await client.send<{ result: { value: { css?: string; matchesSelf: boolean; count: number } } }>(
+          'Runtime.evaluate',
+          {
+            expression: `(() => { const el = document.querySelector(${JSON.stringify(target)});
+              const css = window.__nawiProbe.describeSelectors(el).find((c) => c.strategy === 'css')?.selector;
+              const found = css ? document.querySelectorAll(css) : [];
+              return { css, count: found.length, matchesSelf: found.length === 1 && found[0] === el } })()`,
+            returnByValue: true
+          },
+          pageSessionId
+        )
+        const { css, matchesSelf, count } = result.result.value
+        expect(css, `css candidate for ${target}`).toBe(expected)
+        expect(matchesSelf, `css "${css}" for ${target} should select exactly that element, matched ${count}`).toBe(true)
+      }
+    })
   })
 
   describe('FR-SEC.2 — secret values never cross the CDP wire', () => {

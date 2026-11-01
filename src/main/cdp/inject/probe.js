@@ -74,14 +74,15 @@
     var node = el
     var depth = 0
     while (node && node.nodeType === 1 && node !== document.documentElement && depth < 5) {
-      var part = node.tagName.toLowerCase()
-      var classes = classListOf(node)
-      if (classes.length) part += '.' + cssEscape(classes[0])
-      parts.unshift(part)
+      var tag = node.tagName.toLowerCase()
+      // An id anchors the path on this node's own segment (`section#main`), never as
+      // a separate parent segment: `#main > section` would select a child of #main.
       if (node.id && !/\s/.test(node.id)) {
-        parts.unshift('#' + cssEscape(node.id))
+        parts.unshift(tag + '#' + cssEscape(node.id))
         break
       }
+      var classes = classListOf(node)
+      parts.unshift(classes.length ? tag + '.' + cssEscape(classes[0]) : tag)
       node = node.parentElement
       depth++
     }
