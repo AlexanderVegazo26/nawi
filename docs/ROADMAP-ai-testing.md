@@ -14,6 +14,8 @@ roadmap is to make that loop the most useful one for people **and** AI agents:
 3. Flows that an agent can **author, run and triage** through MCP.
 4. **Determinism and flake control** so a green run means something.
 5. A place in **CI** that reviewers actually read.
+7. **Mobile that configures itself**: drop an app file in, and Nawi opens what it needs, studies the app and
+   suggests how to test it (Track M below).
 6. **Fully drivable from outside**: every capability reachable by CLI and by MCP, with an LLM provider layer and
    ready-made integrations for agent harnesses, so Nawi is a tool other systems call, not only an app.
 
@@ -30,7 +32,7 @@ roadmap is to make that loop the most useful one for people **and** AI agents:
 
 ## Slices (build order)
 
-Order: F4c (HTML report) → AI11 → AI12 → AI13 → AI1 + F6 → AI2 + F5 → AI3 → AI5 → AI4 → AI9 → AI14 → AI6 → AI7 → AI8 → AI10.
+Order: F4c (HTML report) → AI11 → AI12 → AI13 → M1 → M2 → M3 → AI1 + F6 → M5 → AI2 + F5 → AI3 → AI5 → AI4 → M4 → AI9 → AI14 → M6 → M7 → AI6 → AI7 → AI8 → M8 → M9 → AI10.
 
 ### AI1 — Intent and layered locators
 - Step field `intent` (one plain-language sentence: what the step is for), optional and additive to `version: 1`.
@@ -136,6 +138,78 @@ Order: F4c (HTML report) → AI11 → AI12 → AI13 → AI1 + F6 → AI2 + F5 �
 - Webhooks and an event feed so an orchestrator can start a flow and receive the result (ties to the I5 triggers).
 - Done when: an agent session with only the skill installed records-free authors a flow, runs it, reads a failure
   and applies a heal proposal without being told any tool names.
+
+## Track M — Mobile apps: fast onboarding and smart configuration
+
+Goal: a person (or an agent) gives Nawi an app file and gets a working, understood test target in a minute, with
+no hand-written config. Android first (works on any host); iOS needs a macOS host and comes later. Builds on the
+existing Android capture item (C5), the layered locators (AI1), the CLI/MCP surface (AI11, AI12) and the LLM
+provider layer (AI13). Everything Nawi infers is shown as a proposal first; nothing changes the app or the device
+config without confirmation.
+
+### M1 — Drop-in onboarding
+- Drag an `.apk` onto the window, or `nawi mobile open app.apk` (an `.aab` is converted with bundletool). Nawi reads
+  the manifest and reports: package, launcher activity, min/target SDK, ABIs, permissions, deep links, whether it is
+  debuggable, exported components.
+- Then, in one flow with a progress view: find or guide the install of the Android SDK tools (adb, emulator), pick
+  or create a matching virtual device (API level at or above min SDK, right ABI) or use a connected phone, boot it,
+  install the app, grant the declared runtime permissions, launch it, and show the live screen next to the inspector.
+- Saves the result as a mobile profile (`*.nawi.mobile.yaml`) that CLI and MCP can reuse.
+- Done when: from a clean state, dropping a sample apk reaches "app running on a device" with no manual steps, and
+  each failure (no SDK, no virtualization, ABI mismatch) gives one specific fix instead of a stack trace.
+
+### M2 — Smart configuration
+- Detect the framework from the package (native, Flutter, React Native, WebView-heavy) and pick the matching
+  strategy for reading the screen: accessibility tree, the framework's semantics tree, or the WebView over CDP.
+- Choose sensible defaults: device profile, locale, dark mode, font scale, animations off, network on, permission
+  pre-grants; test accounts and API keys go through the secrets mechanism, never into the profile.
+- Detect first-run blockers (permission dialogs, login wall, consent screens) and offer a reusable "get past
+  onboarding" sub-flow.
+- Done when: the three framework fixtures each pick the right strategy with no input, and the profile is stable
+  across two runs.
+
+### M3 — Study the app
+- Dump and walk the view hierarchy (UI Automator and the accessibility service) and build a screen graph by
+  safe exploration: taps on non-destructive controls only, a depth and time budget, and a "never press" list
+  (delete, pay, send, sign out).
+- Per screen: element inventory (resource id, content description, text, bounds, clickable, focusable), a
+  screenshot, and a stable screen id so runs can be compared.
+- Quality findings: missing content descriptions, touch targets under 48 dp, low contrast, duplicate or missing
+  resource ids, locators that would be fragile (text-only, index-based).
+- Done when: exploring a fixture app yields a screen graph that matches a hand-built expected one, and each
+  finding class fires on a fixture that has the defect and stays quiet on one that does not.
+
+### M4 — Suggestions
+- From the screen graph, manifest and findings, propose: test ids or labels to add (as a patch the app developers
+  can review), the most valuable flows to cover (sign-in, onboarding, the main path, permissions), config changes,
+  and which screens deserve visual baselines.
+- Heuristics first; the LLM (AI13) refines wording and flow drafts. Always a reviewable proposal with the evidence,
+  exportable as a Markdown report and as flow drafts.
+- Done when: a fixture app with known gaps gets the expected suggestions, and none is applied without confirmation.
+
+### M5 — Mobile record and replay
+- Record taps, swipes, long presses, text entry, back, home, rotation, deep links, permission dialogs, and app
+  background and restore. Replay uses the layered locators (resource id, content description, text, bounds, image
+  crop) with auto-wait and the same step format (`target.kind: android`).
+- The run record adds screenshots per step, logcat for the step, screen recording, and any crash or ANR.
+- Done when: a recorded flow on a fixture app replays green three times, and a crash is captured with its log.
+
+### M6 — Device matrix
+- Run one flow across several virtual devices or phones: API levels, screen sizes and densities, locales, dark
+  mode, font scale, orientation. Parallel where the host allows.
+- Network conditions (offline, slow), low-memory and process-death restore.
+- Done when: one command runs a flow on two devices and the report shows the results side by side.
+
+### M7 — Mobile quality signals
+- Startup time, frame jank (from the platform's graphics stats), memory, ANR and crash counts, StrictMode
+  violations, permission use; budgets that fail a run, like the web network budgets (AI3).
+
+### M8 — iOS (macOS host only)
+- Simulators through the platform tools: install, launch, accessibility hierarchy, screenshots and recording, with
+  the same profile and flow format. Real devices later if justified.
+
+### M9 — Cross-framework depth
+- Flutter semantics tree, React Native test ids, WebView contexts driven over CDP from the same flow.
 
 ## What this roadmap leaves out
 
