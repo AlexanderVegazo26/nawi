@@ -14,6 +14,8 @@ roadmap is to make that loop the most useful one for people **and** AI agents:
 3. Flows that an agent can **author, run and triage** through MCP.
 4. **Determinism and flake control** so a green run means something.
 5. A place in **CI** that reviewers actually read.
+6. **Fully drivable from outside**: every capability reachable by CLI and by MCP, with an LLM provider layer and
+   ready-made integrations for agent harnesses, so Nawi is a tool other systems call, not only an app.
 
 ## Principles
 
@@ -28,7 +30,7 @@ roadmap is to make that loop the most useful one for people **and** AI agents:
 
 ## Slices (build order)
 
-Order: F4c (HTML report) → AI1 + F6 → AI2 (with F5) → AI3 → AI5 → AI4 → AI9 → AI6 → AI7 → AI8 → AI10.
+Order: F4c (HTML report) → AI11 → AI12 → AI13 → AI1 + F6 → AI2 + F5 → AI3 → AI5 → AI4 → AI9 → AI14 → AI6 → AI7 → AI8 → AI10.
 
 ### AI1 — Intent and layered locators
 - Step field `intent` (one plain-language sentence: what the step is for), optional and additive to `version: 1`.
@@ -100,6 +102,40 @@ Order: F4c (HTML report) → AI1 + F6 → AI2 (with F5) → AI3 → AI5 → AI4 
 - Per-run audit trace (who or what started it, which tools an agent called, what left the machine).
 - Permission scopes for agent access (read run records, run flows, edit flows), enforced in the MCP dispatch.
 - Done when: an agent without the edit scope cannot apply a healing proposal.
+
+### AI11 — CLI parity and headless mode
+- Every MCP tool has a CLI command (`nawi capture`, `record`, `flows`, `runs`, `heal`, `triage`, `baseline`, ...) with
+  `--json` output, stable exit codes (0 pass, 1 test failed, 2 usage, 3 environment) and no GUI needed.
+- `nawi serve`: run the engine headless as a local daemon (no window) that the CLI and MCP clients attach to.
+- `nawi tools --json` prints every tool with its JSON Schema, so a harness can discover the surface.
+- `nawi runs --follow` streams run events as NDJSON for scripts and agents.
+- Done when: a script can record-less run, heal, accept a baseline and read results using only the CLI, and the CLI
+  and MCP tool lists are checked equal by a test.
+
+### AI12 — MCP hardening
+- Transports: stdio (today) and local streamable HTTP with a bearer token; loopback only by default.
+- Expose flows, run records and screenshots as MCP **resources**, and common jobs ("run and triage", "heal a flow")
+  as MCP **prompts**.
+- Long runs report progress and can be cancelled; the existing agent kill switch cancels them.
+- Every tool has a schema, a documented error shape and a contract test.
+- Done when: a generic MCP client lists resources, starts a run, sees progress and cancels it.
+
+### AI13 — LLM provider layer
+- One provider interface used by AI4, F6, AI6 and AI7: Anthropic, any OpenAI-compatible endpoint (including a local
+  server), selected in settings or env; model id is configuration, never hard-coded in a slice.
+- Cost and token caps per run, response caching keyed by input hash, and an offline mode that disables every model
+  call (slices then report "not evaluated" instead of guessing).
+- Redaction before send: secrets masked, request log shows exactly what left the machine (feeds AI10).
+- Done when: the same flow runs against a stub provider, a local one and a hosted one with identical cached
+  verdicts, and offline mode never makes a network call.
+
+### AI14 — Harness integrations
+- Agent-harness packaging: a ready-made skill and slash commands for Claude Code, a plain `AGENTS.md` snippet for
+  other agent CLIs, and an example of Nawi as a tool in a custom Agent SDK loop.
+- A typed TypeScript client (`nawi-client`) over the same API the CLI uses, for scripts and orchestrators.
+- Webhooks and an event feed so an orchestrator can start a flow and receive the result (ties to the I5 triggers).
+- Done when: an agent session with only the skill installed records-free authors a flow, runs it, reads a failure
+  and applies a heal proposal without being told any tool names.
 
 ## What this roadmap leaves out
 
