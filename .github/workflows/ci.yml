@@ -6,9 +6,9 @@ name: CI
 # leave out and expensive to leave broken.
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  schedule:
+    - cron: '0 7 * * 1' # weekly, Monday 07:00 UTC (no run on every push to main)
   workflow_dispatch:
 
 # A second push to the same PR makes the first run's result irrelevant.
