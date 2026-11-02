@@ -44,11 +44,44 @@ export function configPath(): string {
   return join(xdg, appName, 'mcp.json')
 }
 
-/** Re-read per request, not cached: the app can restart on a new ephemeral port. */
+/** Hostnames as WHATWG `URL` reports them; IPv6 keeps its brackets. */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
+
+/**
+ * True only for a plain `http:` URL on a loopback host, with no credentials.
+ *
+ * The app always publishes `http://127.0.0.1:<port>/mcp`. Anything else in
+ * `mcp.json` was written by someone else: a same-user process that rewrites the
+ * file could otherwise point the bridge (and the CLI) at a remote host and turn
+ * it into an exfiltration channel for the agent's traffic and the bearer token
+ * (docs/SECURITY-REVIEW-M1A.md). Parsing with `URL` rather than matching the
+ * string is what defeats `http://127.0.0.1@evil.example` and
+ * `http://127.0.0.1.evil.example`.
+ */
+export function isLoopbackUrl(raw: string): boolean {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return false
+  }
+  return (
+    url.protocol === 'http:' &&
+    url.username === '' &&
+    url.password === '' &&
+    LOOPBACK_HOSTS.has(url.hostname)
+  )
+}
+
+/**
+ * Re-read per request, not cached: the app can restart on a new ephemeral port.
+ * A non-loopback `url` is treated like a missing file (see `isLoopbackUrl`).
+ */
 export function readEndpoint(): EndpointInfo | null {
   try {
     const parsed = JSON.parse(readFileSync(configPath(), 'utf8')) as Partial<EndpointInfo>
     if (typeof parsed.url !== 'string' || typeof parsed.token !== 'string') return null
+    if (!isLoopbackUrl(parsed.url)) return null
     return { url: parsed.url, token: parsed.token, pid: Number(parsed.pid) || 0 }
   } catch {
     return null

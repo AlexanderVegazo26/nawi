@@ -98,7 +98,7 @@ Confirmed and correctly documented at `seal.ts:376-379`. The text *is* redacted 
 
 ## FR-SEC.1 — local-only: **correct**
 
-A listening loopback socket is not egress, and classifying it as such (`server.ts:59-61`, `egress: false`) is right. Verified no outbound connection is made by the reviewed code: the CDP client connects to a locally-launched browser, and `stdio-bridge.ts` `fetch`es `127.0.0.1` only. The one thing to keep an eye on: the bridge trusts whatever `url` is in `mcp.json` (`stdio-bridge.ts:63-71`) without checking it is loopback. A same-user process that rewrites `mcp.json` could point the bridge at a remote host and turn it into an exfiltration channel for the agent's own traffic. Low, same-user precondition, but a two-line hostname assertion closes it.
+A listening loopback socket is not egress, and classifying it as such (`server.ts:59-61`, `egress: false`) is right. Verified no outbound connection is made by the reviewed code: the CDP client connects to a locally-launched browser, and `stdio-bridge.ts` `fetch`es `127.0.0.1` only. The one thing to keep an eye on: the bridge trusts whatever `url` is in `mcp.json` (`stdio-bridge.ts:63-71`) without checking it is loopback. A same-user process that rewrites `mcp.json` could point the bridge at a remote host and turn it into an exfiltration channel for the agent's own traffic. Low, same-user precondition, but a two-line hostname assertion closes it. **Closed 2026-11-02:** `readEndpoint()` (`src/mcp/endpoint.ts`, shared by the bridge and the CLI) now accepts only a credential-free `http:` URL on `127.0.0.1`, `localhost` or `[::1]` and otherwise answers as if the app were not running (`src/mcp/endpoint.test.ts`).
 
 ## DC-3 transactionality — sound
 
