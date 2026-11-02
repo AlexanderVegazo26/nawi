@@ -264,13 +264,20 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
           send(res, 200, rpcError(id, -32602, 'tools/call requires a string "name"'))
           return
         }
+        // A caller that hangs up (Ctrl-C on `nawi run`, a client timeout) cancels
+        // long tools such as run_flow instead of leaving them driving a browser.
+        const gone = new AbortController()
+        res.once('close', () => {
+          if (!res.writableEnded) gone.abort('the caller disconnected, so the remaining steps were not run')
+        })
         try {
           const value = await dispatch(deps, {
             name: params.name,
             args: params.arguments,
             authorization,
             origin,
-            callId: randomUUID()
+            callId: randomUUID(),
+            signal: gone.signal
           })
           send(
             res,

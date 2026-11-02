@@ -1,7 +1,7 @@
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test'
 import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -136,4 +136,61 @@ test('flag values are JSON-coerced so numeric tool schemas are satisfied', async
   // Either it captured, or it failed for a reason that is NOT a type error.
   expect(r.stderr).not.toContain('Expected number')
   expect([0, 1]).toContain(r.code)
+})
+
+/* ------------------------------------------------------------------ *
+ * nawi run (roadmap F3b). These pin the exit-code contract without a
+ * browser; replays against a real Chromium are covered by
+ * src/main/flow-run.integration.test.ts.
+ * ------------------------------------------------------------------ */
+
+test.describe('nawi run', () => {
+  // Flow files must live under the user's home directory, so these do too.
+  let flowDir: string
+  test.beforeAll(async () => {
+    flowDir = await fs.mkdtemp(join(homedir(), '.nawi-cli-e2e-'))
+  })
+  test.afterAll(async () => {
+    await fs.rm(flowDir, { recursive: true, force: true }).catch(() => undefined)
+  })
+
+  const NEEDS_ENV = `version: 1
+name: Needs env
+target: { kind: browser, url: "https://example.invalid/" }
+steps:
+  - { id: s1, action: fill, target: { selectors: [{ id: email }] }, value: "\${env.NAWI_E2E_EMAIL}" }
+  - { id: s2, action: fill, target: { selectors: [{ id: pw }] }, value: "\${secret.pw}" }
+`
+
+  test('exit 2 — run without a flow file is a usage error with the run usage', async () => {
+    const r = await run(['run'], config())
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('run needs a flow file.')
+    expect(r.stderr).toContain('nawi run <file.nawi.yaml>')
+  })
+
+  test('exit 1 — a file that is not a flow is refused by the app before it is read', async () => {
+    const file = join(flowDir, 'notes.txt')
+    await fs.writeFile(file, 'not a flow')
+    const r = await run(['run', file], config())
+    expect(r.code).toBe(1)
+    expect(r.stderr).toContain('Only flow files (*.nawi.yaml) can be run.')
+  })
+
+  test('exit 1 — missing env and secret inputs fail the run up front and are named', async () => {
+    const file = join(flowDir, 'needs.nawi.yaml')
+    await fs.writeFile(file, NEEDS_ENV)
+    const r = await run(['run', file, '--headless'], config())
+    expect(r.code, r.stderr).toBe(1)
+    expect(r.stdout).toContain('error: the flow needs values the run did not provide: ${env.NAWI_E2E_EMAIL}, ${secret.pw}')
+    expect(r.stdout).toContain('FAILED: 0 passed, 0 failed, 2 not run, 0 skipped')
+  })
+
+  test('exit 1 — --var for a var the flow does not declare is refused', async () => {
+    const file = join(flowDir, 'novars.nawi.yaml')
+    await fs.writeFile(file, NEEDS_ENV)
+    const r = await run(['run', file, '--var', 'who=x'], config())
+    expect(r.code).toBe(1)
+    expect(r.stderr).toContain('does not declare "who" under vars')
+  })
 })

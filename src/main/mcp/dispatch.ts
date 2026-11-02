@@ -31,6 +31,8 @@ export interface ToolContext {
   callId: string
   /** Present only when the caller supplied one. */
   idempotencyKey: string | null
+  /** Aborts when the caller goes away (its connection closed before the answer). Long tools stop on it. */
+  signal?: AbortSignal
 }
 
 export interface ToolDefinition<S extends z.ZodType = z.ZodType> {
@@ -148,6 +150,8 @@ export interface CallRequest {
   /** Raw `Origin` header, or null. Non-null is rejected. */
   origin: string | null
   callId: string
+  /** Fires when the caller disconnects; handed to the tool as `ctx.signal`. */
+  signal?: AbortSignal
 }
 
 export interface CallRecord {
@@ -248,7 +252,7 @@ export async function dispatch(deps: DispatchDeps, req: CallRequest): Promise<un
     const argsRecord = parsed.data as Record<string, unknown>
     const rawKey = argsRecord['idempotency_key']
     const idempotencyKey = typeof rawKey === 'string' && rawKey.length > 0 ? rawKey : null
-    const ctx: ToolContext = { callId: req.callId, idempotencyKey }
+    const ctx: ToolContext = { callId: req.callId, idempotencyKey, signal: req.signal }
 
     const invoke = (): Promise<unknown> => tool.run(parsed.data, ctx)
 

@@ -1,5 +1,18 @@
 #!/usr/bin/env node
+import { readFileSync, statSync } from 'node:fs'
+import { request } from 'node:http'
 import { NOT_RUNNING, readEndpoint } from '../mcp/endpoint'
+import {
+  RUN_USAGE,
+  RunUsageError,
+  flowReferences,
+  inputsFor,
+  parseRunArgs,
+  readFlowText,
+  renderRun,
+  runExitCode,
+  type RunReport
+} from './run'
 
 /**
  * `nawi` — the command-line front end to a running Nawi.
@@ -47,7 +60,8 @@ const COMMANDS: Record<string, { tool: string; summary: string }> = {
   annotate: { tool: 'annotate', summary: 'Add an annotation to a capture.' },
   redact: { tool: 'redact', summary: 'Redact a region of a capture.' },
   export: { tool: 'export_guide', summary: 'Export captures as a guide.' },
-  'export-flow': { tool: 'export_flow', summary: 'Turn a recording into a flow file: --capture_id.' }
+  'export-flow': { tool: 'export_flow', summary: 'Turn a recording into a flow file: --capture_id.' },
+  run: { tool: 'run_flow', summary: 'Replay a flow file: nawi run <file> [--headless] [--var k=v]. Exit 1 if a step fails.' }
 }
 
 const USAGE = `nawi — command-line access to a running Nawi.
@@ -69,7 +83,9 @@ Values are parsed as JSON when they look like JSON (numbers, true/false, arrays,
 objects) and kept as strings otherwise, so --width 800 sends a number and
 --name "My shot" sends a string. A flag with no value is the boolean true.
 
-Nawi must already be running; this command will not start it for you.`
+Nawi must already be running; this command will not start it for you.
+
+${RUN_USAGE}`
 
 /**
  * Parses `--flag value` pairs into a tool argument object.
@@ -153,6 +169,8 @@ async function main(): Promise<void> {
     fail(`Unknown command "${command}".\n\n${USAGE}`, EXIT_USAGE)
   }
 
+  if (command === 'run') return runCommand(argv.slice(1))
+
   let parsed: { args: Record<string, unknown>; json: boolean }
   try {
     parsed = parseArgs(argv.slice(1))
@@ -160,31 +178,56 @@ async function main(): Promise<void> {
     fail(`${err instanceof Error ? err.message : String(err)}\n\n${USAGE}`, EXIT_USAGE)
   }
 
+  const result = await callTool(entry.tool, parsed.args)
+  process.stdout.write(`${parsed.json ? JSON.stringify(result, null, 2) : render(result)}\n`)
+  process.exit(EXIT_OK)
+}
+
+/**
+ * POST over `node:http`, not `fetch`: fetch gives up after 300 s without
+ * response headers, and a `nawi run` legitimately takes longer than that. A
+ * refused connection still fails at once.
+ */
+function post(url: string, headers: Record<string, string>, body: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { method: 'POST', headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) } }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }))
+      res.on('error', reject)
+    })
+    req.on('error', reject)
+    req.end(body)
+  })
+}
+
+/** One `tools/call` against the running app; exits with the contract's code on any failure. */
+async function callTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
   const endpoint = readEndpoint()
   if (!endpoint) fail(NOT_RUNNING, EXIT_NOT_RUNNING)
 
-  let res: Response
+  let res: { status: number; text: string }
   try {
-    res = await fetch(endpoint.url, {
-      method: 'POST',
-      headers: {
+    res = await post(
+      endpoint.url,
+      {
         'content-type': 'application/json',
         authorization: `Bearer ${endpoint.token}`
         // No Origin header: main rejects any non-null Origin as a DNS-rebinding
         // defence, and this is not a browser.
       },
-      body: JSON.stringify({
+      JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: entry.tool, arguments: parsed.args }
+        params: { name: tool, arguments: args }
       })
-    })
+    )
   } catch (err) {
     fail(`${NOT_RUNNING} (${err instanceof Error ? err.message : String(err)})`, EXIT_NOT_RUNNING)
   }
 
-  const text = await res.text()
+  const text = res.text
   if (text.length === 0) {
     fail(`Nawi returned an empty response (HTTP ${res.status}).`, EXIT_APP_ERROR)
   }
@@ -199,11 +242,35 @@ async function main(): Promise<void> {
   if (frame.error) {
     fail(frame.error.message ?? 'Nawi reported an unspecified error.', EXIT_APP_ERROR)
   }
+  return frame.result
+}
 
-  process.stdout.write(
-    `${parsed.json ? JSON.stringify(frame.result, null, 2) : render(frame.result)}\n`
-  )
-  process.exit(EXIT_OK)
+/**
+ * `nawi run`: positional file, repeatable --var, and the exit code follows the
+ * run (0 passed, 1 failed), not just the call. Env and secret values are sent
+ * only for the names the flow refers to.
+ */
+async function runCommand(argv: string[]): Promise<void> {
+  let run: ReturnType<typeof parseRunArgs>
+  try {
+    run = parseRunArgs(argv, process.cwd())
+  } catch (err) {
+    if (err instanceof RunUsageError) fail(`${err.message}\n\n${RUN_USAGE}`, EXIT_USAGE)
+    throw err
+  }
+  // Unreadable or not a flow file here: the app reports the real problem.
+  const text = readFlowText(run.file, { statSync, readFileSync }) ?? ''
+  const { env, secrets } = inputsFor(flowReferences(text, Object.values(run.vars)), process.env)
+  const { json, ...args } = run
+  const result = (await callTool('run_flow', { ...args, env, secrets })) as {
+    structuredContent?: RunReport
+  }
+  const report = result?.structuredContent
+  if (!report || !Array.isArray(report.steps)) {
+    fail(`Nawi returned an unexpected run_flow result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
+  }
+  process.stdout.write(`${json ? JSON.stringify(report, null, 2) : renderRun(report)}\n`)
+  process.exit(runExitCode(report))
 }
 
 void main()

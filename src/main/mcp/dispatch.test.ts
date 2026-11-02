@@ -248,3 +248,24 @@ describe('call log (UX-AGT.4 groundwork)', () => {
     expect(seen).toEqual(['noop:false:AGENT_ACCESS_PAUSED'])
   })
 })
+
+describe('caller disconnect', () => {
+  it('hands the request signal to the tool body, so long tools can stop when the caller leaves', async () => {
+    const gone = new AbortController()
+    let seen: AbortSignal | undefined
+    const tool = defineTool({
+      name: 'noop',
+      description: 'test',
+      idempotent: false,
+      schema: z.object({}),
+      run: async (_args, ctx) => {
+        seen = ctx.signal
+        return null
+      }
+    })
+    await dispatch(makeDeps({ tools: [tool] }), req({ signal: gone.signal }))
+    expect(seen, 'ctx.signal is the request signal').toBe(gone.signal)
+    gone.abort('left')
+    expect(seen?.aborted).toBe(true)
+  })
+})

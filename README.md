@@ -210,10 +210,11 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes thirteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes fourteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer`, `list_captures`, `search_captures`, `annotate`,
-`redact`, `export_guide`, and `export_flow` (CLI: `nawi export-flow --capture_id <id>`). The MCP server, its dispatch layer, the state
+`redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
+and `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value]`). The MCP server, its dispatch layer, the state
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 
@@ -305,8 +306,21 @@ alone.
   locator matched and what the earlier ones found, and a reason when it fails.
   Typed values are never put in the result, and secret values are scrubbed from
   messages (also when percent-encoded or whitespace-folded). The first failure stops the run. Only the top document is searched
-  (no iframes or shadow roots yet), and it is not yet reachable from the app,
-  CLI or MCP.
+  (no iframes or shadow roots yet).
+- **Running a flow** (`run_flow` over MCP, `nawi run` on the CLI) — replays a
+  `*.nawi.yaml` file (absolute path inside your home directory, at most 1 MiB;
+  other files are refused before they are read) in a fresh browser with a
+  throwaway profile, headed unless `--headless`, or in a new tab of a browser
+  already listening for DevTools on this machine (`--cdp-endpoint 9222`; only
+  loopback addresses, and the tab is closed afterwards). `--var name=value`
+  overrides a declared var. `${env.NAME}` comes from the shell that ran
+  `nawi run` and `${secret.name}` from `NAWI_SECRET_<name>`: the CLI sends only
+  the names the flow file (or a `--var` value) mentions, and the app never
+  passes its own environment to a flow. Missing inputs fail the run before a
+  browser starts. It prints one line per step and exits 0 when every step
+  passed, 1 otherwise (`--json` for the full report). Pausing agent access, or
+  pressing Ctrl-C on `nawi run`, stops a run after the step in progress.
+  Code: `src/main/flow-run.ts`, `src/cli/run.ts`.
 
 ## Keyboard shortcuts
 
@@ -397,14 +411,15 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Flows can be written, exported and replayed by the engine, but not yet
-  run from the app/CLI/MCP or edited in the UI.**
+- **Flows can be written, exported and run (CLI/MCP), but not yet edited in
+  the UI, and a run is not stored as a run record yet.** Secrets come from
+  `NAWI_SECRET_*` only (no OS keychain or prompt yet).
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so
   `export_flow` only has input events to work with on captures whose sidecar
   carries them (for example DC-4 sidecars written by another tool). Wiring the
-  harvest into browser recordings, `nawi run` / `run_flow`, run records and the
-  flow editor land as separate slices.
+  harvest into browser recordings, run records and the flow editor land as
+  separate slices.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a
   recording cannot be trimmed, shortened or re-exported without leaving the app.

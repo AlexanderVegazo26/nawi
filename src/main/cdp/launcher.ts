@@ -303,7 +303,8 @@ export async function attachToEndpoint(endpoint: string, requestTimeoutMs = 5_00
   return target
 }
 
-function parseEndpoint(endpoint: string): { host: string; port: number } | null {
+/** `9222`, `127.0.0.1:9222` or `http://127.0.0.1:9222` as host and port; null when it is none of those. */
+export function parseEndpoint(endpoint: string): { host: string; port: number } | null {
   const trimmed = endpoint.trim()
   if (/^\d+$/.test(trimmed)) return { host: '127.0.0.1', port: Number(trimmed) }
   const withScheme = /^https?:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`

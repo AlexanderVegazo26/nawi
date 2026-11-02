@@ -9,10 +9,11 @@ import * as settings from '../settings'
 import type { Surface } from '@shared/sidecar/types'
 import type { AnnotationDoc, LibraryItem, Shape } from '@shared/types'
 import { defineTool, type ToolDefinition } from './dispatch'
-import { ToolError, notImplemented } from './errors'
+import { ToolError, agentAccessPaused, notImplemented } from './errors'
 import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
+import { runFlowFile } from '../flow-run'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -646,6 +647,65 @@ const exportFlow = defineTool({
   }
 })
 
+/** Values a run takes from its caller: bounded, so one call cannot hand main megabytes of map. */
+const inputMap = (what: string) =>
+  z
+    .record(z.string().min(1).max(100), z.string().max(10_000))
+    .refine((m) => Object.keys(m).length <= 200, `at most 200 ${what}`)
+    .optional()
+
+/**
+ * Roadmap F3b: replay a flow file in a browser. The kill switch is checked by
+ * dispatch before the run starts and watched while it runs: pausing agent
+ * access stops the run after the step in progress.
+ */
+const runFlow = defineTool({
+  name: 'run_flow',
+  description:
+    'Replay a flow file (*.nawi.yaml, absolute path inside your home directory) in a browser and report each ' +
+    'step: passed/failed/skipped/not_run, the locator that matched, the ones that missed and why, and timings. ' +
+    'Nawi launches a fresh browser with a throwaway profile (headed unless headless is true), or opens a new tab ' +
+    'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +
+    'come only from this call\'s env and secrets; secret values are scrubbed from everything reported. A step ' +
+    'failure is a normal result with status "failed"; errors are for files or browsers that cannot be used. ' +
+    'Pausing agent access, or disconnecting, stops a run after the step in progress.',
+  idempotent: false,
+  schema: z.object({
+    file: z.string().min(1).max(4096).describe('Absolute path to the flow file.'),
+    vars: inputMap('vars').describe('Values for vars the flow declares, overriding the file\'s defaults.'),
+    env: inputMap('env values').describe('Values for ${env.NAME} references.'),
+    secrets: inputMap('secrets').describe('Values for ${secret.name} references. Never stored or reported.'),
+    headless: z.boolean().default(false),
+    cdp_endpoint: z.string().max(200).optional().describe('e.g. "9222" or "127.0.0.1:9222". Loopback only.'),
+    step_timeout_ms: z.number().int().min(100).max(600_000).optional().describe('Default per-step timeout (5000).')
+  }),
+  async run(args, ctx) {
+    const stop = new AbortController()
+    const pause = (): void => stop.abort('agent access was paused in Nawi, so the remaining steps were not run')
+    const off = settings.onSettingsChanged((next) => {
+      if (next.agentAccessPaused) pause()
+    })
+    try {
+      // Paused between dispatch's check and the subscription above: refuse before launching anything.
+      if ((await settings.getSettings()).agentAccessPaused) throw agentAccessPaused()
+      return await runFlowFile(
+        {
+          file: args.file,
+          vars: args.vars,
+          env: args.env,
+          secrets: args.secrets,
+          headless: args.headless,
+          cdpEndpoint: args.cdp_endpoint,
+          stepTimeoutMs: args.step_timeout_ms
+        },
+        { signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal }
+      )
+    } finally {
+      off()
+    }
+  }
+})
+
 /** The FR-AGT.1 surface, in the order the requirement lists them. */
 export const TOOLS: ToolDefinition[] = [
   captureScreen,
@@ -660,7 +720,8 @@ export const TOOLS: ToolDefinition[] = [
   annotate,
   redact,
   exportGuide,
-  exportFlow
+  exportFlow,
+  runFlow
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)

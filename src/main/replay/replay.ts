@@ -84,6 +84,11 @@ export interface ReplayOptions extends FlowInputs {
   navigationTimeoutMs?: number
   /** Injected for tests; defaults to Date.now. */
   now?: () => number
+  /**
+   * Stops the run between steps (the agent kill switch): the step in progress
+   * finishes, the rest are `not_run`, and the run fails with the signal's reason.
+   */
+  signal?: AbortSignal
 }
 
 /** Shapes returned by `inject/replay.js`. */
@@ -256,6 +261,8 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
     throw error
   }
 
+  if (options.signal?.aborted) return abort(stopReason(options.signal))
+
   const defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS
   const session = new Session(client, options.sessionId)
   const runner = new StepRunner(session, interp, now, defaultTimeoutMs)
@@ -286,22 +293,35 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
     } catch (error) {
       return abort(interp.redact(`could not open the flow's target: ${(error as Error).message ?? error}`))
     }
-    return await runSteps(flow, runner, startedAt, now)
+    return await runSteps(flow, runner, startedAt, now, options.signal)
   } finally {
     offDialog?.()
     await uninstall?.().catch(() => undefined)
   }
 }
 
-async function runSteps(flow: Flow, runner: StepRunner, startedAt: number, now: () => number): Promise<FlowRun> {
+/** The message an aborted run reports: the signal's string reason, else a generic one. */
+function stopReason(signal: AbortSignal): string {
+  return typeof signal.reason === 'string' ? signal.reason : 'the run was stopped'
+}
+
+async function runSteps(
+  flow: Flow,
+  runner: StepRunner,
+  startedAt: number,
+  now: () => number,
+  signal?: AbortSignal
+): Promise<FlowRun> {
   const steps: StepRun[] = []
   let failed: string | undefined
+  let stopped: string | undefined
   for (const step of flow.steps) {
     if (step.disabled) {
       steps.push({ id: step.id, action: step.action, status: 'skipped' })
       continue
     }
-    if (failed !== undefined) {
+    if (failed === undefined && stopped === undefined && signal?.aborted) stopped = stopReason(signal)
+    if (failed !== undefined || stopped !== undefined) {
       steps.push({ id: step.id, action: step.action, status: 'not_run' })
       continue
     }
@@ -311,9 +331,10 @@ async function runSteps(flow: Flow, runner: StepRunner, startedAt: number, now: 
   }
 
   return {
-    status: failed === undefined ? 'passed' : 'failed',
+    status: failed === undefined && stopped === undefined ? 'passed' : 'failed',
     startedAt,
     durationMs: now() - startedAt,
+    ...(stopped !== undefined ? { error: stopped } : {}),
     ...(failed !== undefined ? { failedStepId: failed } : {}),
     steps
   }
