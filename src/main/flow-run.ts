@@ -26,6 +26,7 @@ import {
   type RunEnvironment,
   type ShotFiles
 } from './run-record'
+import { toHtmlReport } from './run-report'
 
 /**
  * Roadmap F3b: run a flow file from the app (MCP `run_flow`, CLI `nawi run`).
@@ -401,7 +402,14 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
           ...facts
         }
       })
-      const dir = await writeRunRecord(deps.record.dir, record, assets)
+      // The report is a convenience: if it cannot be rendered, the record (run.json, junit.xml) is still saved.
+      let html: string | undefined
+      try {
+        html = toHtmlReport(record, assets)
+      } catch {
+        html = undefined
+      }
+      const dir = await writeRunRecord(deps.record.dir, record, assets, html)
       await pruneRuns(deps.record.dir, deps.record.keep ?? DEFAULT_KEEP_RUNS).catch(() => undefined)
       return report(request.file, flow, run, { run_id: runId, run_dir: dir }, record.steps)
     } catch (error) {

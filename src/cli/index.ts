@@ -62,7 +62,9 @@ const COMMANDS: Record<string, { tool: string; summary: string }> = {
   redact: { tool: 'redact', summary: 'Redact a region of a capture.' },
   export: { tool: 'export_guide', summary: 'Export captures as a guide.' },
   'export-flow': { tool: 'export_flow', summary: 'Turn a recording into a flow file: --capture_id.' },
-  run: { tool: 'run_flow', summary: 'Replay a flow file: nawi run <file> [--headless] [--var k=v]. Exit 1 if a step fails.' }
+  run: { tool: 'run_flow', summary: 'Replay a flow file: nawi run <file> [--headless] [--var k=v]. Exit 1 if a step fails.' },
+  runs: { tool: 'list_runs', summary: 'List saved run records, newest first: [--limit 20] [--status failed] [--flow_file path].' },
+  'run-info': { tool: 'get_run', summary: 'One run record in full: --run_id.' }
 }
 
 const USAGE = `nawi — command-line access to a running Nawi.

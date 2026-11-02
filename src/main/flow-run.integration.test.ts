@@ -100,7 +100,11 @@ describeWithBrowser('runFlowFile against a real Chromium', () => {
     expect(record.steps.map((st: { url?: string }) => st.url), JSON.stringify(record.steps)).toEqual(Array(6).fill(APP))
     expect(record.final_url).toBe(APP)
     expect(report.final_url).toBe(APP)
-    for (const name of ['run.json', 'junit.xml']) {
+    // F4c: the self-contained report is saved with the record.
+    const html = readFileSync(join(dir, 'report.html'), 'utf8')
+    expect(html, 'report.html names the flow and embeds the screenshots').toContain('<h1>Sign in')
+    expect(html).toContain('data:image/jpeg;base64,')
+    for (const name of ['run.json', 'junit.xml', 'report.html']) {
       expect(readFileSync(join(dir, name), 'utf8'), `${name} must not hold the secret`).not.toContain(PASSWORD)
     }
     expect(readdirSync(runs), 'no temporary folder left behind').toEqual([report.run_id])

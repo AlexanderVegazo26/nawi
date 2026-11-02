@@ -14,7 +14,7 @@ import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
 import { runFlowFile } from '../flow-run'
-import { DEFAULT_KEEP_RUNS } from '../run-record'
+import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, readRunRecord } from '../run-record'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -655,6 +655,8 @@ const inputMap = (what: string) =>
     .refine((m) => Object.keys(m).length <= 200, `at most 200 ${what}`)
     .optional()
 
+const runsDir = (): string => join(app.getPath('userData'), 'runs')
+
 /**
  * Roadmap F3b: replay a flow file in a browser. The kill switch is checked by
  * dispatch before the run starts and watched while it runs: pausing agent
@@ -667,7 +669,7 @@ const runFlow = defineTool({
     'step: passed/failed/skipped/not_run, the locator that matched, the ones that missed and why, timings, and ' +
     'what the page did meanwhile (the URL after the step, and its first 3 console errors and failed requests, ' +
     'with a count of the rest; the run record keeps up to 20 of each). ' +
-    `Each run is saved as a run record (run_dir: run.json, junit.xml and step screenshots; the newest ${DEFAULT_KEEP_RUNS} are kept). ` +
+    `Each run is saved as a run record (run_dir: run.json, junit.xml, report.html and step screenshots; the newest ${DEFAULT_KEEP_RUNS} are kept). ` +
     'With screenshots "all" (default) the record also has the page before and after each step (steps[].shots: ' +
     'JPEG paths inside run_dir; fields that received a secret are masked); "failed" keeps only the page the ' +
     'failing step left, "off" none. ' +
@@ -712,12 +714,50 @@ const runFlow = defineTool({
         },
         {
           signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
-          record: { dir: join(app.getPath('userData'), 'runs'), appVersion: app.getVersion() }
+          record: { dir: runsDir(), appVersion: app.getVersion() }
         }
       )
     } finally {
       off()
     }
+  }
+})
+
+/** Roadmap F4c: the saved run records, newest first, without their steps. */
+const listRunsTool = defineTool({
+  name: 'list_runs',
+  description:
+    'List saved flow run records (from run_flow / nawi run), newest first: run_id, flow, status, start time, ' +
+    'duration, step totals and the failing step. Filter by status or flow file; limit defaults to 20. ' +
+    'Use get_run for one run\'s steps and evidence.',
+  idempotent: true,
+  schema: z.object({
+    limit: z.number().int().min(1).max(DEFAULT_KEEP_RUNS).default(20),
+    status: z.enum(['passed', 'failed']).optional(),
+    flow_file: z.string().min(1).max(4096).optional().describe('Resolved absolute path (symlinks followed) of the flow file, as the run recorded it (`flow.file` in list_runs).')
+  }),
+  async run(args) {
+    const runs = await listRuns(runsDir(), { limit: args.limit, status: args.status, flowFile: args.flow_file })
+    return { runs, count: runs.length }
+  }
+})
+
+/** Roadmap F4c: one run record in full. */
+const getRun = defineTool({
+  name: 'get_run',
+  description:
+    'Fetch one saved run record by run_id: per step the status, timing, the locator that matched and the ones that ' +
+    'missed, the error, the page URL, console errors and failed requests, and the screenshot paths (relative to ' +
+    'run_dir: before/after JPEGs in steps[].shots, PNGs of screenshot steps). run_dir also holds junit.xml and ' +
+    'report.html (runs saved by this version of Nawi or later): a self-contained page with the screenshots embedded that a person can open in a browser.',
+  idempotent: true,
+  schema: z.object({
+    run_id: z.string().regex(RUN_ID_RE, 'a run id such as 20261102T103900123Z-a1b2c3 (see list_runs)')
+  }),
+  async run(args) {
+    const record = await readRunRecord(runsDir(), args.run_id)
+    if (!record) throw new ToolError('NOT_FOUND', `No saved run ${args.run_id}. Call list_runs for the runs that exist.`, { run_id: args.run_id })
+    return { ...record, run_dir: join(runsDir(), args.run_id) }
   }
 })
 
@@ -736,7 +776,9 @@ export const TOOLS: ToolDefinition[] = [
   redact,
   exportGuide,
   exportFlow,
-  runFlow
+  runFlow,
+  listRunsTool,
+  getRun
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)

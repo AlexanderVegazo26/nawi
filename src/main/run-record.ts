@@ -10,6 +10,7 @@ import type { FlowRun, StepRun } from './replay/replay'
  *
  *     runs/<run-id>/run.json            what ran, where, and how each step went
  *     runs/<run-id>/junit.xml           the same result for CI test reporters
+ *     runs/<run-id>/report.html         the same result as one self-contained page (F4c, run-report.ts)
  *     runs/<run-id>/steps/NNN-<id>.png  screenshots the flow's `screenshot` steps took
  *     runs/<run-id>/steps/NNN-<id>.before.jpg / .after.jpg
  *                                       the page around each step (F4b2), when the run took them
@@ -205,7 +206,7 @@ export function xmlEscape(value: string): string {
 const seconds = (ms: number | undefined): string => ((ms ?? 0) / 1000).toFixed(3)
 
 /** The selector as one readable token, for failure text. */
-function describe(selector: Record<string, unknown>): string {
+export function describe(selector: Record<string, unknown>): string {
   return Object.entries(selector)
     .map(([k, v]) => `${k}=${String(v)}`)
     .join(' ')
@@ -301,7 +302,13 @@ export function toJUnitXml(record: RunRecord): string {
  * Writes `runs/<run-id>/` atomically (temporary folder, then rename) and
  * returns its path. Never overwrites an existing run.
  */
-export async function writeRunRecord(runsRoot: string, record: RunRecord, assets: Map<string, Buffer>): Promise<string> {
+export async function writeRunRecord(
+  runsRoot: string,
+  record: RunRecord,
+  assets: Map<string, Buffer>,
+  /** The self-contained HTML report (`toHtmlReport`), saved as report.html. */
+  reportHtml?: string
+): Promise<string> {
   if (!RUN_ID_RE.test(record.run_id)) throw new Error(`not a run id: ${JSON.stringify(record.run_id)}`)
   await fs.mkdir(runsRoot, { recursive: true })
   const final = join(runsRoot, record.run_id)
@@ -314,6 +321,7 @@ export async function writeRunRecord(runsRoot: string, record: RunRecord, assets
       await fs.writeFile(join(temp, name), bytes)
     }
     await fs.writeFile(join(temp, 'junit.xml'), toJUnitXml(record))
+    if (reportHtml !== undefined) await fs.writeFile(join(temp, 'report.html'), reportHtml)
     // run.json last: its presence in a folder means the run is complete.
     await fs.writeFile(join(temp, 'run.json'), `${JSON.stringify(record, null, 2)}\n`)
     await fs.rename(temp, final)
@@ -350,4 +358,95 @@ export async function pruneRuns(runsRoot: string, keep: number = DEFAULT_KEEP_RU
   }
   for (const name of doomed) await fs.rm(join(runsRoot, name), { recursive: true, force: true })
   return doomed
+}
+
+/** What `list_runs` shows of a run: enough to pick one, without its steps. */
+export interface RunSummary {
+  run_id: string
+  flow: RunRecord['flow']
+  status: RunRecord['status']
+  started_at: string
+  duration_ms: number
+  totals: RunRecord['totals']
+  failed_step_id?: string
+  error?: string
+}
+
+export function summarizeRun(record: RunRecord): RunSummary {
+  return {
+    run_id: record.run_id,
+    flow: record.flow,
+    status: record.status,
+    started_at: record.started_at,
+    duration_ms: record.duration_ms,
+    totals: record.totals,
+    ...(record.failed_step_id !== undefined ? { failed_step_id: record.failed_step_id } : {}),
+    ...(record.error !== undefined ? { error: record.error } : {})
+  }
+}
+
+/**
+ * Reads one run record. Returns null when there is no such run, or its run.json
+ * is unreadable, not JSON, or not a version this build knows (a newer app wrote
+ * it): a reader never shows a half-understood record as if it were whole. The
+ * id is checked against the run-id pattern first, so it can never walk out of
+ * the runs folder.
+ */
+export async function readRunRecord(runsRoot: string, runId: string): Promise<RunRecord | null> {
+  if (!RUN_ID_RE.test(runId)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await fs.readFile(join(runsRoot, runId, 'run.json'), 'utf8'))
+  } catch {
+    return null
+  }
+  const r = parsed as Partial<RunRecord> | null
+  if (!r || typeof r !== 'object' || r.version !== RUN_RECORD_VERSION || r.run_id !== runId || !Array.isArray(r.steps)) return null
+  // The fields list_runs and the report read: a record without them is not whole.
+  const t = r.totals as Partial<RunRecord['totals']> | undefined
+  if (
+    (r.status !== 'passed' && r.status !== 'failed') ||
+    typeof r.started_at !== 'string' ||
+    typeof r.duration_ms !== 'number' ||
+    typeof r.flow?.name !== 'string' ||
+    typeof r.flow.file !== 'string' ||
+    [t?.passed, t?.failed, t?.skipped, t?.not_run].some((n) => typeof n !== 'number')
+  ) {
+    return null
+  }
+  return r as RunRecord
+}
+
+export interface ListRunsOptions {
+  /** At most this many, newest first (default 20). */
+  limit?: number
+  status?: RunRecord['status']
+  /** Only runs of this flow file, by the resolved (symlink-free) absolute path the run recorded. */
+  flowFile?: string
+}
+
+/** The newest runs first, skipping folders that are not complete, readable version-1 runs. */
+export async function listRuns(runsRoot: string, options: ListRunsOptions = {}): Promise<RunSummary[]> {
+  let entries: Array<{ name: string; isDirectory(): boolean }>
+  try {
+    entries = await fs.readdir(runsRoot, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const ids = entries
+    .filter((e) => e.isDirectory() && RUN_ID_RE.test(e.name))
+    .map((e) => e.name)
+    .sort()
+    .reverse()
+  const limit = Math.max(0, options.limit ?? 20)
+  const out: RunSummary[] = []
+  for (const id of ids) {
+    if (out.length >= limit) break
+    const record = await readRunRecord(runsRoot, id)
+    if (!record) continue
+    if (options.status !== undefined && record.status !== options.status) continue
+    if (options.flowFile !== undefined && record.flow.file !== options.flowFile) continue
+    out.push(summarizeRun(record))
+  }
+  return out
 }

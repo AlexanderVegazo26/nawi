@@ -210,11 +210,12 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes fourteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes sixteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer`, `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
-and `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`). The MCP server, its dispatch layer, the state
+`run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
+`list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`) and `get_run` (CLI: `nawi run-info --run_id <id>`). The MCP server, its dispatch layer, the state
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 
@@ -353,8 +354,16 @@ alone.
   carries the first three of each (the record has up to 20). `run_flow` answers with `run_id` and
   `run_dir`; `nawi run` prints `record: <folder>`, and `--junit <file>` copies
   the JUnit XML there (an old report at that path is removed first, so a run
-  that cannot start never leaves a stale result for CI). Code:
-  `src/main/run-record.ts`.
+  that cannot start never leaves a stale result for CI). Each run folder also
+  has `report.html`: the same result as one self-contained page for a person
+  (status, totals, a link to the first failure, per step the locators, error,
+  page evidence and the before/after screenshots embedded as data URIs; no
+  script, no network, a Content-Security-Policy that allows only inline style
+  and data images, all text escaped), so it can be attached to a ticket or CI
+  run as is. `list_runs` / `get_run` (CLI `nawi runs`, `nawi run-info`) let an
+  agent browse the saved records: newest first, filter by status or flow file,
+  one record in full by run id. Code: `src/main/run-record.ts`,
+  `src/main/run-report.ts`.
 
 ## Keyboard shortcuts
 
@@ -436,7 +445,7 @@ npm run test:e2e     # builds, then drives the real Electron app
 | `annotation.spec.ts` | Drawing and persisting shapes, undo/redo, tool and palette bindings |
 | `recording.spec.ts` | The record lifecycle and track selection |
 | `conformance.spec.ts` | UX-SPEC conformance over required screen states |
-| `mcp.spec.ts` | The twelve tools over the loopback endpoint, redaction gating, the agent kill switch |
+| `mcp.spec.ts` | The sixteen tools over the loopback endpoint, redaction gating, the agent kill switch |
 | `cli.spec.ts` | The `nawi` binary's exit-code contract, including its refusal to launch the app |
 
 Unit tests live beside their subjects (`*.test.ts`) and cover the pure layers —
@@ -446,7 +455,7 @@ CDP selectors and the MCP projection/revision model.
 ## Known gaps
 
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
-  the UI.** There is no HTML report or UI to browse run records yet. Secrets come from
+  the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from
   `NAWI_SECRET_*` only (no OS keychain or prompt yet).
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so
