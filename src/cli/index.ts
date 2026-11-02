@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, statSync } from 'node:fs'
-import { request } from 'node:http'
 import { NOT_RUNNING, readEndpoint } from '../mcp/endpoint'
+import { postJson, type PostResult } from '../mcp/post'
 import {
   RUN_USAGE,
   RunUsageError,
@@ -183,32 +183,14 @@ async function main(): Promise<void> {
   process.exit(EXIT_OK)
 }
 
-/**
- * POST over `node:http`, not `fetch`: fetch gives up after 300 s without
- * response headers, and a `nawi run` legitimately takes longer than that. A
- * refused connection still fails at once.
- */
-function post(url: string, headers: Record<string, string>, body: string): Promise<{ status: number; text: string }> {
-  return new Promise((resolve, reject) => {
-    const req = request(url, { method: 'POST', headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) } }, (res) => {
-      const chunks: Buffer[] = []
-      res.on('data', (c: Buffer) => chunks.push(c))
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }))
-      res.on('error', reject)
-    })
-    req.on('error', reject)
-    req.end(body)
-  })
-}
-
 /** One `tools/call` against the running app; exits with the contract's code on any failure. */
 async function callTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
   const endpoint = readEndpoint()
   if (!endpoint) fail(NOT_RUNNING, EXIT_NOT_RUNNING)
 
-  let res: { status: number; text: string }
+  let res: PostResult
   try {
-    res = await post(
+    res = await postJson(
       endpoint.url,
       {
         'content-type': 'application/json',

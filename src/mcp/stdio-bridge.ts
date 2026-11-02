@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline'
-import { NOT_RUNNING, readEndpoint } from './endpoint'
+import { forward, type Frame } from './forward'
 
 /**
  * stdio ↔ loopback-HTTP proxy. This is what an MCP client (Claude Code) spawns.
@@ -20,68 +20,20 @@ import { NOT_RUNNING, readEndpoint } from './endpoint'
  * launches the app: an agent handshake silently starting a GUI on someone's
  * desktop is a surprise, and one the user never consented to.
  *
+ * The transport (and its reason for being node:http, not fetch) lives in
+ * `forward.ts` / `post.ts`, shared with the CLI.
+ *
  * Framing is newline-delimited JSON, which is what MCP stdio specifies — not
  * LSP-style `Content-Length` headers. Getting that wrong produces a silent hang
  * rather than an error, so it is called out here.
  */
 
-const APP_ERROR = -32000
-
 function write(payload: unknown): void {
   process.stdout.write(`${JSON.stringify(payload)}\n`)
 }
 
-async function forward(message: { id?: unknown; method?: unknown }): Promise<void> {
-  const id = message.id ?? null
-  // A notification expects no reply at all; answering one confuses strict clients.
-  const isNotification = message.id === undefined || message.id === null
-
-  const endpoint = readEndpoint()
-  if (!endpoint) {
-    if (!isNotification) {
-      write({ jsonrpc: '2.0', id, error: { code: APP_ERROR, message: NOT_RUNNING } })
-    }
-    return
-  }
-
-  try {
-    const res = await fetch(endpoint.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${endpoint.token}`
-        // No Origin header: main rejects any non-null Origin as a DNS-rebinding
-        // defence, and this is not a browser.
-      },
-      body: JSON.stringify(message)
-    })
-
-    // 202 is main's answer to a notification — nothing to write back.
-    if (res.status === 202 || res.headers.get('content-length') === '0') return
-
-    const text = await res.text()
-    if (isNotification) return
-    if (text.length === 0) {
-      write({
-        jsonrpc: '2.0',
-        id,
-        error: { code: APP_ERROR, message: `Nawi returned an empty response (HTTP ${res.status}).` }
-      })
-      return
-    }
-    // Forwarded verbatim — the reply is already a complete JSON-RPC frame, and
-    // re-encoding it is a chance to corrupt something this process should not
-    // be interpreting in the first place.
-    process.stdout.write(`${text}\n`)
-  } catch (err) {
-    if (isNotification) return
-    const detail = err instanceof Error ? err.message : String(err)
-    write({
-      jsonrpc: '2.0',
-      id,
-      error: { code: APP_ERROR, message: `${NOT_RUNNING} (${detail})` }
-    })
-  }
+const writeLine = (line: string): void => {
+  process.stdout.write(`${line}\n`)
 }
 
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })
@@ -99,9 +51,9 @@ lines.on('line', (line) => {
   const trimmed = line.trim()
   if (trimmed.length === 0) return
 
-  let message: { id?: unknown; method?: unknown }
+  let message: Frame
   try {
-    message = JSON.parse(trimmed) as { id?: unknown; method?: unknown }
+    message = JSON.parse(trimmed) as Frame
   } catch {
     write({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } })
     return
@@ -110,8 +62,8 @@ lines.on('line', (line) => {
   // Chained on a *settled* tail: one failed forward must not stop every later
   // frame from being processed, which would wedge the session with no error.
   chain = chain.then(
-    () => forward(message),
-    () => forward(message)
+    () => forward(message, writeLine),
+    () => forward(message, writeLine)
   )
 })
 
