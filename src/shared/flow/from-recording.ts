@@ -21,6 +21,9 @@ import { FLOW_VERSION, FlowSchema, RESERVED_KEYS, type Flow, type FlowStep, type
  *    target into view itself), inputs on checkboxes/radios (the click is the
  *    action), events without a usable locator, and malformed lines.
  *
+ * The start URL is scrubbed of credentials (`user:pass@`, token/code/key/
+ * session/signature parameters in the query or fragment): see scrubStartUrl.
+ *
  * The input is untrusted: the NDJSON file is written from page-side events and
  * can be hand-edited, so every line is validated here and a bad one is skipped,
  * never thrown on. The output always passes `FlowSchema` (checked before
@@ -43,6 +46,97 @@ export const SKIP_REASONS = [
 ] as const
 
 export type SkipReason = (typeof SKIP_REASONS)[number]
+
+/* ------------------------------------------------------------------ *
+ * Start URL scrubbing
+ * ------------------------------------------------------------------ */
+
+/**
+ * Parameter names (lowercased, punctuation removed) that carry a credential:
+ * reset/magic-link tokens, OAuth codes and implicit-grant tokens, API keys,
+ * session ids, presigned-URL signatures.
+ */
+const CREDENTIAL_PARAMS = new Set([
+  'token', 'code', 'auth', 'authorization', 'key', 'apikey', 'secret', 'password', 'passwd', 'pwd', 'pass',
+  'session', 'sessionid', 'sid', 'sig', 'signature', 'jwt', 'otp', 'ticket', 'credential', 'credentials',
+  'samlresponse'
+])
+const CREDENTIAL_SUFFIX = /(token|secret|password|passwd|signature|apikey|sessionid|credentials?|jwt|otp)$/
+
+function paramName(piece: string): string {
+  const raw = piece.split('=', 1)[0].replace(/\+/g, ' ')
+  let name = raw
+  try {
+    name = decodeURIComponent(raw)
+  } catch {
+    // A malformed %-escape: judge the raw text.
+  }
+  return name
+}
+
+function isCredentialParam(name: string): boolean {
+  const key = name.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return CREDENTIAL_PARAMS.has(key) || CREDENTIAL_SUFFIX.test(key)
+}
+
+/** Drops credential params from an `a=1&b=2` string; returns the rest, untouched otherwise. */
+function scrubParams(params: string, removed: string[]): string {
+  return params
+    .split('&')
+    .filter((piece) => {
+      const name = paramName(piece)
+      if (!isCredentialParam(name)) return true
+      if (!removed.includes(name)) removed.push(name)
+      return false
+    })
+    .join('&')
+}
+
+/**
+ * The recording's URL may hold credentials: `user:pass@` in the authority, a
+ * reset or magic-link token in the query, an OAuth implicit-grant token in the
+ * fragment (`#access_token=...`, also `#/route?token=...`). A flow file is
+ * meant to be shared, so those are removed. Everything else is kept byte for
+ * byte (no URL re-serialization), and a URL with nothing to remove comes back
+ * unchanged. Returns the removed parameter names (never their values).
+ */
+export function scrubStartUrl(url: string): { url: string; userinfo: boolean; removed: string[] } {
+  const removed: string[] = []
+  let rest = url
+  let userinfo = false
+  const authority = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i.exec(rest)
+  if (authority) {
+    rest = authority[1] + rest.slice(authority[0].length)
+    userinfo = true
+  }
+
+  const hashAt = rest.indexOf('#')
+  let base = hashAt === -1 ? rest : rest.slice(0, hashAt)
+  let fragment = hashAt === -1 ? null : rest.slice(hashAt + 1)
+
+  const queryAt = base.indexOf('?')
+  if (queryAt !== -1) {
+    const query = scrubParams(base.slice(queryAt + 1), removed)
+    base = base.slice(0, queryAt) + (query ? `?${query}` : '')
+  }
+
+  if (fragment !== null) {
+    const fragQueryAt = fragment.indexOf('?')
+    if (fragQueryAt !== -1) {
+      // A hash route with its own query: `#/reset?token=...`.
+      const query = scrubParams(fragment.slice(fragQueryAt + 1), removed)
+      fragment = fragment.slice(0, fragQueryAt) + (query ? `?${query}` : '')
+    } else if (/^[^/]*=/.test(fragment)) {
+      // A fragment that is itself a parameter list: `#access_token=...&token_type=bearer`.
+      fragment = scrubParams(fragment, removed)
+    }
+  }
+
+  if (removed.length === 0 && !userinfo) return { url, userinfo, removed }
+  const out = base + (fragment ? `#${fragment}` : '')
+  // A bare `?token=...` would scrub to nothing, and a flow needs a start URL.
+  return { url: /\S/.test(out) ? out : 'about:blank', userinfo, removed }
+}
 
 export interface FlowFromRecordingOptions {
   name: string
@@ -397,6 +491,22 @@ export function flowFromRecording(
   })
 
   let flowTarget = options.target
+  if (flowTarget.kind === 'browser') {
+    const scrubbed = scrubStartUrl(flowTarget.url)
+    if (scrubbed.url !== flowTarget.url) {
+      flowTarget = { kind: 'browser', url: scrubbed.url }
+      const parts = [
+        ...(scrubbed.userinfo ? ['a user name/password'] : []),
+        ...(scrubbed.removed.length > 0
+          ? [`credential-looking parameter${scrubbed.removed.length === 1 ? '' : 's'} (${scrubbed.removed.join(', ')})`]
+          : [])
+      ]
+      warnings.push(
+        `Removed ${parts.join(' and ')} from the start URL so the flow can be shared; ` +
+          'if replay needs them, add them back as ${secret.<name>} placeholders.'
+      )
+    }
+  }
   if (flowTarget.kind === 'browser' && flowTarget.url.includes('${')) {
     // `$` is safe to percent-encode in a URL, and `${` would read as a placeholder.
     flowTarget = { kind: 'browser', url: flowTarget.url.replace(/\$/g, '%24') }

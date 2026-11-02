@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { flowFromRecording, toFlowSelector, type FlowFromRecordingOptions } from './from-recording'
+import { flowFromRecording, scrubStartUrl, toFlowSelector, type FlowFromRecordingOptions } from './from-recording'
 import { formatFlowErrors, parseFlow, stringifyFlow } from './yaml'
 
 const OPTIONS: FlowFromRecordingOptions = {
@@ -322,6 +322,77 @@ describe('flowFromRecording: untrusted input', () => {
     const { flow, warnings } = flowFromRecording([], { name: 'x', target: { kind: 'browser', url: 'https://x.test/?q=${a}' } })
     expect(flow.target).toEqual({ kind: 'browser', url: 'https://x.test/?q=%24{a}' })
     expect(warnings).toContain('No replayable steps were found in this recording.')
+  })
+})
+
+describe('scrubStartUrl', () => {
+  it.each([
+    ['reset token in the query', 'https://app.test/reset?token=abc123&lang=es', 'https://app.test/reset?lang=es', ['token']],
+    ['OAuth implicit-grant fragment', 'https://app.test/cb#access_token=eyJ.x.y&token_type=bearer&state=s1', 'https://app.test/cb#token_type=bearer&state=s1', ['access_token']],
+    ['OAuth code, only param', 'https://app.test/cb?code=4%2F0Ad', 'https://app.test/cb', ['code']],
+    ['hash-route query', 'https://app.test/#/magic?Auth-Token=t0k&next=%2Fhome', 'https://app.test/#/magic?next=%2Fhome', ['Auth-Token']],
+    ['presigned S3 URL', 'https://b.s3.test/f.pdf?X-Amz-Credential=AK%2F1&X-Amz-Date=20261101&X-Amz-Signature=deadbeef', 'https://b.s3.test/f.pdf?X-Amz-Date=20261101', ['X-Amz-Credential', 'X-Amz-Signature']],
+    ['percent-encoded name', 'https://app.test/?api%5Fkey=k&page=2', 'https://app.test/?page=2', ['api_key']],
+    ['bare query only', '?session_id=s', 'about:blank', ['session_id']]
+  ])('removes the credential params of a %s', (_label, url, expected, removed) => {
+    const out = scrubStartUrl(url)
+    expect(out.url, `scrubbed form of ${url}`).toBe(expected)
+    expect(out.removed, `removed param names for ${url}`).toEqual(removed)
+    expect(out.userinfo, `userinfo flag for ${url}`).toBe(false)
+  })
+
+  it('removes user:password from the authority, including an "@" in the password', () => {
+    expect(scrubStartUrl('https://ana:p@ss@app.test/x?q=1')).toEqual({ url: 'https://app.test/x?q=1', userinfo: true, removed: [] })
+  })
+
+  it.each([
+    'https://app.test/search?q=token+bucket&keyboard=us&monkey=1',
+    'https://app.test/#/settings/password',
+    'https://app.test/a@b?x=%zz',
+    'https://app.test/p?q=a%20b&r=c+d#top'
+  ])('returns %s byte for byte when nothing is a credential', (url) => {
+    expect(scrubStartUrl(url)).toEqual({ url, userinfo: false, removed: [] })
+  })
+
+  it('never keeps the value of a credential param anywhere in the URL (property)', () => {
+    const name = fc.constantFrom('token', 'access_token', 'code', 'password', 'X-Amz-Signature', 'sessionId', 'api-key')
+    const value = fc.stringMatching(/^[A-Za-z0-9]{12,20}$/)
+    const other = fc.array(fc.tuple(fc.constantFrom('page', 'lang', 'next', 'q'), fc.stringMatching(/^[a-z]{1,6}$/)), { maxLength: 3 })
+    fc.assert(
+      fc.property(name, value, other, fc.boolean(), (n, v, rest, inFragment) => {
+        const params = [...rest.map(([k, x]) => `${k}=${x}`), `${n}=${v}`].join('&')
+        const url = inFragment ? `https://app.test/cb#${params}` : `https://app.test/cb?${params}`
+        const out = scrubStartUrl(url)
+        expect(out.url, `${url} -> ${out.url}`).not.toContain(v)
+        expect(out.removed, `removed names for ${url}`).toContain(n)
+      }),
+      { seed: 20261101, numRuns: 200 }
+    )
+  })
+})
+
+describe('flowFromRecording start URL', () => {
+  it('writes the scrubbed start URL and warns with the param names, never their values', () => {
+    const { flow, warnings } = flowFromRecording([], {
+      name: 'x',
+      target: { kind: 'browser', url: 'https://u:pw@app.test/reset?token=SeCrEt123&lang=es#access_token=AlsoSecret' }
+    })
+    expect(flow.target).toEqual({ kind: 'browser', url: 'https://app.test/reset?lang=es' })
+    const yaml = stringifyFlow(flow)
+    for (const leaked of ['SeCrEt123', 'AlsoSecret', 'pw@']) {
+      expect(yaml, `flow YAML should not contain ${leaked}`).not.toContain(leaked)
+      expect(warnings.join('\n'), `warnings should not contain ${leaked}`).not.toContain(leaked)
+    }
+    expect(warnings[0]).toBe(
+      'Removed a user name/password and credential-looking parameters (token, access_token) from the start URL so the flow can be shared; ' +
+        'if replay needs them, add them back as ${secret.<name>} placeholders.'
+    )
+  })
+
+  it('leaves a clean start URL and the warnings alone', () => {
+    const { flow, warnings } = flowFromRecording([], OPTIONS)
+    expect(flow.target).toEqual(OPTIONS.target)
+    expect(warnings).toEqual(['No replayable steps were found in this recording.'])
   })
 })
 
