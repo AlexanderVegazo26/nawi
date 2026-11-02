@@ -287,8 +287,9 @@ alone.
   per field with its final value (`select` for a `<select>`), named keys such as
   Enter, each with its ranked selectors. Fields marked secret at capture become
   `${secret.<name>}` placeholders (their values were never recorded). Scrolls,
-  resizes, modifier and editing keys, and the click that only focused a field are
-  left out and counted in the reply, with warnings to review. It returns the
+  resizes, modifier and editing keys, the click that only focused a field, and
+  what was entered in fields a flow can't fill (file pickers, sliders, color
+  pickers) are left out and counted in the reply, with warnings to review. It returns the
   YAML and writes nothing. Converter: `src/shared/flow/from-recording.ts`.
 - **Flow replay engine** (`src/main/replay`) — runs a flow in a Chromium page
   over raw CDP. Each step's locators are tried in order: the first one matching

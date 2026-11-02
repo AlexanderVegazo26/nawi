@@ -392,6 +392,10 @@
       target_name: secret ? null : accessibleName(el) || null,
       selectors: describeSelectors(el)
     }
+    // The browser-normalized type (`el.type`: an unknown attribute reads as
+    // "text"), so a consumer can tell a file picker or a slider from a text
+    // field: roleOf calls all of them "textbox".
+    if (el && el.tagName === 'INPUT' && typeof el.type === 'string') event.input_type = el.type
     if (secret) {
       event.value_redacted = true
     } else {

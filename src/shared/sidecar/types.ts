@@ -133,6 +133,12 @@ export interface InputTarget {
   bounds: Bounds4 | null
   /** FR-STA.6 requires all candidates, ranked — not just the winner. */
   selectors: SelectorCandidate[]
+  /**
+   * For an `<input>` only: its type as the browser normalizes it (`text`,
+   * `file`, `range`, `date`...). Absent for other elements and in sidecars
+   * written before it existed.
+   */
+  input_type?: string
 }
 
 export type InputEventType = 'click' | 'keydown' | 'scroll' | 'navigate' | 'resize'

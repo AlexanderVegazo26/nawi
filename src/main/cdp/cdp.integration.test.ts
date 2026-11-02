@@ -247,6 +247,30 @@ describeWithBrowser('CDP client against a real Chromium (launched by our own lau
       expect(event.result.value.value).toBe('not-a-secret@example.com')
     })
 
+    it('reports the browser-normalized input type of an <input>, and none for other elements', async () => {
+      const event = await client.send<{ result: { value: Record<string, unknown>[] } }>(
+        'Runtime.evaluate',
+        {
+          expression:
+            "['#email', '#pw', '#cv', '#volume', '#odd', '#bio', '#s1'].map((s) => window.__nawiProbe.describeInput(document.querySelector(s), 'input'))",
+          returnByValue: true
+        },
+        pageSessionId
+      )
+      const types = event.result.value.map((p) => ('input_type' in p ? p.input_type : '(none)'))
+      // RANGE is lowercased and an unknown type reads as text, as the browser treats them.
+      expect(types, 'input_type for #email #pw #cv #volume #odd #bio #s1').toEqual([
+        'email',
+        'password',
+        'file',
+        'range',
+        'text',
+        '(none)',
+        '(none)'
+      ])
+      expect(event.result.value[1].value_redacted, 'the password stays redacted').toBe(true)
+    })
+
     /**
      * The load-bearing fact behind `markAndResolveSecrets`. `captureSnapshot`
      * serializes input values into its string table, so the snapshot really

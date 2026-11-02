@@ -48,6 +48,28 @@ describe('DC-4 — schema round-trip', () => {
     }
     expect(SidecarLoose.safeParse(withEvents).success).toBe(false)
   })
+
+  it('accepts an inline input event target with or without input_type, and rejects a non-string one', () => {
+    const sidecar = validSidecar()
+    const withTarget = (extra: Record<string, unknown>) => ({
+      ...sidecar,
+      state_layer: {
+        ...sidecar.state_layer,
+        input_events: [
+          {
+            t_ms: 1,
+            type: 'click',
+            coordinates: null,
+            target: { role: 'textbox', accessible_name: 'CV', text: null, bounds: null, selectors: [], ...extra },
+            value_redacted: false
+          }
+        ]
+      }
+    })
+    expect(SidecarLoose.safeParse(withTarget({})).success, 'older sidecars have no input_type').toBe(true)
+    expect(SidecarLoose.safeParse(withTarget({ input_type: 'file' })).success).toBe(true)
+    expect(SidecarLoose.safeParse(withTarget({ input_type: 3 })).success, 'input_type must be a string').toBe(false)
+  })
 })
 
 describe('DC-6 — unknown fields are preserved, not stripped', () => {

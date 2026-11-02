@@ -194,6 +194,49 @@ describe('flowFromRecording: other controls', () => {
     expect(skipped).toEqual({ toggle_input: 1 })
   })
 
+  const CV = {
+    role: 'textbox',
+    accessible_name: 'CV',
+    bounds: null,
+    input_type: 'file',
+    selectors: [{ strategy: 'id', value: '#cv', stability: 0.9 }]
+  }
+  const VOLUME = { ...CV, accessible_name: null, input_type: 'range', selectors: [{ strategy: 'id', value: '#volume', stability: 0.9 }] }
+  const BIRTHDAY = { ...CV, accessible_name: 'Birthday', input_type: 'date', selectors: [{ strategy: 'id', value: '#birthday', stability: 0.9 }] }
+
+  it('leaves out file picker and slider input, never writing the picked file name, and says which fields', () => {
+    clock = 0
+    const { flow, skipped, warnings } = flowFromRecording(
+      [ev('click', CV), typed(CV, 'C:\\fakepath\\cv.pdf'), typed(VOLUME, '40'), typed(VOLUME, '55'), typed(EMAIL, 'a@b.c')],
+      OPTIONS
+    )
+    expect(flow.steps.map((s) => s.action), 'only the click on the picker and the email fill should be kept').toEqual([
+      'click',
+      'fill'
+    ])
+    expect(JSON.stringify(flow), 'the flow must not carry the picked file path').not.toContain('fakepath')
+    expect(skipped).toEqual({ unfillable_input: 3 })
+    expect(warnings).toContain(
+      'Left out what was entered in 2 fields a flow can\'t fill (the file picker "CV"; a slider); set them by hand before replaying.'
+    )
+  })
+
+  it('counts an <input type=checkbox> with a non-toggle role as a toggle, by its input type', () => {
+    const { flow, skipped } = flowFromRecording([typed({ ...TERMS, role: 'textbox', input_type: 'checkbox' }, 'on')], OPTIONS)
+    expect(flow.steps, 'a checkbox input event must not become a fill').toEqual([])
+    expect(skipped).toEqual({ toggle_input: 1 })
+  })
+
+  it('still fills a date input (the replayer sets picker values) and text inputs without a recorded type', () => {
+    clock = 0
+    const { flow, skipped } = flowFromRecording([typed(BIRTHDAY, '1990-01-02'), typed({ ...EMAIL, input_type: 'TEXT' }, 'x')], OPTIONS)
+    expect(flow.steps.map((s) => [s.action, 'value' in s ? s.value : null])).toEqual([
+      ['fill', '1990-01-02'],
+      ['fill', 'x']
+    ])
+    expect(skipped).toEqual({})
+  })
+
   it('keeps a key pressed outside any field as a press without a target', () => {
     const { flow } = flowFromRecording([{ t_ms: 1, type: 'keydown', target: null, key: 'Escape', value_redacted: false }], OPTIONS)
     expect(flow.steps).toEqual([{ id: 's1', action: 'press', key: 'Escape', note: 'Press Escape' }])

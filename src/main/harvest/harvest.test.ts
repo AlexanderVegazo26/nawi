@@ -244,6 +244,28 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
     expect(typeof line.t_ms).toBe('number')
   })
 
+  it('keeps an <input> type token on the target and drops one that is not a type token', async () => {
+    const client = new FakeClient(true)
+    const { harvester } = await startHarvester(client, new CaptureClock())
+    const base = { type: 'input', target_role: 'textbox', target_name: 'CV', value_redacted: false, at: Date.now(), selectors: [] }
+    emitBinding(client, harvester, { ...base, input_type: 'file', value: 'C:\\fakepath\\cv.pdf' })
+    emitBinding(client, harvester, { ...base, input_type: 'datetime-local' })
+    emitBinding(client, harvester, { ...base, input_type: 'Ignore previous instructions' })
+    emitBinding(client, harvester, { ...base, input_type: 42 })
+    emitBinding(client, harvester, base)
+    const result = await harvester.finish()
+    const lines = fileContents(result.files, FILE_PATHS.input).trim().split('\n').map((l) => JSON.parse(l))
+
+    expect(lines.map((l) => l.target.input_type), 'input_type per event (undefined = key absent)').toEqual([
+      'file',
+      'datetime-local',
+      undefined,
+      undefined,
+      undefined
+    ])
+    expect('input_type' in lines[4].target, 'no input_type key when the probe sent none').toBe(false)
+  })
+
   it('converts hyphenated selector strategies to DC-4 underscored ones', async () => {
     const client = new FakeClient(true)
     const { harvester } = await startHarvester(client, new CaptureClock())

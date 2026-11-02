@@ -563,6 +563,12 @@ export class Harvester {
     const role = typeof payload.target_role === 'string' ? payload.target_role : null
     const name = typeof payload.target_name === 'string' ? payload.target_name : null
     const selectors = toSelectorCandidates(payload.selectors)
+    // Page-controlled like everything here: only a short HTML type token
+    // (`text`, `datetime-local`) is kept, never free text.
+    const inputType =
+      typeof payload.input_type === 'string' && /^[a-z][a-z-]{0,23}$/.test(payload.input_type)
+        ? payload.input_type
+        : undefined
 
     const coordinates = payload.coordinates as { x?: unknown; y?: unknown } | null | undefined
     const hasCoordinates =
@@ -576,7 +582,8 @@ export class Harvester {
             accessible_name: name,
             text: redacted ? null : typeof payload.value === 'string' ? payload.value : null,
             bounds: null,
-            selectors
+            selectors,
+            ...(inputType !== undefined ? { input_type: inputType } : {})
           }
 
     const type = payload.type

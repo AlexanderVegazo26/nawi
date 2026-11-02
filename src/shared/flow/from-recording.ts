@@ -42,6 +42,7 @@ export const SKIP_REASONS = [
   'modifier_key',
   'editing_key',
   'placeholder_text',
+  'unfillable_input',
   'unsupported'
 ] as const
 
@@ -165,7 +166,8 @@ const TargetIn = z.object({
   accessible_name: z.string().nullish(),
   text: z.string().nullish(),
   bounds: z.array(z.number()).nullish(),
-  selectors: z.array(z.unknown()).nullish()
+  selectors: z.array(z.unknown()).nullish(),
+  input_type: z.string().nullish()
 })
 
 const EventIn = z.object({
@@ -263,6 +265,22 @@ function bboxOf(target: RecordedTarget | null | undefined): [number, number, num
 
 const TEXT_ENTRY_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton'])
 const TOGGLE_ROLES = new Set(['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio'])
+const TOGGLE_INPUT_TYPES = new Set(['checkbox', 'radio'])
+/**
+ * `<input>` types a fill can't replay (the replayer's isEditable refuses them):
+ * the probe calls them all "textbox", so only the recorded input type tells.
+ * Date and time pickers are not here: the replayer sets those directly.
+ */
+const UNFILLABLE_INPUT_TYPES: Record<string, string> = {
+  file: 'file picker',
+  range: 'slider',
+  color: 'color picker',
+  hidden: 'hidden field',
+  button: 'button',
+  submit: 'button',
+  reset: 'button',
+  image: 'button'
+}
 const MODIFIER_KEYS = new Set([
   'Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'OS', 'Fn', 'FnLock', 'Hyper', 'Super',
   'CapsLock', 'NumLock', 'ScrollLock', 'Symbol', 'SymbolLock',
@@ -363,6 +381,9 @@ export function flowFromRecording(
     return name
   }
 
+  /** Fields left out because replay can't fill them, by description, in recording order. */
+  const unfillable = new Map<string, string>()
+
   for (const event of valid) {
     const target = event.target ?? null
     const selectors = flowSelectors(target)
@@ -388,8 +409,18 @@ export function flowFromRecording(
           skip('no_target')
           break
         }
-        if (TOGGLE_ROLES.has(role)) {
+        const inputType = target?.input_type?.trim().toLowerCase() ?? ''
+        if (TOGGLE_ROLES.has(role) || TOGGLE_INPUT_TYPES.has(inputType)) {
           skip('toggle_input')
+          break
+        }
+        if (Object.hasOwn(UNFILLABLE_INPUT_TYPES, inputType)) {
+          // e.g. a file picker's value is "C:\fakepath\cv.pdf": replayed as a
+          // fill it would fail, and it names the user's file. Left out, not kept.
+          const kind = UNFILLABLE_INPUT_TYPES[inputType]
+          const name = target?.accessible_name?.trim()
+          unfillable.set(targetKey, name ? `the ${kind} ${describe(target)}` : `a ${kind}`)
+          skip('unfillable_input')
           break
         }
         const redacted = event.value_redacted === true
@@ -513,6 +544,13 @@ export function flowFromRecording(
     warnings.push('The start URL contained "${"; its "$" characters were written as %24.')
   }
 
+  if (unfillable.size > 0) {
+    const n = unfillable.size
+    warnings.push(
+      `Left out what was entered in ${n === 1 ? 'a field' : `${n} fields`} a flow can't fill ` +
+        `(${[...new Set(unfillable.values())].join('; ')}); set ${n === 1 ? 'it' : 'them'} by hand before replaying.`
+    )
+  }
   if (valueless > 0) {
     warnings.push(
       `${valueless} input event${valueless === 1 ? '' : 's'} carried no value (for example typing in a rich-text editor) ` +
