@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FlowSchema } from '@shared/flow'
@@ -113,6 +113,91 @@ describe('runFlowFile with a fake browser', () => {
     expect(report.error).toMatch(/could not open the flow's target/)
     expect(report.steps).toEqual([{ id: 's1', action: 'fill', status: 'not_run' }])
     expect(log).toEqual(['open headless=true', 'close'])
+  })
+
+  it('saves a run record with the browser version and viewport when the app passes a record folder', async () => {
+    const file = join(root, 'f.nawi.yaml')
+    writeFileSync(file, FLOW)
+    const runs = join(root, 'runs')
+    const send = (async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Browser.getVersion') return { product: 'Chrome/150.0.1.2', protocolVersion: '1.3' }
+      if (method === 'Runtime.evaluate' && String(params?.expression).includes('innerWidth')) return { result: { value: [1280, 800, 2] } }
+      throw new Error('Target closed')
+    }) as BrowserPage['client']['send']
+    const report = await runFlowFile(
+      { file },
+      { roots: [root], openPage: fakePage([], send), now: () => Date.UTC(2026, 10, 2), record: { dir: runs, appVersion: '9.9.9' } }
+    )
+    expect(report.run_id, JSON.stringify(report)).toMatch(/^20261102T000000000Z-[0-9a-f]{6}$/)
+    const record = JSON.parse(readFileSync(join(report.run_dir!, 'run.json'), 'utf8'))
+    expect(record.environment).toMatchObject({
+      app_version: '9.9.9',
+      browser: { product: 'Chrome/150.0.1.2', protocol_version: '1.3' },
+      viewport: { width: 1280, height: 800, device_scale_factor: 2 }
+    })
+    expect(record.flow.file).toBe(file)
+    expect(record.flow.sha256, 'hash of the exact file that ran').toBe(
+      (await import('node:crypto')).createHash('sha256').update(FLOW).digest('hex')
+    )
+    expect(record).toMatchObject({ status: 'failed', steps: [{ id: 's1', status: 'not_run' }] })
+  })
+
+  it('records a run that failed before a browser was opened, without browser facts', async () => {
+    const file = join(root, 'needs.nawi.yaml')
+    writeFileSync(file, FLOW.replace('"a@b.example"', '"${env.TEST_EMAIL}"'))
+    const runs = join(root, 'runs')
+    const log: string[] = []
+    const report = await runFlowFile({ file }, { roots: [root], openPage: fakePage(log, async () => ({}) as never), record: { dir: runs } })
+    expect(log, 'no browser was opened').toEqual([])
+    const record = JSON.parse(readFileSync(join(report.run_dir!, 'run.json'), 'utf8'))
+    expect(record.error).toMatch(/TEST_EMAIL/)
+    expect(record.environment.browser, 'no browser ran').toBeUndefined()
+    expect(readFileSync(join(report.run_dir!, 'junit.xml'), 'utf8')).toContain('errors="1"')
+  })
+
+  it('still answers with the run result when the record cannot be saved, and says why', async () => {
+    const file = join(root, 'f.nawi.yaml')
+    writeFileSync(file, FLOW)
+    const notAFolder = join(root, 'runs-file')
+    writeFileSync(notAFolder, 'x')
+    const report = await runFlowFile(
+      { file },
+      { roots: [root], openPage: fakePage([], async () => { throw new Error('Target closed') }), record: { dir: notAFolder } }
+    )
+    expect(report.status).toBe('failed')
+    expect(report.run_dir).toBeUndefined()
+    expect(report.record_error, JSON.stringify(report)).toMatch(/EEXIST|ENOTDIR/)
+  })
+
+  it('hashes the raw bytes of the flow file, even when they are not valid UTF-8', async () => {
+    const file = join(root, 'latin1.nawi.yaml')
+    const bytes = Buffer.concat([Buffer.from(`${FLOW}# caf`), Buffer.from([0xe9, 0x0a])]) // a Latin-1 é in a comment
+    writeFileSync(file, bytes)
+    const report = await runFlowFile({ file }, { roots: [root], openPage: fakePage([], async () => { throw new Error('Target closed') }), record: { dir: join(root, 'runs') } })
+    const record = JSON.parse(readFileSync(join(report.run_dir!, 'run.json'), 'utf8'))
+    expect(record.flow.sha256).toBe((await import('node:crypto')).createHash('sha256').update(bytes).digest('hex'))
+  })
+
+  it('reports a record that cannot be named (bad clock) as record_error instead of throwing the run away', async () => {
+    const file = join(root, 'f.nawi.yaml')
+    writeFileSync(file, FLOW)
+    const report = await runFlowFile(
+      { file },
+      { roots: [root], openPage: fakePage([], async () => { throw new Error('Target closed') }), now: () => NaN, record: { dir: join(root, 'runs') } }
+    )
+    expect(report.status).toBe('failed')
+    expect(report.record_error, JSON.stringify(report)).toMatch(/Invalid time value/)
+  })
+
+  it('prunes old runs down to the keep limit after saving', async () => {
+    const file = join(root, 'f.nawi.yaml')
+    writeFileSync(file, FLOW)
+    const runs = join(root, 'runs')
+    let t = Date.UTC(2026, 10, 2)
+    const deps = { roots: [root], openPage: fakePage([], async () => { throw new Error('Target closed') }), now: () => (t += 1000), record: { dir: runs, keep: 2 } }
+    const ids: string[] = []
+    for (let i = 0; i < 3; i++) ids.push((await runFlowFile({ file }, deps)).run_id!)
+    expect(readdirSync(runs).sort()).toEqual(ids.slice(1))
   })
 
   it('does not open a browser for an invalid flow file or a desktop target', async () => {

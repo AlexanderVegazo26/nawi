@@ -23,6 +23,10 @@ describe('nawi run: arguments', () => {
     })
   })
 
+  it('resolves --junit against the shell\'s cwd', () => {
+    expect(parseRunArgs(['/f.nawi.yaml', '--junit', 'out/report.xml'], '/home/u/proj').junit).toBe('/home/u/proj/out/report.xml')
+  })
+
   it.each([
     [[], 'run needs a flow file.'],
     [['a.nawi.yaml', 'b.nawi.yaml'], 'run takes one flow file'],
@@ -33,7 +37,8 @@ describe('nawi run: arguments', () => {
     [['a.nawi.yaml', '--step-timeout-ms', '50'], '--step-timeout-ms takes a whole number from 100 to 600000'],
     [['a.nawi.yaml', '--step-timeout-ms', '600001'], '--step-timeout-ms takes a whole number from 100 to 600000'],
     [['a.nawi.yaml', '--cdp-endpoint', '--headless'], '--cdp-endpoint needs a value.'],
-    [['a.nawi.yaml', '--frobnicate'], 'Unknown flag "--frobnicate"']
+    [['a.nawi.yaml', '--frobnicate'], 'Unknown flag "--frobnicate"'],
+    [['a.nawi.yaml', '--junit', './a.nawi.yaml'], '--junit must name a report file, not the flow file.']
   ])('rejects %j as a usage error', (argv, message) => {
     expect(() => parseRunArgs(argv, '/x'), `argv ${JSON.stringify(argv)}`).toThrow(RunUsageError)
     expect(() => parseRunArgs(argv, '/x')).toThrow(message)
@@ -134,6 +139,13 @@ describe('nawi run: output and exit code', () => {
   it('prints a run-level error (missing inputs, kill switch) before the summary', () => {
     const out = renderRun({ ...failed, error: 'the flow needs a value the run did not provide: ${env.X}', steps: [] })
     expect(out).toContain('error: the flow needs a value the run did not provide: ${env.X}\nFAILED: 0 passed')
+  })
+
+  it('names the run record folder, or why it was not saved, after the summary', () => {
+    expect(renderRun({ ...failed, run_dir: '/u/.config/nawi/runs/20261102T000000000Z-abc123' })).toMatch(
+      /FAILED: .* ms\nrecord: \/u\/\.config\/nawi\/runs\/20261102T000000000Z-abc123$/
+    )
+    expect(renderRun({ ...failed, record_error: 'ENOSPC: no space left' })).toMatch(/\nrecord not saved: ENOSPC: no space left$/)
   })
 
   it('exits 0 only when the run passed', () => {

@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
-import { homedir } from 'node:os'
+import { arch, homedir, platform, release } from 'node:os'
 import { isAbsolute, relative } from 'node:path'
 import {
   FLOW_FILE_SUFFIX,
@@ -14,6 +15,7 @@ import { CdpClient } from './cdp/client'
 import { attachToEndpoint, launchDebugBrowser, parseEndpoint, type LaunchOptions } from './cdp/launcher'
 import { ToolError } from './mcp/errors'
 import { replayFlow, type FlowRun, type ReplayClient, type StepRun } from './replay/replay'
+import { buildRunRecord, newRunId, pruneRuns, writeRunRecord, DEFAULT_KEEP_RUNS, type RunEnvironment } from './run-record'
 
 /**
  * Roadmap F3b: run a flow file from the app (MCP `run_flow`, CLI `nawi run`).
@@ -71,6 +73,13 @@ export interface RunFlowDeps {
   signal?: AbortSignal
   /** Extra launch options for the default `openPage` (tests pass `--no-sandbox` on Linux). */
   launch?: Pick<LaunchOptions, 'prefer' | 'extraArgs'>
+  /**
+   * Where to keep the run record (roadmap F4a): `<dir>/<run-id>/run.json`,
+   * `junit.xml` and step screenshots. Without it nothing is written.
+   */
+  record?: { dir: string; appVersion?: string; keep?: number }
+  /** Injected for tests; defaults to Date.now. */
+  now?: () => number
 }
 
 /** `run_flow`'s answer. Screenshots are summarised: the bytes belong in the run record (F4), not in an RPC reply. */
@@ -82,6 +91,12 @@ export interface FlowRunReport {
   error?: string
   failed_step_id?: string
   steps: Array<Omit<StepRun, 'screenshotPng'> & { screenshot_bytes?: number }>
+  /** Set when the run record was saved. */
+  run_id?: string
+  /** The run record's folder (run.json, junit.xml, steps/). */
+  run_dir?: string
+  /** Why the run record could not be saved; the run's own result is unaffected. */
+  record_error?: string
 }
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
@@ -235,7 +250,7 @@ export function defaultOpenPage(launch: RunFlowDeps['launch'] = {}): OpenPage {
   }
 }
 
-function report(file: string, flow: Flow, run: FlowRun): FlowRunReport {
+function report(file: string, flow: Flow, run: FlowRun, saved: Pick<FlowRunReport, 'run_id' | 'run_dir' | 'record_error'> = {}): FlowRunReport {
   return {
     file,
     flow: flow.name,
@@ -245,14 +260,52 @@ function report(file: string, flow: Flow, run: FlowRun): FlowRunReport {
     ...(run.failedStepId !== undefined ? { failed_step_id: run.failedStepId } : {}),
     steps: run.steps.map(({ screenshotPng, ...step }) =>
       screenshotPng === undefined ? step : { ...step, screenshot_bytes: Buffer.byteLength(screenshotPng, 'base64') }
-    )
+    ),
+    ...saved
   }
+}
+
+/** Resolves to undefined instead of waiting on a page that stopped answering. */
+function settleWithin<T>(ms: number, p: Promise<T>): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms)
+  })
+  return Promise.race([p.catch(() => undefined), timeout]).finally(() => clearTimeout(timer))
+}
+
+/** Browser and viewport facts for the run record; best effort, never fails the run. */
+async function browserFacts(page: BrowserPage): Promise<Pick<RunEnvironment, 'browser' | 'viewport'>> {
+  const out: Pick<RunEnvironment, 'browser' | 'viewport'> = {}
+  const [version, viewport] = await Promise.all([
+    settleWithin(2_000, page.client.send<{ product?: unknown; protocolVersion?: unknown }>('Browser.getVersion')),
+    settleWithin(
+      2_000,
+      page.client.send<{ result?: { value?: unknown } }>(
+        'Runtime.evaluate',
+        { expression: '[innerWidth, innerHeight, devicePixelRatio]', returnByValue: true },
+        page.sessionId
+      )
+    )
+  ])
+  if (typeof version?.product === 'string') {
+    out.browser = {
+      product: version.product,
+      ...(typeof version.protocolVersion === 'string' ? { protocol_version: version.protocolVersion } : {})
+    }
+  }
+  const v = viewport?.result?.value
+  if (Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+    out.viewport = { width: v[0], height: v[1], device_scale_factor: v[2] }
+  }
+  return out
 }
 
 /** Reads, checks and replays one flow file. Step failures are a `failed` report, not a throw. */
 export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {}): Promise<FlowRunReport> {
   const real = await resolveFlowFile(request.file, deps.roots)
-  const parsed = parseFlow(await fs.readFile(real, 'utf8'))
+  const bytes = await fs.readFile(real)
+  const parsed = parseFlow(bytes.toString('utf8'))
   if (!parsed.ok) {
     throw new ToolError('INVALID_ARGUMENTS', `The flow file is not valid:\n${formatFlowErrors(parsed.errors, real)}`, {
       file: request.file
@@ -272,15 +325,40 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
   const secrets: Record<string, string> = Object.assign(Object.create(null), request.secrets)
   const secret = (name: string): string | undefined => secrets[name]
 
+  const now = deps.now ?? Date.now
+
+  /** Saves the run record when the app asked for one, and builds the reply. A failed save is reported, not thrown. */
+  const finish = async (run: FlowRun, facts: Pick<RunEnvironment, 'browser' | 'viewport'> = {}): Promise<FlowRunReport> => {
+    if (!deps.record) return report(request.file, flow, run)
+    try {
+      const runId = newRunId(run.startedAt)
+      const { record, assets } = buildRunRecord({
+        runId,
+        flow: { name: flow.name, file: real, sha256: createHash('sha256').update(bytes).digest('hex') },
+        run,
+        environment: {
+          ...(deps.record.appVersion !== undefined ? { app_version: deps.record.appVersion } : {}),
+          os: { platform: platform(), release: release(), arch: arch() },
+          ...facts
+        }
+      })
+      const dir = await writeRunRecord(deps.record.dir, record, assets)
+      await pruneRuns(deps.record.dir, deps.record.keep ?? DEFAULT_KEEP_RUNS).catch(() => undefined)
+      return report(request.file, flow, run, { run_id: runId, run_dir: dir })
+    } catch (error) {
+      return report(request.file, flow, run, { record_error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   /** A run that ends before any browser is started: every step skipped or not run. */
-  const before = (error: string): FlowRunReport => ({
-    file: request.file,
-    flow: flow.name,
-    status: 'failed',
-    duration_ms: 0,
-    error,
-    steps: flow.steps.map((s) => ({ id: s.id, action: s.action, status: s.disabled ? 'skipped' : 'not_run' }))
-  })
+  const before = (error: string): Promise<FlowRunReport> =>
+    finish({
+      status: 'failed',
+      startedAt: now(),
+      durationMs: 0,
+      error,
+      steps: flow.steps.map((s) => ({ id: s.id, action: s.action, status: s.disabled ? 'skipped' : 'not_run' }))
+    })
 
   // Missing inputs fail the run before a browser is started for nothing.
   try {
@@ -304,16 +382,21 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       file: request.file
     })
   }
+  let run: FlowRun
+  let facts: Pick<RunEnvironment, 'browser' | 'viewport'> = {}
   try {
-    const run = await replayFlow(page.client, flow, {
+    run = await replayFlow(page.client, flow, {
       sessionId: page.sessionId,
       env,
       secret,
       defaultTimeoutMs: request.stepTimeoutMs,
-      signal: deps.signal
+      signal: deps.signal,
+      now
     })
-    return report(request.file, flow, run)
+    if (deps.record) facts = await browserFacts(page)
   } finally {
     await page.close()
   }
+  // The browser is closed before the record is written: disk work never keeps a window open.
+  return finish(run, facts)
 }

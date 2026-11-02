@@ -14,6 +14,7 @@ import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
 import { runFlowFile } from '../flow-run'
+import { DEFAULT_KEEP_RUNS } from '../run-record'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -664,6 +665,7 @@ const runFlow = defineTool({
   description:
     'Replay a flow file (*.nawi.yaml, absolute path inside your home directory) in a browser and report each ' +
     'step: passed/failed/skipped/not_run, the locator that matched, the ones that missed and why, and timings. ' +
+    `Each run is saved as a run record (run_dir: run.json, junit.xml and step screenshots; the newest ${DEFAULT_KEEP_RUNS} are kept). ` +
     'Nawi launches a fresh browser with a throwaway profile (headed unless headless is true), or opens a new tab ' +
     'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +
     'come only from this call\'s env and secrets; secret values are scrubbed from everything reported. A step ' +
@@ -698,7 +700,10 @@ const runFlow = defineTool({
           cdpEndpoint: args.cdp_endpoint,
           stepTimeoutMs: args.step_timeout_ms
         },
-        { signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal }
+        {
+          signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
+          record: { dir: join(app.getPath('userData'), 'runs'), appVersion: app.getVersion() }
+        }
       )
     } finally {
       off()

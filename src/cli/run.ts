@@ -17,12 +17,14 @@ const STEP_TIMEOUT_RANGE = { min: 100, max: 600_000 }
  */
 
 export const RUN_USAGE = `nawi run <file.nawi.yaml> [--headless] [--var name=value ...] [--cdp-endpoint 9222]
-                [--step-timeout-ms 5000] [--json]
+                [--step-timeout-ms 5000] [--junit report.xml] [--json]
 
   Replays a flow file in a fresh browser and prints each step's result.
   --var name=value     Override a var the flow declares (repeatable).
   --headless           Run the browser without a window.
   --cdp-endpoint <p>   Open a tab in a browser already listening for DevTools on this machine.
+  --junit <file>       Also write the run's JUnit XML there (for CI test reporters).
+  Every run is saved as a run record (run.json, junit.xml, step screenshots); its folder is printed.
   ${'${env.NAME}'} values come from this shell's environment; ${'${secret.name}'} values from
   NAWI_SECRET_<name> (or NAWI_SECRET_<NAME>). Only names the flow file or a --var mentions are sent.
   Exit 0 when every step passed, 1 when a step failed or the run could not start.`
@@ -33,6 +35,8 @@ export interface RunArgs {
   headless: boolean
   cdp_endpoint?: string
   step_timeout_ms?: number
+  /** Absolute path to copy the run's JUnit XML to. */
+  junit?: string
   json: boolean
 }
 
@@ -66,6 +70,9 @@ export function parseRunArgs(argv: string[], cwd: string): RunArgs {
         vars[pair.slice(0, eq)] = pair.slice(eq + 1)
         break
       }
+      case '--junit':
+        out.junit = resolve(cwd, value(i++, '--junit'))
+        break
       case '--cdp-endpoint':
         out.cdp_endpoint = value(i++, '--cdp-endpoint')
         break
@@ -87,6 +94,10 @@ export function parseRunArgs(argv: string[], cwd: string): RunArgs {
     }
   }
   if (file === undefined) throw new RunUsageError('run needs a flow file.')
+  // The report path is cleared before the run; it must never be the flow itself.
+  if (out.junit !== undefined && out.junit === resolve(cwd, file)) {
+    throw new RunUsageError('--junit must name a report file, not the flow file.')
+  }
   return { file: resolve(cwd, file), vars, ...out }
 }
 
@@ -159,6 +170,8 @@ export interface RunReport {
   duration_ms: number
   error?: string
   steps: ReportStep[]
+  run_dir?: string
+  record_error?: string
 }
 
 const MARK: Record<string, string> = { passed: 'ok  ', failed: 'FAIL', skipped: 'skip', not_run: '--  ' }
@@ -177,6 +190,8 @@ export function renderRun(report: RunReport): string {
     `${report.status === 'passed' ? 'PASSED' : 'FAILED'}: ${count('passed')} passed, ${count('failed')} failed, ` +
       `${count('not_run')} not run, ${count('skipped')} skipped in ${report.duration_ms} ms`
   )
+  if (report.run_dir) lines.push(`record: ${report.run_dir}`)
+  if (report.record_error) lines.push(`record not saved: ${report.record_error}`)
   return lines.join('\n')
 }
 

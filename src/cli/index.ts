@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync, statSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { NOT_RUNNING, readEndpoint } from '../mcp/endpoint'
 import { postJson, type PostResult } from '../mcp/post'
 import {
@@ -243,7 +244,15 @@ async function runCommand(argv: string[]): Promise<void> {
   // Unreadable or not a flow file here: the app reports the real problem.
   const text = readFlowText(run.file, { statSync, readFileSync }) ?? ''
   const { env, secrets } = inputsFor(flowReferences(text, Object.values(run.vars)), process.env)
-  const { json, ...args } = run
+  const { json, junit, ...args } = run
+  // A report left from an earlier run must not be read as this run's result if this one errors out.
+  if (junit !== undefined) {
+    try {
+      rmSync(junit, { force: true })
+    } catch (err) {
+      fail(`Cannot use ${junit} for the JUnit report: ${err instanceof Error ? err.message : String(err)}`, EXIT_USAGE)
+    }
+  }
   const result = (await callTool('run_flow', { ...args, env, secrets })) as {
     structuredContent?: RunReport
   }
@@ -252,6 +261,16 @@ async function runCommand(argv: string[]): Promise<void> {
     fail(`Nawi returned an unexpected run_flow result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
   }
   process.stdout.write(`${json ? JSON.stringify(report, null, 2) : renderRun(report)}\n`)
+  if (junit !== undefined) {
+    // CI asked for a report file: a missing one must fail the job, not leave the reporter reading a stale file.
+    if (!report.run_dir) fail(`No JUnit report: the run record was not saved (${report.record_error ?? 'no run_dir'}).`, EXIT_APP_ERROR)
+    try {
+      mkdirSync(dirname(junit), { recursive: true })
+      copyFileSync(join(report.run_dir, 'junit.xml'), junit)
+    } catch (err) {
+      fail(`Could not write the JUnit report to ${junit}: ${err instanceof Error ? err.message : String(err)}`, EXIT_APP_ERROR)
+    }
+  }
   process.exit(runExitCode(report))
 }
 

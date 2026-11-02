@@ -186,6 +186,34 @@ steps:
     expect(r.stdout).toContain('FAILED: 0 passed, 0 failed, 2 not run, 0 skipped')
   })
 
+  test('--junit writes the run record\'s JUnit XML, creating the folder; the record folder is printed', async () => {
+    const file = join(flowDir, 'needs-junit.nawi.yaml')
+    await fs.writeFile(file, NEEDS_ENV)
+    const report = join(flowDir, 'reports', 'nested', 'junit.xml')
+    const r = await run(['run', file, '--headless', '--junit', report], config())
+    expect(r.code, r.stderr).toBe(1)
+    const dir = /^record: (.+)$/m.exec(r.stdout)?.[1]
+    expect(dir, r.stdout).toBeTruthy()
+    // realpath both sides: Windows may hand back the 8.3 short form of the temp folder.
+    const runsRoot = await fs.realpath(join(userDataDir, 'runs'))
+    expect((await fs.realpath(dir!)).startsWith(runsRoot), `record folder ${dir} should be under ${runsRoot}`).toBe(true)
+    const xml = await fs.readFile(report, 'utf8')
+    expect(xml).toContain('<testsuite name="Needs env" tests="3" failures="0" errors="1" skipped="2"')
+    expect(xml, 'same report as in the run record').toBe(await fs.readFile(join(dir!, 'junit.xml'), 'utf8'))
+    const record = JSON.parse(await fs.readFile(join(dir!, 'run.json'), 'utf8'))
+    expect(record).toMatchObject({ version: 1, status: 'failed', flow: { name: 'Needs env' } })
+  })
+
+  test('--junit removes a stale report when the run cannot start, so CI never reads an old result', async () => {
+    const file = join(flowDir, 'notes-junit.txt')
+    await fs.writeFile(file, 'not a flow')
+    const report = join(flowDir, 'stale.xml')
+    await fs.writeFile(report, '<testsuites tests="1" failures="0"/>')
+    const r = await run(['run', file, '--junit', report], config())
+    expect(r.code).toBe(1)
+    await expect(fs.access(report), 'the stale report must be gone').rejects.toThrow()
+  })
+
   test('exit 1 — --var for a var the flow does not declare is refused', async () => {
     const file = join(flowDir, 'novars.nawi.yaml')
     await fs.writeFile(file, NEEDS_ENV)

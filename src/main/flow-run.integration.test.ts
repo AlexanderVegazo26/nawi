@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -63,6 +63,30 @@ describeWithBrowser('runFlowFile against a real Chromium', () => {
     expect(report.flow).toBe('Sign in')
     expect(report.steps[5].screenshot_bytes, 'the screenshot is summarised, not inlined').toBeGreaterThan(1000)
     expect(JSON.stringify(report), 'no screenshot bytes and no secret in the reply').not.toMatch(new RegExp(`screenshotPng|${PASSWORD}`))
+  }, 60_000)
+
+  it('saves a run record: run.json, junit.xml and the screenshot step\'s PNG, with no secret in any file', async () => {
+    const file = write('sign-in-record.nawi.yaml', SIGN_IN)
+    const runs = join(root, 'runs')
+    const report = await runFlowFile(
+      { file, headless: true, env: { TEST_EMAIL: 'a@b.example' }, secrets: { pw: PASSWORD }, vars: { plan: 'Professional' } },
+      deps({ record: { dir: runs, appVersion: '0.1.0-test' } })
+    )
+    expect(report.status, why(report)).toBe('passed')
+    expect(report.run_dir, why(report)).toBe(join(runs, report.run_id!))
+    const dir = report.run_dir!
+    const record = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'))
+    expect(record).toMatchObject({ version: 1, status: 'passed', flow: { name: 'Sign in' }, totals: { passed: 6, failed: 0 } })
+    expect(record.environment.browser?.product, JSON.stringify(record.environment)).toMatch(/Chrom/)
+    expect(record.environment.viewport?.width, JSON.stringify(record.environment)).toBeGreaterThan(0)
+    const png = readFileSync(join(dir, record.steps[5].screenshot))
+    expect(png.subarray(0, 8).toString('hex'), 'the screenshot file is a PNG').toBe('89504e470d0a1a0a')
+    expect(png.length, 'same bytes the reply summarised').toBe(report.steps[5].screenshot_bytes)
+    expect(readFileSync(join(dir, 'junit.xml'), 'utf8')).toContain('tests="6" failures="0" errors="0" skipped="0"')
+    for (const name of ['run.json', 'junit.xml']) {
+      expect(readFileSync(join(dir, name), 'utf8'), `${name} must not hold the secret`).not.toContain(PASSWORD)
+    }
+    expect(readdirSync(runs), 'no temporary folder left behind').toEqual([report.run_id])
   }, 60_000)
 
   it('reports the failing step and leaves the rest not_run; the var default applies without an override', async () => {

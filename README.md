@@ -214,7 +214,7 @@ Nawi exposes fourteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer`, `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
-and `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value]`). The MCP server, its dispatch layer, the state
+and `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--junit report.xml]`). The MCP server, its dispatch layer, the state
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 
@@ -321,6 +321,22 @@ alone.
   passed, 1 otherwise (`--json` for the full report). Pausing agent access, or
   pressing Ctrl-C on `nawi run`, stops a run after the step in progress.
   Code: `src/main/flow-run.ts`, `src/cli/run.ts`.
+- **Run records** — every run, passed or failed (also one that stopped before a
+  browser started), is saved in the app's data folder as `runs/<run-id>/`:
+  `run.json` (format version 1: the flow's name, path and SHA-256, start time,
+  duration, status, per step the status, start time, duration, the locator that
+  matched and the ones that missed, the error and any dialogs; the app, OS and
+  browser versions and the page's viewport), `junit.xml` (one test case per
+  step, for CI test reporters) and `steps/NNN-<step-id>.png` for each
+  `screenshot` step. The folder is written under a temporary name and renamed,
+  so a reader never sees half a run; the newest 200 runs are kept. Secret
+  values are scrubbed from the text; screenshots are saved as the page showed
+  them, so a secret typed into a plain text field (not a password field) is
+  visible in a later screenshot. `run_flow` answers with `run_id` and
+  `run_dir`; `nawi run` prints `record: <folder>`, and `--junit <file>` copies
+  the JUnit XML there (an old report at that path is removed first, so a run
+  that cannot start never leaves a stale result for CI). Code:
+  `src/main/run-record.ts`.
 
 ## Keyboard shortcuts
 
@@ -412,7 +428,9 @@ CDP selectors and the MCP projection/revision model.
 ## Known gaps
 
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
-  the UI, and a run is not stored as a run record yet.** Secrets come from
+  the UI.** Run records don't capture console errors, failed requests,
+  before/after screenshots per step or the final URL yet, and there is no HTML
+  report or UI to browse them. Secrets come from
   `NAWI_SECRET_*` only (no OS keychain or prompt yet).
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so
