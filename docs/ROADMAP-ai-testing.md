@@ -18,6 +18,8 @@ roadmap is to make that loop the most useful one for people **and** AI agents:
    ready-made integrations for agent harnesses, so Nawi is a tool other systems call, not only an app.
 7. **Mobile that configures itself**: drop an app file in, and Nawi opens what it needs, studies the app and
    suggests how to test it (Track M below).
+8. **Built on the real engines**: browser DevTools data for web recording, k6 for load, and each mobile platform's
+   native test libraries for execution (Track E below).
 
 ## Principles
 
@@ -32,7 +34,7 @@ roadmap is to make that loop the most useful one for people **and** AI agents:
 
 ## Slices (build order)
 
-Order: F4c (HTML report) → AI11 → AI12 → AI13 → M1 → M2 → M3 → AI1 + F6 → M5 → AI2 + F5 → AI3 → AI5 → AI4 → M4 → AI9 → AI14 → M6 → M7 → AI6 → AI7 → AI8 → M8 → M9 → AI10.
+Order: F4c (HTML report) → AI11 → AI12 → AI13 → M1 → M2 → M3 → AI1 + F6 → M5 → DT1 → AI2 + F5 → AI3 → AI5 → AI4 → M4 → MN1 → AI9 → LT1 → AI14 → M6 → M7 → AI6 → AI7 → AI8 → M8 → M9 → AI10.
 
 ### AI1 — Intent and layered locators
 - Step field `intent` (one plain-language sentence: what the step is for), optional and additive to `version: 1`.
@@ -210,6 +212,48 @@ config without confirmation.
 
 ### M9 — Cross-framework depth
 - Flutter semantics tree, React Native test ids, WebView contexts driven over CDP from the same flow.
+
+## Track E — Engines: DevTools, load testing and native mobile test libraries
+
+Principle: do not re-invent what the platforms already ship. Nawi connects to the real engines, adds what they lack
+(one timeline across them, flows, AI, proposals) and ingests their results into the same run record.
+
+### DT1 — DevTools-grade browser recording
+- Attach to the debug browser over CDP (the existing launcher) and record, per step and on one shared clock:
+  network (HAR, redacted), console, DOM mutations, performance trace (a standard trace file that opens in the
+  browser's own performance panel), code coverage, accessibility tree, storage and cookie changes, and screenshots.
+- A single **step-correlated timeline** in Nawi: click a step to see what the page, network and CPU did during it.
+  This is the "better than the panels" part: DevTools shows each stream separately, Nawi lines them up per step.
+- Open the real DevTools front end against the same session when someone wants the full panels (D1), and export
+  HAR, trace and an accessibility snapshot for other tools.
+- Optional driver for non-Chromium engines through WebDriver BiDi, behind the same flow format, only if a user needs it.
+- Done when: a recorded flow produces a run with the correlated timeline, the trace file opens in the browser's
+  performance panel, and secrets are masked in every artifact.
+
+### MN1 — Native mobile test libraries
+- Default path stays the device-level driver (M5), which works on any apk with no source. When the project's own
+  test setup is available, Nawi can use the platform's native libraries instead, for speed and fidelity:
+  Android instrumentation (Espresso, UI Automator) via `adb shell am instrument`, iOS XCUITest through
+  `xcodebuild test` on a macOS host, and Flutter `integration_test`.
+- Two directions: run an existing native suite and ingest its results (JUnit, result bundles) into the run record
+  with screenshots and logs; and export a Nawi flow as a native test (Kotlin, Swift, Dart) like the Playwright export (F8).
+- Detect which libraries the project already uses (from the build files in a dropped project, or the manifest and
+  test apk) and suggest the right backend in the mobile profile (M2).
+- Done when: a sample project's native suite runs from `nawi mobile test`, appears in the same report as flow runs,
+  and one exported flow compiles and passes as a native test.
+
+### LT1 — Load testing with k6 (background)
+- Generate a k6 script from a flow's recorded traffic (the HAR): correlated requests, think times, variables from
+  data-driven inputs (A2). Ramp, soak and spike profiles with thresholds (p95 latency, error rate) as pass/fail.
+- Run k6 as a managed background process (queued, resource-capped, cancellable), stream its metrics into the run
+  record and the report, and keep the raw k6 summary and time series.
+- **UI under load**: run a browser or mobile flow while a load profile runs, to see what a real user sees when the
+  system is busy. Correlate the two timelines.
+- Safety is part of the feature: target allowlist, an explicit confirmation before the first run against a new
+  host, hard caps on virtual users and duration, refusing non-local hosts unless allowed, and no secrets in scripts.
+- CLI `nawi load run|from-flow|results` and matching MCP tools (AI11, AI12).
+- Done when: a flow becomes a k6 script that passes a threshold against a local fixture server, a failing threshold
+  fails the run with the numbers in the report, and the safety checks block a non-allowlisted host.
 
 ## What this roadmap leaves out
 
