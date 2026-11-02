@@ -175,12 +175,30 @@
     return out
   }
 
-  /** Focus a text field and select its contents, so typed text replaces them. */
-  function focusForFill(selectors) {
+  /**
+   * Fields this document received a secret in. Screenshots mask them
+   * (`mask`), even when the step's locators no longer find them.
+   */
+  var secretFields = []
+  /** What `mask` changed, so `unmask` puts each inline style back exactly. */
+  var masked = []
+  /**
+   * Which `mask` call the current mask belongs to. A capture that finishes
+   * late must not unmask the fields under a newer capture.
+   */
+  var maskGeneration = 0
+  var MASK_PROP = '-webkit-text-security'
+
+  /**
+   * Focus a text field and select its contents, so typed text replaces them.
+   * `secret`: the value about to be typed holds a secret; remember the field.
+   */
+  function focusForFill(selectors, secret) {
     var r = locate(selectors)
     if (!r.el) return missing(r)
     var out = base(r)
     var el = r.el
+    if (secret && secretFields.indexOf(el) === -1) secretFields.push(el)
     if (!isVisible(el)) {
       out.blocked = 'it is not visible'
       return out
@@ -307,8 +325,52 @@
     return out
   }
 
+  /**
+   * Draw every field that received a secret as discs, for a screenshot: the
+   * ones marked by `focusForFill` that are still in the page, plus whatever
+   * each selector list in `lists` resolves to now. Returns the generation to
+   * hand back to `unmask`. The browser masks password inputs already; this
+   * covers secrets typed into ordinary text fields, text areas and editable
+   * elements.
+   */
+  function mask(lists) {
+    restore()
+    var els = secretFields.filter(function (el) {
+      return el.isConnected
+    })
+    for (var i = 0; i < lists.length; i++) {
+      var r = locate(lists[i])
+      if (r.el && els.indexOf(r.el) === -1) els.push(r.el)
+    }
+    for (var j = 0; j < els.length; j++) {
+      var style = els[j].style
+      masked.push({ el: els[j], value: style.getPropertyValue(MASK_PROP), priority: style.getPropertyPriority(MASK_PROP) })
+      style.setProperty(MASK_PROP, 'disc', 'important')
+    }
+    maskGeneration++
+    return { found: true, index: -1, tried: [], generation: maskGeneration }
+  }
+
+  /** Undo `mask` number `generation`, unless a newer mask replaced it. */
+  function unmask(generation) {
+    if (generation === maskGeneration) restore()
+    return { found: true, index: -1, tried: [] }
+  }
+
+  /** Put each masked field's own inline value back (usually none). */
+  function restore() {
+    for (var i = 0; i < masked.length; i++) {
+      var m = masked[i]
+      if (m.value) m.el.style.setProperty(MASK_PROP, m.value, m.priority)
+      else m.el.style.removeProperty(MASK_PROP)
+    }
+    masked = []
+  }
+
   window.__nawiReplay = {
     version: 1,
+    mask: mask,
+    unmask: unmask,
     state: state,
     point: point,
     focusForFill: focusForFill,

@@ -11,6 +11,8 @@ import type { FlowRun, StepRun } from './replay/replay'
  *     runs/<run-id>/run.json            what ran, where, and how each step went
  *     runs/<run-id>/junit.xml           the same result for CI test reporters
  *     runs/<run-id>/steps/NNN-<id>.png  screenshots the flow's `screenshot` steps took
+ *     runs/<run-id>/steps/NNN-<id>.before.jpg / .after.jpg
+ *                                       the page around each step (F4b2), when the run took them
  *
  * Per step it also keeps what the page did meanwhile (F4b): console errors,
  * failed requests (status >= 400 or no response) and the URL after the step.
@@ -20,9 +22,9 @@ import type { FlowRun, StepRun } from './replay/replay'
  * an app. The folder is written under a temporary name and renamed into place,
  * so a reader never sees a half-written run. The text in it comes from the
  * replayer's report, which has already scrubbed secret values, and typed
- * values are never in it. Screenshots are saved as the page showed them:
- * password fields are masked by the browser, but a secret typed into an
- * ordinary text field is visible in a later screenshot step's PNG.
+ * values are never in it. In every screenshot, fields the run typed a secret
+ * into are drawn as discs (the replayer masks them before capturing); a secret
+ * the page itself echoes elsewhere as text is not masked.
  */
 
 export const RUN_RECORD_VERSION = 1
@@ -33,7 +35,7 @@ export const DEFAULT_KEEP_RUNS = 200
 export const RUN_ID_RE = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/
 const STEP_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'
 const STEP_ID_RE = new RegExp(`^${STEP_ID}$`)
-const ASSET_RE = new RegExp(`^steps/\\d{3}(?:-${STEP_ID})?\\.png$`)
+const ASSET_RE = new RegExp(`^steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.jpg)$`)
 /** Folders a write in progress uses; one older than this was left by a crash. */
 const STALE_TEMP_MS = 60 * 60 * 1000
 
@@ -62,7 +64,7 @@ export interface RecordedEvidence {
 }
 
 export interface RecordedStep
-  extends Omit<StepRun, 'screenshotPng' | 'startedAt' | 'durationMs' | EvidenceKey>,
+  extends Omit<StepRun, 'screenshotPng' | 'shots' | 'startedAt' | 'durationMs' | EvidenceKey>,
     RecordedEvidence {
   /** Page URL after the step, scrubbed of secrets and token-like parameters. */
   url?: string
@@ -71,6 +73,18 @@ export interface RecordedStep
   duration_ms?: number
   /** Path of the step's screenshot, relative to the run folder. */
   screenshot?: string
+  /**
+   * The page before and after the step (JPEG), relative to the run folder. A
+   * step's `before` is usually the previous step's `after` file: the same
+   * moment, stored once.
+   */
+  shots?: ShotFiles
+}
+
+/** Screenshot files of one step, relative to the run folder. */
+export interface ShotFiles {
+  before?: string
+  after?: string
 }
 
 export interface RunRecord {
@@ -111,9 +125,21 @@ export interface RunRecordInput {
 export function buildRunRecord(input: RunRecordInput): { record: RunRecord; assets: Map<string, Buffer> } {
   const { run } = input
   const assets = new Map<string, Buffer>()
+  // Step ids are schema-checked already; checked again because this one becomes a file name.
+  const stem = (index: number, id: string): string => `steps/${String(index + 1).padStart(3, '0')}${STEP_ID_RE.test(id) ? `-${id}` : ''}`
+  /** File of each shot already written, by its base64 text: an identical shot is stored once. */
+  const shotFiles = new Map<string, string>()
+  const shotFile = (data: string, name: string): string => {
+    const known = shotFiles.get(data)
+    if (known !== undefined) return known
+    assets.set(name, Buffer.from(data, 'base64'))
+    shotFiles.set(data, name)
+    return name
+  }
   const steps = run.steps.map((step, index): RecordedStep => {
     const {
       screenshotPng,
+      shots,
       startedAt,
       durationMs,
       consoleErrors,
@@ -131,10 +157,15 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     if (startedAt !== undefined) out.started_at = new Date(startedAt).toISOString()
     if (durationMs !== undefined) out.duration_ms = durationMs
     if (screenshotPng !== undefined) {
-      // Step ids are schema-checked already; checked again because this one becomes a file name.
-      const name = `steps/${String(index + 1).padStart(3, '0')}${STEP_ID_RE.test(step.id) ? `-${step.id}` : ''}.png`
+      const name = `${stem(index, step.id)}.png`
       assets.set(name, Buffer.from(screenshotPng, 'base64'))
       out.screenshot = name
+    }
+    if (shots && (shots.before !== undefined || shots.after !== undefined)) {
+      out.shots = {
+        ...(shots.before !== undefined ? { before: shotFile(shots.before, `${stem(index, step.id)}.before.jpg`) } : {}),
+        ...(shots.after !== undefined ? { after: shotFile(shots.after, `${stem(index, step.id)}.after.jpg`) } : {})
+      }
     }
     return out
   })
@@ -188,6 +219,7 @@ function failureDetail(step: RecordedStep): string {
   }
   if (step.matched) lines.push(`  matched locator ${step.matched.index} ${describe(step.matched.selector as Record<string, unknown>)}`)
   if (step.url !== undefined) lines.push(`  page: ${step.url}`)
+  if (step.shots?.after !== undefined) lines.push(`  screenshot after the step: ${step.shots.after} (in the run folder)`)
   lines.push(...evidenceLines(step).map((l) => `  ${l}`))
   return lines.join('\n')
 }

@@ -35,6 +35,18 @@ export interface ReplayClient extends ProbeClient {
 
 export const DEFAULT_STEP_TIMEOUT_MS = 5_000
 const POLL_MS = 50
+/** A page screenshot that takes longer than this is skipped, never waited on. */
+export const SHOT_TIMEOUT_MS = 3_000
+/** JPEG quality of the per-step page screenshots: readable text, a fraction of a PNG's size. */
+const SHOT_QUALITY = 60
+
+/**
+ * Page screenshots around each step (roadmap F4b2): `all` = the page before
+ * the first step and after every step (a step's "before" is the previous
+ * step's "after", taken just as it started); `failed` = only the page the
+ * failing step left; `off` = none.
+ */
+export type StepScreenshots = 'all' | 'failed' | 'off'
 
 export type StepStatus = 'passed' | 'failed' | 'skipped' | 'not_run'
 
@@ -66,6 +78,13 @@ export interface StepRun extends StepEvidence {
   error?: string
   /** `screenshot` steps: the PNG, base64. */
   screenshotPng?: string
+  /**
+   * The viewport before and after the step, base64 JPEG (`stepScreenshots`).
+   * `before` is the very string of the previous step's `after` when nothing
+   * ran in between, so a writer can store it once. Fields that received a
+   * secret are masked in it.
+   */
+  shots?: { before?: string; after?: string }
   /** JavaScript dialogs the step opened; the replayer dismisses them (accepts `beforeunload`). */
   dialogs?: Array<{ type: string; message: string }>
 }
@@ -99,6 +118,8 @@ export interface ReplayOptions extends FlowInputs {
    * finishes, the rest are `not_run`, and the run fails with the signal's reason.
    */
   signal?: AbortSignal
+  /** Page screenshots around each step; default `off`. */
+  stepScreenshots?: StepScreenshots
 }
 
 /** Shapes returned by `inject/replay.js`. */
@@ -118,6 +139,8 @@ interface PageAnswer {
   /** focusForFill: the field ignores typed text (date, time...); set its value instead. */
   setValue?: boolean
   box?: { x: number; y: number; width: number; height: number }
+  /** mask: the token its unmask takes. */
+  generation?: number
 }
 
 class StepFailure extends Error {
@@ -306,7 +329,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
     } catch (error) {
       run = abort(interp.redact(`could not open the flow's target: ${(error as Error).message ?? error}`))
     }
-    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence)
+    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence, options.stepScreenshots ?? 'off')
   } finally {
     evidence.stop()
     offDialog?.()
@@ -342,11 +365,14 @@ async function runSteps(
   startedAt: number,
   now: () => number,
   signal: AbortSignal | undefined,
-  evidence: EvidenceCollector
+  evidence: EvidenceCollector,
+  shots: StepScreenshots
 ): Promise<FlowRun> {
   const steps: StepRun[] = []
   let failed: string | undefined
   let stopped: string | undefined
+  // The latest "after" shot; a disabled step in between changes nothing on the page.
+  let lastAfter: string | undefined
   for (const [index, step] of flow.steps.entries()) {
     if (step.disabled) {
       steps.push({ id: step.id, action: step.action, status: 'skipped' })
@@ -357,9 +383,16 @@ async function runSteps(
       steps.push({ id: step.id, action: step.action, status: 'not_run' })
       continue
     }
+    const before = shots === 'all' ? (lastAfter ?? (await runner.capturePage())) : undefined
     evidence.beginStep(index)
     const run = await runner.run(step)
     await evidence.endStep()
+    // After endStep: the URL read gave a navigation the step started time to land.
+    const after = shots === 'all' || (shots === 'failed' && run.status === 'failed') ? await runner.capturePage() : undefined
+    lastAfter = after
+    if (before !== undefined || after !== undefined) {
+      run.shots = { ...(before !== undefined ? { before } : {}), ...(after !== undefined ? { after } : {}) }
+    }
     steps.push(run)
     if (run.status === 'failed') failed = step.id
   }
@@ -384,6 +417,11 @@ class StepRunner {
   ) {}
 
   private dialogs: Array<{ type: string; message: string }> = []
+  /** Locators of fields this run typed a secret into; screenshots mask them. */
+  private readonly secretTargets: Selector[][] = []
+  private readonly secretTargetKeys = new Set<string>()
+  /** Set once a page screenshot timed out: the page cannot be captured, so later steps don't wait on it again. */
+  private shotsGaveUp = false
 
   noteDialog(dialog: { type: string; message: string }): void {
     this.dialogs.push(dialog)
@@ -456,8 +494,14 @@ class StepRunner {
       }
       case 'fill': {
         const sel = step.target.selectors
-        const at = await this.waitFor(deadline, timeoutMs, sel, () => s.call('focusForFill', sel))
         const value = this.interp.interpolate(step.value)
+        // redact() changes text only when it holds a secret, also one reached through a var.
+        const secret = value !== '' && this.interp.redact(value) !== value
+        if (secret && !this.secretTargetKeys.has(JSON.stringify(sel))) {
+          this.secretTargetKeys.add(JSON.stringify(sel))
+          this.secretTargets.push(sel)
+        }
+        const at = await this.waitFor(deadline, timeoutMs, sel, () => s.call('focusForFill', sel, secret))
         if (at.setValue) {
           // date/time-like inputs ignore typed text: set the value and check it took.
           const set = await s.call('setValue', sel, value)
@@ -531,13 +575,57 @@ class StepRunner {
           if (b.width <= 0 || b.height <= 0) throw new StepFailure('the element has no area to capture', at)
           clip = { x: b.x, y: b.y, width: b.width, height: b.height, scale: 1 }
         }
-        const shot = await s.send<{ data: string }>('Page.captureScreenshot', {
-          format: 'png',
-          ...(clip ? { clip, captureBeyondViewport: true } : {})
-        })
+        const shot = await this.masked(() =>
+          s.send<{ data: string }>('Page.captureScreenshot', {
+            format: 'png',
+            ...(clip ? { clip, captureBeyondViewport: true } : {})
+          })
+        )
         return { ...(at ?? { found: true, index: -1, tried: [] }), png: shot.data } as PageAnswer
       }
     }
+  }
+
+  /**
+   * Runs `capture` with every field that received a secret drawn as discs,
+   * then restores them. Fails closed: when the page could not be masked (no
+   * helpers, mid-navigation) nothing is captured, since the old frame may
+   * still show the secret.
+   */
+  private async masked<T>(capture: () => Promise<T>): Promise<T> {
+    if (this.secretTargets.length === 0) return capture()
+    const mask = await this.session.call('mask', this.secretTargets)
+    if (typeof mask?.generation !== 'number') {
+      throw new StepFailure('the fields that received a secret could not be masked, so no screenshot was taken')
+    }
+    try {
+      return await capture()
+    } finally {
+      await this.session.call('unmask', mask.generation).catch(() => undefined)
+    }
+  }
+
+  /**
+   * The viewport as a base64 JPEG for the run record, secrets masked; undefined
+   * when it cannot be masked or captured within SHOT_TIMEOUT_MS (after a
+   * timeout, for the rest of the run). Never throws: a missing screenshot must
+   * not change the run's result.
+   */
+  async capturePage(): Promise<string | undefined> {
+    if (this.shotsGaveUp) return undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const shot = this.masked(() =>
+      this.session.send<{ data?: unknown }>('Page.captureScreenshot', { format: 'jpeg', quality: SHOT_QUALITY })
+    )
+      .then((r) => (typeof r?.data === 'string' && r.data !== '' ? r.data : undefined))
+      .catch(() => undefined)
+    const timeout = new Promise<'timeout'>((done) => (timer = setTimeout(() => done('timeout'), SHOT_TIMEOUT_MS)))
+    const result = await Promise.race([shot, timeout]).finally(() => clearTimeout(timer))
+    if (result === 'timeout') {
+      this.shotsGaveUp = true
+      return undefined
+    }
+    return result
   }
 
   private async assert(

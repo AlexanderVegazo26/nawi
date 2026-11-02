@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 /** Mirrors the app's limits (`src/main/flow-run.ts`, the run_flow schema) so a bad value is a usage error here. */
 export const FLOW_FILE_SUFFIX = '.nawi.yaml'
@@ -17,13 +17,15 @@ const STEP_TIMEOUT_RANGE = { min: 100, max: 600_000 }
  */
 
 export const RUN_USAGE = `nawi run <file.nawi.yaml> [--headless] [--var name=value ...] [--cdp-endpoint 9222]
-                [--step-timeout-ms 5000] [--junit report.xml] [--json]
+                [--step-timeout-ms 5000] [--screenshots all|failed|off] [--junit report.xml] [--json]
 
   Replays a flow file in a fresh browser and prints each step's result.
   --var name=value     Override a var the flow declares (repeatable).
   --headless           Run the browser without a window.
   --cdp-endpoint <p>   Open a tab in a browser already listening for DevTools on this machine.
   --junit <file>       Also write the run's JUnit XML there (for CI test reporters).
+  --screenshots <m>    Page screenshots in the record: all (before/after every step, the default),
+                       failed (only the page the failing step left) or off. Secret fields are masked.
   Every run is saved as a run record (run.json, junit.xml, step screenshots); its folder is printed.
   ${'${env.NAME}'} values come from this shell's environment; ${'${secret.name}'} values from
   NAWI_SECRET_<name> (or NAWI_SECRET_<NAME>). Only names the flow file or a --var mentions are sent.
@@ -35,6 +37,7 @@ export interface RunArgs {
   headless: boolean
   cdp_endpoint?: string
   step_timeout_ms?: number
+  screenshots?: 'all' | 'failed' | 'off'
   /** Absolute path to copy the run's JUnit XML to. */
   junit?: string
   json: boolean
@@ -76,6 +79,14 @@ export function parseRunArgs(argv: string[], cwd: string): RunArgs {
       case '--cdp-endpoint':
         out.cdp_endpoint = value(i++, '--cdp-endpoint')
         break
+      case '--screenshots': {
+        const mode = value(i++, '--screenshots')
+        if (mode !== 'all' && mode !== 'failed' && mode !== 'off') {
+          throw new RunUsageError(`--screenshots takes all, failed or off, got "${mode}".`)
+        }
+        out.screenshots = mode
+        break
+      }
       case '--step-timeout-ms': {
         const raw = value(i++, '--step-timeout-ms')
         const ms = Number(raw)
@@ -166,6 +177,8 @@ interface ReportStep {
   consoleErrorsDropped?: number
   failedRequests?: Array<{ method: string; url: string; status?: number; error?: string }>
   failedRequestsDropped?: number
+  /** Screenshot paths inside run_dir. */
+  shots?: { before?: string; after?: string }
 }
 
 type ReportEvidence = Pick<ReportStep, 'consoleErrors' | 'consoleErrorsDropped' | 'failedRequests' | 'failedRequestsDropped'>
@@ -219,6 +232,9 @@ export function renderRun(report: RunReport): string {
     const ms = step.durationMs !== undefined ? ` (${step.durationMs} ms)` : ''
     lines.push(`  ${MARK[step.status] ?? step.status} ${step.id} ${step.action}${ms}`)
     if (step.error) lines.push(`       ${step.error}`)
+    if (step.status === 'failed' && step.shots?.after !== undefined && report.run_dir) {
+      lines.push(`       screenshot: ${join(report.run_dir, step.shots.after)}`)
+    }
     lines.push(...evidenceLines(step, '       '))
   }
   const count = (s: string): number => report.steps.filter((x) => x.status === s).length

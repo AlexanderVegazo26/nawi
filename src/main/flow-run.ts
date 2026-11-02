@@ -14,9 +14,18 @@ import {
 import { CdpClient } from './cdp/client'
 import { attachToEndpoint, launchDebugBrowser, parseEndpoint, type LaunchOptions } from './cdp/launcher'
 import { ToolError } from './mcp/errors'
-import { replayFlow, type FlowRun, type ReplayClient, type StepRun } from './replay/replay'
+import { replayFlow, type FlowRun, type ReplayClient, type StepRun, type StepScreenshots } from './replay/replay'
 import type { StepEvidence } from './replay/evidence'
-import { buildRunRecord, newRunId, pruneRuns, writeRunRecord, DEFAULT_KEEP_RUNS, type RunEnvironment } from './run-record'
+import {
+  buildRunRecord,
+  newRunId,
+  pruneRuns,
+  writeRunRecord,
+  DEFAULT_KEEP_RUNS,
+  type RecordedStep,
+  type RunEnvironment,
+  type ShotFiles
+} from './run-record'
 
 /**
  * Roadmap F3b: run a flow file from the app (MCP `run_flow`, CLI `nawi run`).
@@ -54,6 +63,11 @@ export interface FlowRunRequest {
   cdpEndpoint?: string
   /** Fallback per-step timeout for steps without `timeout_ms`. */
   stepTimeoutMs?: number
+  /**
+   * Page screenshots around each step for the run record (F4b2). Default
+   * `all` when a record is kept; never taken without one.
+   */
+  screenshots?: StepScreenshots
 }
 
 /** A page the run may drive, and how to let go of it. */
@@ -98,7 +112,7 @@ export interface FlowRunReport {
   duration_ms: number
   error?: string
   failed_step_id?: string
-  steps: Array<Omit<StepRun, 'screenshotPng'> & { screenshot_bytes?: number }>
+  steps: Array<Omit<StepRun, 'screenshotPng' | 'shots'> & { screenshot_bytes?: number; shots?: ShotFiles }>
   /** Console errors and failed requests while the target was opening (F4b). */
   opening?: FlowRun['opening']
   /** The page's URL when the run ended, scrubbed. */
@@ -277,7 +291,17 @@ export function trimEvidence<T extends Omit<StepEvidence, 'url'>>(e: T): T {
   return out
 }
 
-function report(file: string, flow: Flow, run: FlowRun, saved: Pick<FlowRunReport, 'run_id' | 'run_dir' | 'record_error'> = {}): FlowRunReport {
+/**
+ * `recorded`: the saved record's steps, whose `shots` are file paths inside
+ * run_dir; the reply carries those paths, never the image bytes.
+ */
+function report(
+  file: string,
+  flow: Flow,
+  run: FlowRun,
+  saved: Pick<FlowRunReport, 'run_id' | 'run_dir' | 'record_error'> = {},
+  recorded?: RecordedStep[]
+): FlowRunReport {
   return {
     file,
     flow: flow.name,
@@ -287,11 +311,15 @@ function report(file: string, flow: Flow, run: FlowRun, saved: Pick<FlowRunRepor
     ...(run.failedStepId !== undefined ? { failed_step_id: run.failedStepId } : {}),
     ...(run.opening ? { opening: trimEvidence(run.opening) } : {}),
     ...(run.finalUrl !== undefined ? { final_url: run.finalUrl } : {}),
-    steps: run.steps.map(({ screenshotPng, ...step }) =>
-      screenshotPng === undefined
-        ? trimEvidence(step)
-        : { ...trimEvidence(step), screenshot_bytes: Buffer.byteLength(screenshotPng, 'base64') }
-    ),
+    // buildRunRecord maps run.steps one to one, so the same index is the same step.
+    steps: run.steps.map(({ screenshotPng, shots: _shotData, ...step }, index) => {
+      const shots = recorded?.[index]?.shots
+      return {
+        ...trimEvidence(step),
+        ...(screenshotPng !== undefined ? { screenshot_bytes: Buffer.byteLength(screenshotPng, 'base64') } : {}),
+        ...(shots ? { shots } : {})
+      }
+    }),
     ...saved
   }
 }
@@ -375,7 +403,7 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       })
       const dir = await writeRunRecord(deps.record.dir, record, assets)
       await pruneRuns(deps.record.dir, deps.record.keep ?? DEFAULT_KEEP_RUNS).catch(() => undefined)
-      return report(request.file, flow, run, { run_id: runId, run_dir: dir })
+      return report(request.file, flow, run, { run_id: runId, run_dir: dir }, record.steps)
     } catch (error) {
       return report(request.file, flow, run, { record_error: error instanceof Error ? error.message : String(error) })
     }
@@ -421,6 +449,8 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       env,
       secret,
       defaultTimeoutMs: request.stepTimeoutMs,
+      // Shots live only in the record: none without one.
+      stepScreenshots: deps.record ? (request.screenshots ?? 'all') : 'off',
       signal: deps.signal,
       now
     })

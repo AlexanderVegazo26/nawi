@@ -23,6 +23,13 @@ describe('nawi run: arguments', () => {
     })
   })
 
+  it('takes --screenshots all, failed or off', () => {
+    for (const mode of ['all', 'failed', 'off'] as const) {
+      expect(parseRunArgs(['/f.nawi.yaml', '--screenshots', mode], '/x').screenshots, `--screenshots ${mode}`).toBe(mode)
+    }
+    expect(parseRunArgs(['/f.nawi.yaml'], '/x').screenshots, 'unset: the app decides').toBeUndefined()
+  })
+
   it('resolves --junit against the shell\'s cwd', () => {
     expect(parseRunArgs(['/f.nawi.yaml', '--junit', 'out/report.xml'], '/home/u/proj').junit).toBe('/home/u/proj/out/report.xml')
   })
@@ -38,7 +45,9 @@ describe('nawi run: arguments', () => {
     [['a.nawi.yaml', '--step-timeout-ms', '600001'], '--step-timeout-ms takes a whole number from 100 to 600000'],
     [['a.nawi.yaml', '--cdp-endpoint', '--headless'], '--cdp-endpoint needs a value.'],
     [['a.nawi.yaml', '--frobnicate'], 'Unknown flag "--frobnicate"'],
-    [['a.nawi.yaml', '--junit', './a.nawi.yaml'], '--junit must name a report file, not the flow file.']
+    [['a.nawi.yaml', '--junit', './a.nawi.yaml'], '--junit must name a report file, not the flow file.'],
+    [['a.nawi.yaml', '--screenshots', 'some'], '--screenshots takes all, failed or off, got "some".'],
+    [['a.nawi.yaml', '--screenshots'], '--screenshots needs a value.']
   ])('rejects %j as a usage error', (argv, message) => {
     expect(() => parseRunArgs(argv, '/x'), `argv ${JSON.stringify(argv)}`).toThrow(RunUsageError)
     expect(() => parseRunArgs(argv, '/x')).toThrow(message)
@@ -180,6 +189,29 @@ describe('nawi run: output and exit code', () => {
       /FAILED: .* ms\nrecord: \/u\/\.config\/nawi\/runs\/20261102T000000000Z-abc123$/
     )
     expect(renderRun({ ...failed, record_error: 'ENOSPC: no space left' })).toMatch(/\nrecord not saved: ENOSPC: no space left$/)
+  })
+
+  it("prints the failing step's screenshot as a path inside the run folder", () => {
+    const shots = {
+      ...failed,
+      run_dir: '/u/runs/20261102T000000000Z-abc123',
+      steps: failed.steps.map((st) =>
+        st.id === 's1'
+          ? { ...st, shots: { before: 'steps/001-s1.before.jpg', after: 'steps/001-s1.after.jpg' } }
+          : st.id === 's2'
+            ? { ...st, shots: { before: 'steps/001-s1.after.jpg', after: 'steps/002-s2.after.jpg' } }
+            : st
+      )
+    }
+    const lines = renderRun(shots).split('\n')
+    expect(lines.slice(2, 6)).toEqual([
+      '  FAIL s2 click (5000 ms)',
+      '       no locator matched exactly one element within 5000 ms',
+      '       screenshot: /u/runs/20261102T000000000Z-abc123/steps/002-s2.after.jpg',
+      '  --   s3 assert'
+    ])
+    expect(lines.filter((l) => l.includes('screenshot:')), 'only for the failed step').toHaveLength(1)
+    expect(renderRun({ ...shots, run_dir: undefined }), 'no path without a saved record').not.toContain('screenshot:')
   })
 
   it('exits 0 only when the run passed', () => {

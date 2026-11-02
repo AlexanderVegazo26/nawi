@@ -63,6 +63,19 @@ describeWithBrowser('runFlowFile against a real Chromium', () => {
     expect(report.flow).toBe('Sign in')
     expect(report.steps[5].screenshot_bytes, 'the screenshot is summarised, not inlined').toBeGreaterThan(1000)
     expect(JSON.stringify(report), 'no screenshot bytes and no secret in the reply').not.toMatch(new RegExp(`screenshotPng|${PASSWORD}`))
+    expect(report.steps.filter((st) => st.shots), 'no run record, so no step screenshots').toEqual([])
+  }, 60_000)
+
+  it('keeps only the failing step\'s page with screenshots: failed', async () => {
+    const file = write('sign-in-failed-shots.nawi.yaml', SIGN_IN)
+    const runs = join(root, 'runs-failed')
+    const report = await runFlowFile(
+      { file, headless: true, env: { TEST_EMAIL: 'a@b.example' }, secrets: { pw: PASSWORD }, stepTimeoutMs: 1500, screenshots: 'failed' },
+      deps({ record: { dir: runs } })
+    )
+    expect(report.failed_step_id, why(report)).toBe('s5')
+    expect(report.steps.map((st) => st.shots ?? null)).toEqual([null, null, null, null, { after: 'steps/005-s5.after.jpg' }, null])
+    expect(readdirSync(join(report.run_dir!, 'steps'))).toEqual(['005-s5.after.jpg'])
   }, 60_000)
 
   it('saves a run record: run.json, junit.xml and the screenshot step\'s PNG, with no secret in any file', async () => {
@@ -91,6 +104,26 @@ describeWithBrowser('runFlowFile against a real Chromium', () => {
       expect(readFileSync(join(dir, name), 'utf8'), `${name} must not hold the secret`).not.toContain(PASSWORD)
     }
     expect(readdirSync(runs), 'no temporary folder left behind').toEqual([report.run_id])
+    // F4b2 (default screenshots: all): the page before the first step and after every step, as JPEG files;
+    // a step's before is the previous step's after file, stored once.
+    const shots = record.steps.map((st: { shots?: { before?: string; after?: string } }) => st.shots)
+    expect(shots[0], JSON.stringify(shots)).toEqual({ before: 'steps/001-s1.before.jpg', after: 'steps/001-s1.after.jpg' })
+    for (let i = 1; i < 6; i++) {
+      const id = `s${i + 1}`
+      expect(shots[i].before, `step ${id} before = the previous after`).toBe(shots[i - 1].after)
+      // An identical image (a step that changed nothing, like the assert) is stored once, under its first name.
+      expect([`steps/00${i + 1}-${id}.after.jpg`, shots[i].before], `step ${id} after`).toContain(shots[i].after)
+    }
+    const referenced = new Set(shots.flatMap((sh: { before?: string; after?: string }) => [sh.before, sh.after]).filter(Boolean))
+    const files = readdirSync(join(dir, 'steps')).sort()
+    expect(files, 'every referenced shot plus the screenshot step PNG, nothing else').toEqual(
+      [...referenced, record.steps[5].screenshot].map((f) => String(f).slice('steps/'.length)).sort()
+    )
+    for (const f of files.filter((f) => f.endsWith('.jpg'))) {
+      expect(readFileSync(join(dir, 'steps', f)).subarray(0, 3).toString('hex'), `${f} is a JPEG`).toBe('ffd8ff')
+    }
+    expect(report.steps.map((st) => st.shots), 'the reply names the same files').toEqual(shots)
+    expect(JSON.stringify(report), 'the reply carries no image bytes').not.toMatch(/\/9j\//)
   }, 60_000)
 
   it('reports the failing step and leaves the rest not_run; the var default applies without an override', async () => {

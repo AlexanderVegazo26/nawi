@@ -85,6 +85,10 @@
   })
   setTimeout(() => { $('enable-me').disabled = false }, 300)
   $('enable-me').addEventListener('click', () => { $('clicked').textContent = 'enabled' })
+  // F9 removes the replayer's page helpers, as a page that clobbers globals would: screenshots must then fail closed.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'F9') delete window.__nawiReplay
+  })
 </script>
 </body>
 </html>

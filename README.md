@@ -214,7 +214,7 @@ Nawi exposes fourteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer`, `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
-and `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--junit report.xml]`). The MCP server, its dispatch layer, the state
+and `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`). The MCP server, its dispatch layer, the state
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 
@@ -335,12 +335,19 @@ alone.
   final URL;
   the app, OS and browser versions and the page's viewport), `junit.xml` (one
   test case per step, for CI test reporters; console errors and failed
-  requests go in the failure text, or `<system-err>` for a passing step) and `steps/NNN-<step-id>.png` for each
-  `screenshot` step. The folder is written under a temporary name and renamed,
+  requests go in the failure text, or `<system-err>` for a passing step), `steps/NNN-<step-id>.png` for each
+  `screenshot` step, and the page around each step as JPEG: by default the
+  page before the first step and after every step (`steps/NNN-<step-id>.before.jpg`
+  / `.after.jpg`, listed under the step's `shots`; a step's "before" is the
+  previous step's "after" and an identical image is stored once).
+  `--screenshots failed` (MCP `screenshots: "failed"`) keeps only the page the
+  failing step left, `off` none; `nawi run` prints the failing step's
+  screenshot path and JUnit names it in the failure text. The folder is written under a temporary name and renamed,
   so a reader never sees half a run; the newest 200 runs are kept. Secret
-  values are scrubbed from the text; screenshots are saved as the page showed
-  them, so a secret typed into a plain text field (not a password field) is
-  visible in a later screenshot. URLs are also stripped of credentials and
+  values are scrubbed from the text, and in every screenshot the fields the
+  run typed a secret into are drawn as discs (masked just for the capture,
+  then restored); a secret the page itself shows elsewhere as text is not
+  masked. URLs are also stripped of credentials and
   token-, session- and signature-like parameters. `nawi run` prints up to three
   console errors and failed requests under each step, and `run_flow`'s answer
   carries the first three of each (the record has up to 20). `run_flow` answers with `run_id` and
@@ -439,8 +446,7 @@ CDP selectors and the MCP projection/revision model.
 ## Known gaps
 
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
-  the UI.** Run records don't capture before/after screenshots per step yet,
-  and there is no HTML report or UI to browse them. Secrets come from
+  the UI.** There is no HTML report or UI to browse run records yet. Secrets come from
   `NAWI_SECRET_*` only (no OS keychain or prompt yet).
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so

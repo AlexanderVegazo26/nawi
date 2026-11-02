@@ -306,6 +306,127 @@ steps:
     expect(await read(`document.getElementById('clicked').textContent`)).toBe('b-btn')
   })
 
+  /** base64 JPEG → its first bytes as hex, for "is this a JPEG". */
+  const magic = (b64: string | undefined): string => Buffer.from(b64 ?? '', 'base64').subarray(0, 3).toString('hex')
+
+  it('takes the page before the first step and after every step with stepScreenshots: all', async () => {
+    const run = await replay(
+      flow([
+        { id: 'a', action: 'click', target: { selectors: [{ id: 'a-btn' }] } },
+        { id: 'off', action: 'click', disabled: true, target: { selectors: [{ id: 'nope' }] } },
+        { id: 'b', action: 'click', target: { selectors: [{ id: 'b-btn' }] } }
+      ]),
+      { stepScreenshots: 'all' }
+    )
+    expect(run.status, why(run)).toBe('passed')
+    const [a, off, b] = run.steps
+    expect(magic(a.shots?.before), 'first step has a before JPEG').toBe('ffd8ff')
+    expect(magic(a.shots?.after), 'first step has an after JPEG').toBe('ffd8ff')
+    expect(a.shots?.before, 'the click changed the page, so before and after differ').not.toBe(a.shots?.after)
+    expect(off.shots, 'a disabled step takes no screenshots').toBeUndefined()
+    expect(b.shots?.before === a.shots?.after, "b's before is a's after (the disabled step did nothing)").toBe(true)
+    expect(magic(b.shots?.after)).toBe('ffd8ff')
+  })
+
+  it('with stepScreenshots: failed, keeps only the page the failing step left; by default takes none', async () => {
+    const steps: FlowStep[] = [
+      { id: 'ok', action: 'click', target: { selectors: [{ id: 'a-btn' }] } },
+      { id: 'bad', action: 'click', timeout_ms: 200, target: { selectors: [{ id: 'gone' }] } },
+      { id: 'later', action: 'click', target: { selectors: [{ id: 'b-btn' }] } }
+    ]
+    const failed = await replay(flow(steps), { stepScreenshots: 'failed' })
+    expect(failed.steps.map((s) => Object.keys(s.shots ?? {}).join('+'))).toEqual(['', 'after', ''])
+    expect(magic(failed.steps[1].shots?.after)).toBe('ffd8ff')
+    const none = await replay(flow(steps))
+    expect(none.steps.some((s) => s.shots !== undefined), 'no shots unless asked for').toBe(false)
+  })
+
+  it('draws a field that received a secret (directly or through a var) as discs in every screenshot, then restores it', async () => {
+    /** Fill #email, move focus away (no caret), then crop the field. */
+    const shoot = async (value: string, secret: Record<string, string> = {}): Promise<{ crop: string; run: FlowRun }> => {
+      const run = await replay(
+        flow(
+          [
+            { id: 'f', action: 'fill', target: { selectors: [{ id: 'email' }] }, value },
+            { id: 'blur', action: 'click', target: { selectors: [{ id: 'hover-me' }] } },
+            { id: 'shot', action: 'screenshot', target: { selectors: [{ id: 'email' }] } }
+          ],
+          APP,
+          { vars: { viaVar: '${secret.b}' } }
+        ),
+        { secret: (n) => secret[n], stepScreenshots: 'all' }
+      )
+      expect(run.status, why(run)).toBe('passed')
+      return { crop: run.steps[2].screenshotPng ?? '', run }
+    }
+    const plainW = await shoot('WWWWWWWW', { b: 'x' })
+    const plainI = await shoot('iiiiiiii', { b: 'x' })
+    expect(plainW.crop, 'control: unmasked text shows in the crop').not.toBe(plainI.crop)
+
+    const secretW = await shoot('${secret.a}', { a: 'WWWWWWWW', b: 'x' })
+    const secretI = await shoot('${vars.viaVar}', { b: 'iiiiiiii' })
+    expect(secretW.crop, 'a masked secret field shows only its length').toBe(secretI.crop)
+    expect(secretW.crop, 'the masked crop is not the plain text').not.toBe(plainW.crop)
+    // The page shots are masked the same way: two different secrets give the same after image.
+    expect(secretW.run.steps[1].shots?.after === secretI.run.steps[1].shots?.after, 'after-shots identical when masked').toBe(true)
+    expect(plainW.run.steps[1].shots?.after === plainI.run.steps[1].shots?.after, 'control: plain after-shots differ').toBe(false)
+    expect(await read(`document.getElementById('email').style.getPropertyValue('-webkit-text-security')`), 'mask removed after capture').toBe('')
+  })
+
+  it('never takes a screenshot while a secret field cannot be masked (fails closed)', async () => {
+    const run = await replay(
+      flow([
+        { id: 'f', action: 'fill', target: { selectors: [{ id: 'email' }] }, value: '${secret.pw}' },
+        { id: 'clobber', action: 'press', key: 'F9' },
+        { id: 'shot', action: 'screenshot' }
+      ]),
+      { stepScreenshots: 'all' }
+    )
+    expect(magic(run.steps[0].shots?.after), 'masking worked before the page lost the helpers').toBe('ffd8ff')
+    expect(run.steps[1].shots?.after, 'no after-shot once the field cannot be masked').toBeUndefined()
+    expect(run.steps[2].status).toBe('failed')
+    expect(run.steps[2].error).toBe('the fields that received a secret could not be masked, so no screenshot was taken')
+    expect(run.steps[2].screenshotPng).toBeUndefined()
+  })
+
+  it('a late unmask from an older capture leaves a newer mask in place', async () => {
+    await replay(flow([{ id: 'c', action: 'click', target: { selectors: [{ id: 'a-btn' }] } }]))
+    const prop = `document.getElementById('email').style.getPropertyValue('-webkit-text-security')`
+    const g1 = await read(`window.__nawiReplay.mask([[{ id: 'email' }]]).generation`)
+    const g2 = await read(`window.__nawiReplay.mask([[{ id: 'email' }]]).generation`)
+    expect(g2, 'each mask call has its own generation').not.toBe(g1)
+    await read(`window.__nawiReplay.unmask(${JSON.stringify(g1)})`)
+    expect(await read(prop), 'the older capture finishing late must not unmask the newer one').toBe('disc')
+    await read(`window.__nawiReplay.unmask(${JSON.stringify(g2)})`)
+    expect(await read(prop), 'the current capture restores the field').toBe('')
+  })
+
+  it('stops taking step screenshots for the run once one times out, instead of waiting on every step', async () => {
+    let jpegCalls = 0
+    const hanging = {
+      send: <T,>(method: string, params?: Record<string, unknown>, sid?: string): Promise<T> => {
+        if (method === 'Page.captureScreenshot' && params?.format === 'jpeg') {
+          jpegCalls++
+          return new Promise<T>(() => undefined)
+        }
+        return client.send<T>(method, params, sid)
+      },
+      on: client.on.bind(client)
+    }
+    const run = await replayFlow(
+      hanging,
+      flow([
+        { id: 'a', action: 'click', target: { selectors: [{ id: 'a-btn' }] } },
+        { id: 'b', action: 'click', target: { selectors: [{ id: 'b-btn' }] } },
+        { id: 'c', action: 'click', target: { selectors: [{ id: 'a-btn' }] } }
+      ]),
+      { sessionId, stepScreenshots: 'all' }
+    )
+    expect(run.status, why(run)).toBe('passed')
+    expect(jpegCalls, 'one capture tried, then given up for the run').toBe(1)
+    expect(run.steps.every((s) => s.shots === undefined), 'no shots at all').toBe(true)
+  }, 20_000)
+
   it('fails a select whose option is disabled or missing, with the reason', async () => {
     const run = await replay(
       flow([{ id: 'plan', action: 'select', timeout_ms: 300, target: { selectors: [{ id: 'plan' }] }, value: 'Legacy' }])

@@ -668,6 +668,9 @@ const runFlow = defineTool({
     'what the page did meanwhile (the URL after the step, and its first 3 console errors and failed requests, ' +
     'with a count of the rest; the run record keeps up to 20 of each). ' +
     `Each run is saved as a run record (run_dir: run.json, junit.xml and step screenshots; the newest ${DEFAULT_KEEP_RUNS} are kept). ` +
+    'With screenshots "all" (default) the record also has the page before and after each step (steps[].shots: ' +
+    'JPEG paths inside run_dir; fields that received a secret are masked); "failed" keeps only the page the ' +
+    'failing step left, "off" none. ' +
     'Nawi launches a fresh browser with a throwaway profile (headed unless headless is true), or opens a new tab ' +
     'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +
     'come only from this call\'s env and secrets; secret values are scrubbed from everything reported. A step ' +
@@ -681,7 +684,11 @@ const runFlow = defineTool({
     secrets: inputMap('secrets').describe('Values for ${secret.name} references. Never stored or reported.'),
     headless: z.boolean().default(false),
     cdp_endpoint: z.string().max(200).optional().describe('e.g. "9222" or "127.0.0.1:9222". Loopback only.'),
-    step_timeout_ms: z.number().int().min(100).max(600_000).optional().describe('Default per-step timeout (5000).')
+    step_timeout_ms: z.number().int().min(100).max(600_000).optional().describe('Default per-step timeout (5000).'),
+    screenshots: z
+      .enum(['all', 'failed', 'off'])
+      .default('all')
+      .describe('Page screenshots around each step in the run record.')
   }),
   async run(args, ctx) {
     const stop = new AbortController()
@@ -700,7 +707,8 @@ const runFlow = defineTool({
           secrets: args.secrets,
           headless: args.headless,
           cdpEndpoint: args.cdp_endpoint,
-          stepTimeoutMs: args.step_timeout_ms
+          stepTimeoutMs: args.step_timeout_ms,
+          screenshots: args.screenshots
         },
         {
           signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,

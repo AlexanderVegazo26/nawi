@@ -185,6 +185,53 @@ describe('page evidence in the record (F4b)', () => {
   })
 })
 
+describe('buildRunRecord: page screenshots around steps (F4b2)', () => {
+  const jpeg = (tag: string): string => Buffer.from(`ffd8ff${tag}`, 'hex').toString('base64')
+  const A = jpeg('01')
+  const B = jpeg('02')
+  const C = jpeg('03')
+  const run: FlowRun = {
+    status: 'failed',
+    startedAt: T0,
+    durationMs: 900,
+    failedStepId: 'bad',
+    steps: [
+      { id: 'one', action: 'click', status: 'passed', shots: { before: A, after: B } },
+      { id: 'same', action: 'assert', status: 'passed', shots: { before: B, after: B } },
+      { id: 'bad', action: 'click', status: 'failed', error: 'gone', shots: { before: B, after: C } },
+      { id: 'later', action: 'click', status: 'not_run' }
+    ]
+  }
+
+  it('writes each distinct image once as NNN-<id>.before/after.jpg and points later steps at the same file', () => {
+    const { record: r, assets } = record(run)
+    expect(r.steps.map((s) => s.shots)).toEqual([
+      { before: 'steps/001-one.before.jpg', after: 'steps/001-one.after.jpg' },
+      { before: 'steps/001-one.after.jpg', after: 'steps/001-one.after.jpg' },
+      { before: 'steps/001-one.after.jpg', after: 'steps/003-bad.after.jpg' },
+      undefined
+    ])
+    expect([...assets.keys()].sort()).toEqual(['steps/001-one.after.jpg', 'steps/001-one.before.jpg', 'steps/003-bad.after.jpg'])
+    expect(assets.get('steps/003-bad.after.jpg')?.toString('hex')).toBe('ffd8ff03')
+    expect(JSON.stringify(r), 'no base64 image inside run.json').not.toContain(A)
+  })
+
+  it("names the failing step's after screenshot in its JUnit failure, and writeRunRecord accepts the .jpg names", async () => {
+    const { record: r, assets } = record(run)
+    expect(toJUnitXml(r)).toContain('gone\n  screenshot after the step: steps/003-bad.after.jpg (in the run folder)</failure>')
+    const runs = join(mkdtempSync(join(tmpdir(), 'nawi-shots-')), 'runs')
+    try {
+      const dir = await writeRunRecord(runs, r, assets)
+      expect(readdirSync(join(dir, 'steps')).sort()).toEqual(['001-one.after.jpg', '001-one.before.jpg', '003-bad.after.jpg'])
+      await expect(
+        writeRunRecord(runs, { ...r, run_id: newRunId(T0 + 1, () => 'def456') }, new Map([['steps/001-x.middle.jpg', PNG]]))
+      ).rejects.toThrow(/unsafe asset name/)
+    } finally {
+      rmSync(join(runs, '..'), { recursive: true, force: true })
+    }
+  })
+})
+
 describe('toJUnitXml', () => {
   it('has one testcase per step: failure with every locator miss, skipped for disabled and not-run steps', () => {
     const xml = toJUnitXml(record().record)
