@@ -664,7 +664,9 @@ const runFlow = defineTool({
   name: 'run_flow',
   description:
     'Replay a flow file (*.nawi.yaml, absolute path inside your home directory) in a browser and report each ' +
-    'step: passed/failed/skipped/not_run, the locator that matched, the ones that missed and why, and timings. ' +
+    'step: passed/failed/skipped/not_run, the locator that matched, the ones that missed and why, timings, and ' +
+    'what the page did meanwhile (the URL after the step, and its first 3 console errors and failed requests, ' +
+    'with a count of the rest; the run record keeps up to 20 of each). ' +
     `Each run is saved as a run record (run_dir: run.json, junit.xml and step screenshots; the newest ${DEFAULT_KEEP_RUNS} are kept). ` +
     'Nawi launches a fresh browser with a throwaway profile (headed unless headless is true), or opens a new tab ' +
     'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +

@@ -326,14 +326,24 @@ alone.
   browser started), is saved in the app's data folder as `runs/<run-id>/`:
   `run.json` (format version 1: the flow's name, path and SHA-256, start time,
   duration, status, per step the status, start time, duration, the locator that
-  matched and the ones that missed, the error and any dialogs; the app, OS and
-  browser versions and the page's viewport), `junit.xml` (one test case per
-  step, for CI test reporters) and `steps/NNN-<step-id>.png` for each
+  matched and the ones that missed, the error and any dialogs, the page URL
+  after the step, the console errors it caused (`console.error`, uncaught
+  exceptions, browser errors) and the requests it sent that failed (HTTP 400+
+  or no response; cancelled ones are left out), at most 20 of each per step
+  with a count of the rest (a run waits up to half a second after its last
+  step for the requests that step sent); the same for opening the target, the
+  final URL;
+  the app, OS and browser versions and the page's viewport), `junit.xml` (one
+  test case per step, for CI test reporters; console errors and failed
+  requests go in the failure text, or `<system-err>` for a passing step) and `steps/NNN-<step-id>.png` for each
   `screenshot` step. The folder is written under a temporary name and renamed,
   so a reader never sees half a run; the newest 200 runs are kept. Secret
   values are scrubbed from the text; screenshots are saved as the page showed
   them, so a secret typed into a plain text field (not a password field) is
-  visible in a later screenshot. `run_flow` answers with `run_id` and
+  visible in a later screenshot. URLs are also stripped of credentials and
+  token-, session- and signature-like parameters. `nawi run` prints up to three
+  console errors and failed requests under each step, and `run_flow`'s answer
+  carries the first three of each (the record has up to 20). `run_flow` answers with `run_id` and
   `run_dir`; `nawi run` prints `record: <folder>`, and `--junit <file>` copies
   the JUnit XML there (an old report at that path is removed first, so a run
   that cannot start never leaves a stale result for CI). Code:
@@ -429,9 +439,8 @@ CDP selectors and the MCP projection/revision model.
 ## Known gaps
 
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
-  the UI.** Run records don't capture console errors, failed requests,
-  before/after screenshots per step or the final URL yet, and there is no HTML
-  report or UI to browse them. Secrets come from
+  the UI.** Run records don't capture before/after screenshots per step yet,
+  and there is no HTML report or UI to browse them. Secrets come from
   `NAWI_SECRET_*` only (no OS keychain or prompt yet).
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so

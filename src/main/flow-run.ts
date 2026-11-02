@@ -15,6 +15,7 @@ import { CdpClient } from './cdp/client'
 import { attachToEndpoint, launchDebugBrowser, parseEndpoint, type LaunchOptions } from './cdp/launcher'
 import { ToolError } from './mcp/errors'
 import { replayFlow, type FlowRun, type ReplayClient, type StepRun } from './replay/replay'
+import type { StepEvidence } from './replay/evidence'
 import { buildRunRecord, newRunId, pruneRuns, writeRunRecord, DEFAULT_KEEP_RUNS, type RunEnvironment } from './run-record'
 
 /**
@@ -82,7 +83,14 @@ export interface RunFlowDeps {
   now?: () => number
 }
 
-/** `run_flow`'s answer. Screenshots are summarised: the bytes belong in the run record (F4), not in an RPC reply. */
+/** Console errors and failed requests per step in `run_flow`'s answer; the run record keeps up to 20 of each. */
+export const REPORTED_EVIDENCE_PER_STEP = 3
+
+/**
+ * `run_flow`'s answer. Screenshots are summarised: the bytes belong in the run record (F4), not in an RPC reply.
+ * Likewise only the first few console errors and failed requests of each step are included (the rest are
+ * counted in `*Dropped`), so a noisy page cannot flood the calling agent's context.
+ */
 export interface FlowRunReport {
   file: string
   flow: string
@@ -91,6 +99,10 @@ export interface FlowRunReport {
   error?: string
   failed_step_id?: string
   steps: Array<Omit<StepRun, 'screenshotPng'> & { screenshot_bytes?: number }>
+  /** Console errors and failed requests while the target was opening (F4b). */
+  opening?: FlowRun['opening']
+  /** The page's URL when the run ended, scrubbed. */
+  final_url?: string
   /** Set when the run record was saved. */
   run_id?: string
   /** The run record's folder (run.json, junit.xml, steps/). */
@@ -250,6 +262,21 @@ export function defaultOpenPage(launch: RunFlowDeps['launch'] = {}): OpenPage {
   }
 }
 
+/** At most `REPORTED_EVIDENCE_PER_STEP` of each kind; the rest move into the dropped counts. */
+export function trimEvidence<T extends Omit<StepEvidence, 'url'>>(e: T): T {
+  const out = { ...e }
+  const n = REPORTED_EVIDENCE_PER_STEP
+  if (out.consoleErrors && out.consoleErrors.length > n) {
+    out.consoleErrorsDropped = (out.consoleErrorsDropped ?? 0) + out.consoleErrors.length - n
+    out.consoleErrors = out.consoleErrors.slice(0, n)
+  }
+  if (out.failedRequests && out.failedRequests.length > n) {
+    out.failedRequestsDropped = (out.failedRequestsDropped ?? 0) + out.failedRequests.length - n
+    out.failedRequests = out.failedRequests.slice(0, n)
+  }
+  return out
+}
+
 function report(file: string, flow: Flow, run: FlowRun, saved: Pick<FlowRunReport, 'run_id' | 'run_dir' | 'record_error'> = {}): FlowRunReport {
   return {
     file,
@@ -258,8 +285,12 @@ function report(file: string, flow: Flow, run: FlowRun, saved: Pick<FlowRunRepor
     duration_ms: run.durationMs,
     ...(run.error !== undefined ? { error: run.error } : {}),
     ...(run.failedStepId !== undefined ? { failed_step_id: run.failedStepId } : {}),
+    ...(run.opening ? { opening: trimEvidence(run.opening) } : {}),
+    ...(run.finalUrl !== undefined ? { final_url: run.finalUrl } : {}),
     steps: run.steps.map(({ screenshotPng, ...step }) =>
-      screenshotPng === undefined ? step : { ...step, screenshot_bytes: Buffer.byteLength(screenshotPng, 'base64') }
+      screenshotPng === undefined
+        ? trimEvidence(step)
+        : { ...trimEvidence(step), screenshot_bytes: Buffer.byteLength(screenshotPng, 'base64') }
     ),
     ...saved
   }

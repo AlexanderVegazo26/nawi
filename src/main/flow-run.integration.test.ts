@@ -83,6 +83,10 @@ describeWithBrowser('runFlowFile against a real Chromium', () => {
     expect(png.subarray(0, 8).toString('hex'), 'the screenshot file is a PNG').toBe('89504e470d0a1a0a')
     expect(png.length, 'same bytes the reply summarised').toBe(report.steps[5].screenshot_bytes)
     expect(readFileSync(join(dir, 'junit.xml'), 'utf8')).toContain('tests="6" failures="0" errors="0" skipped="0"')
+    // F4b: the page URL after every step and at the end, in run.json and the reply.
+    expect(record.steps.map((st: { url?: string }) => st.url), JSON.stringify(record.steps)).toEqual(Array(6).fill(APP))
+    expect(record.final_url).toBe(APP)
+    expect(report.final_url).toBe(APP)
     for (const name of ['run.json', 'junit.xml']) {
       expect(readFileSync(join(dir, name), 'utf8'), `${name} must not hold the secret`).not.toContain(PASSWORD)
     }

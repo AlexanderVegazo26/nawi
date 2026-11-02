@@ -136,6 +136,40 @@ describe('nawi run: output and exit code', () => {
     )
   })
 
+  it('prints up to three console errors and failed requests under a step, then how many more', () => {
+    const out = renderRun({
+      flow: 'Save',
+      status: 'passed',
+      duration_ms: 10,
+      opening: { failedRequests: [{ method: 'GET', url: 'https://app.example/missing.css', status: 404 }] },
+      steps: [
+        {
+          id: 's1',
+          action: 'click',
+          status: 'passed',
+          durationMs: 10,
+          consoleErrors: [1, 2, 3, 4].map((i) => ({ source: 'console', message: `error ${i}\n  at line ${i}` })),
+          consoleErrorsDropped: 6,
+          failedRequests: [{ method: 'POST', url: 'https://app.example/api', error: 'net::ERR_CONNECTION_REFUSED' }]
+        }
+      ]
+    })
+    expect(out).toBe(
+      [
+        'Save',
+        '  while opening the target:',
+        '       request GET https://app.example/missing.css: HTTP 404',
+        '  ok   s1 click (10 ms)',
+        '       console console: error 1 at line 1',
+        '       console console: error 2 at line 2',
+        '       console console: error 3 at line 3',
+        '       … 7 more console errors',
+        '       request POST https://app.example/api: net::ERR_CONNECTION_REFUSED',
+        'PASSED: 1 passed, 0 failed, 0 not run, 0 skipped in 10 ms'
+      ].join('\n')
+    )
+  })
+
   it('prints a run-level error (missing inputs, kill switch) before the summary', () => {
     const out = renderRun({ ...failed, error: 'the flow needs a value the run did not provide: ${env.X}', steps: [] })
     expect(out).toContain('error: the flow needs a value the run did not provide: ${env.X}\nFAILED: 0 passed')

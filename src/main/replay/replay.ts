@@ -22,6 +22,7 @@ import { buildProbeSource, type ProbeClient } from '../cdp/probe'
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '@shared/flow/interpolate'
 import type { Flow, FlowStep, Selector } from '@shared/flow/schema'
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
+import { EvidenceCollector, type StepEvidence } from './evidence'
 
 /**
  * Just enough of `CdpClient`. `on` is optional so a bare `send` double still
@@ -46,7 +47,12 @@ export interface LocatorMiss {
   invalid?: string
 }
 
-export interface StepRun {
+/**
+ * Besides its own result, a step carries what the page did while it ran
+ * (roadmap F4b, `StepEvidence`): console errors, failed requests and the URL
+ * after it, all scrubbed of secrets.
+ */
+export interface StepRun extends StepEvidence {
   id: string
   action: FlowStep['action']
   status: StepStatus
@@ -72,6 +78,10 @@ export interface FlowRun {
   error?: string
   failedStepId?: string
   steps: StepRun[]
+  /** Console errors and failed requests while the flow's target was opening, before the first step. */
+  opening?: Omit<StepEvidence, 'url'>
+  /** The page's URL when the run ended, scrubbed. */
+  finalUrl?: string
 }
 
 export interface ReplayOptions extends FlowInputs {
@@ -279,9 +289,12 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
       .catch(() => undefined)
   })
 
+  const evidence = new EvidenceCollector(client, options.sessionId, interp.redact)
   let uninstall: (() => Promise<void>) | undefined
+  let run: FlowRun | undefined
   try {
     try {
+      await evidence.start()
       await session.send('Page.enable')
       uninstall = await installReplayHelpers(client, options.sessionId)
       if (openTarget) {
@@ -291,12 +304,30 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
         )
       }
     } catch (error) {
-      return abort(interp.redact(`could not open the flow's target: ${(error as Error).message ?? error}`))
+      run = abort(interp.redact(`could not open the flow's target: ${(error as Error).message ?? error}`))
     }
-    return await runSteps(flow, runner, startedAt, now, options.signal)
+    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence)
   } finally {
+    evidence.stop()
     offDialog?.()
     await uninstall?.().catch(() => undefined)
+  }
+  return withEvidence(run, flow, evidence)
+}
+
+/** Files the collected evidence onto the run's steps (aligned with `flow.steps` by index). */
+function withEvidence(run: FlowRun, flow: Flow, evidence: EvidenceCollector): FlowRun {
+  const steps = run.steps.map((step, index) => {
+    const e = flow.steps[index]?.id === step.id ? evidence.forStep(index) : undefined
+    return e ? { ...step, ...e } : step
+  })
+  const opening = evidence.forStep(-1)
+  const finalUrl = evidence.finalUrl()
+  return {
+    ...run,
+    steps,
+    ...(opening ? { opening } : {}),
+    ...(finalUrl !== undefined ? { finalUrl } : {})
   }
 }
 
@@ -310,12 +341,13 @@ async function runSteps(
   runner: StepRunner,
   startedAt: number,
   now: () => number,
-  signal?: AbortSignal
+  signal: AbortSignal | undefined,
+  evidence: EvidenceCollector
 ): Promise<FlowRun> {
   const steps: StepRun[] = []
   let failed: string | undefined
   let stopped: string | undefined
-  for (const step of flow.steps) {
+  for (const [index, step] of flow.steps.entries()) {
     if (step.disabled) {
       steps.push({ id: step.id, action: step.action, status: 'skipped' })
       continue
@@ -325,10 +357,13 @@ async function runSteps(
       steps.push({ id: step.id, action: step.action, status: 'not_run' })
       continue
     }
+    evidence.beginStep(index)
     const run = await runner.run(step)
+    await evidence.endStep()
     steps.push(run)
     if (run.status === 'failed') failed = step.id
   }
+  await evidence.settle()
 
   return {
     status: failed === undefined && stopped === undefined ? 'passed' : 'failed',

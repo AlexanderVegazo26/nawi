@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
+import type { ConsoleError, FailedRequest, StepEvidence } from './replay/evidence'
 import type { FlowRun, StepRun } from './replay/replay'
 
 /**
@@ -10,6 +11,10 @@ import type { FlowRun, StepRun } from './replay/replay'
  *     runs/<run-id>/run.json            what ran, where, and how each step went
  *     runs/<run-id>/junit.xml           the same result for CI test reporters
  *     runs/<run-id>/steps/NNN-<id>.png  screenshots the flow's `screenshot` steps took
+ *
+ * Per step it also keeps what the page did meanwhile (F4b): console errors,
+ * failed requests (status >= 400 or no response) and the URL after the step.
+ * These are optional fields, so a reader of version 1 records keeps working.
  *
  * Electron-free and pure apart from the write, so the format is tested without
  * an app. The folder is written under a temporary name and renamed into place,
@@ -46,7 +51,21 @@ export interface RunEnvironment {
   viewport?: { width: number; height: number; device_scale_factor: number }
 }
 
-export interface RecordedStep extends Omit<StepRun, 'screenshotPng' | 'startedAt' | 'durationMs'> {
+type EvidenceKey = keyof StepEvidence
+
+/** The evidence as run.json spells it. */
+export interface RecordedEvidence {
+  console_errors?: ConsoleError[]
+  console_errors_dropped?: number
+  failed_requests?: FailedRequest[]
+  failed_requests_dropped?: number
+}
+
+export interface RecordedStep
+  extends Omit<StepRun, 'screenshotPng' | 'startedAt' | 'durationMs' | EvidenceKey>,
+    RecordedEvidence {
+  /** Page URL after the step, scrubbed of secrets and token-like parameters. */
+  url?: string
   /** ISO time the step started; absent for steps that never ran. */
   started_at?: string
   duration_ms?: number
@@ -65,7 +84,20 @@ export interface RunRecord {
   failed_step_id?: string
   totals: { passed: number; failed: number; skipped: number; not_run: number }
   environment: RunEnvironment
+  /** Console errors and failed requests while the target was opening, before the first step. */
+  opening?: RecordedEvidence
+  /** The page's URL when the run ended, scrubbed. */
+  final_url?: string
   steps: RecordedStep[]
+}
+
+function recordedEvidence(e: Omit<StepEvidence, 'url'>): RecordedEvidence {
+  return {
+    ...(e.consoleErrors?.length ? { console_errors: e.consoleErrors } : {}),
+    ...(e.consoleErrorsDropped ? { console_errors_dropped: e.consoleErrorsDropped } : {}),
+    ...(e.failedRequests?.length ? { failed_requests: e.failedRequests } : {}),
+    ...(e.failedRequestsDropped ? { failed_requests_dropped: e.failedRequestsDropped } : {})
+  }
 }
 
 export interface RunRecordInput {
@@ -80,8 +112,22 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
   const { run } = input
   const assets = new Map<string, Buffer>()
   const steps = run.steps.map((step, index): RecordedStep => {
-    const { screenshotPng, startedAt, durationMs, ...rest } = step
-    const out: RecordedStep = { ...rest }
+    const {
+      screenshotPng,
+      startedAt,
+      durationMs,
+      consoleErrors,
+      consoleErrorsDropped,
+      failedRequests,
+      failedRequestsDropped,
+      url,
+      ...rest
+    } = step
+    const out: RecordedStep = {
+      ...rest,
+      ...(url !== undefined ? { url } : {}),
+      ...recordedEvidence({ consoleErrors, consoleErrorsDropped, failedRequests, failedRequestsDropped })
+    }
     if (startedAt !== undefined) out.started_at = new Date(startedAt).toISOString()
     if (durationMs !== undefined) out.duration_ms = durationMs
     if (screenshotPng !== undefined) {
@@ -93,6 +139,7 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     return out
   })
   const count = (status: StepRun['status']): number => run.steps.filter((s) => s.status === status).length
+  const opening = run.opening && recordedEvidence(run.opening)
   const record: RunRecord = {
     version: RUN_RECORD_VERSION,
     run_id: input.runId,
@@ -104,6 +151,8 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     ...(run.failedStepId !== undefined ? { failed_step_id: run.failedStepId } : {}),
     totals: { passed: count('passed'), failed: count('failed'), skipped: count('skipped'), not_run: count('not_run') },
     environment: input.environment,
+    ...(opening && Object.keys(opening).length > 0 ? { opening } : {}),
+    ...(run.finalUrl !== undefined ? { final_url: run.finalUrl } : {}),
     steps
   }
   return { record, assets }
@@ -138,7 +187,21 @@ function failureDetail(step: RecordedStep): string {
     lines.push(`  locator ${miss.index} ${describe(miss.selector as Record<string, unknown>)}: ${why}`)
   }
   if (step.matched) lines.push(`  matched locator ${step.matched.index} ${describe(step.matched.selector as Record<string, unknown>)}`)
+  if (step.url !== undefined) lines.push(`  page: ${step.url}`)
+  lines.push(...evidenceLines(step).map((l) => `  ${l}`))
   return lines.join('\n')
+}
+
+/** Console errors and failed requests as text lines, for JUnit. */
+export function evidenceLines(e: RecordedEvidence): string[] {
+  const lines: string[] = []
+  for (const c of e.console_errors ?? []) lines.push(`console ${c.source}: ${c.message}`)
+  if (e.console_errors_dropped) lines.push(`(${e.console_errors_dropped} more console errors not kept)`)
+  for (const r of e.failed_requests ?? []) {
+    lines.push(`request ${r.method} ${r.url}: ${r.status !== undefined ? `HTTP ${r.status}` : (r.error ?? 'failed')}`)
+  }
+  if (e.failed_requests_dropped) lines.push(`(${e.failed_requests_dropped} more failed requests not kept)`)
+  return lines
 }
 
 /**
@@ -166,10 +229,18 @@ export function toJUnitXml(record: RunRecord): string {
     `      <property name="nawi.flow_sha256" value="${record.flow.sha256}"/>`,
     '    </properties>'
   ]
+  // What failed while the target was opening belongs to no step; a run error repeats it in its own case below.
+  const opening = evidenceLines(record.opening ?? {})
+  if (opening.length > 0 && !runError) {
+    out.push(`    <system-err>${xmlEscape(['while opening the target:', ...opening].join('\n'))}</system-err>`)
+  }
   for (const step of record.steps) {
     const open = `    <testcase classname="${suite}" name="${xmlEscape(`${step.id} (${step.action})`)}" time="${seconds(step.duration_ms)}"`
+    const evidence = evidenceLines(step)
     if (step.status === 'passed') {
-      out.push(`${open}/>`)
+      // A passing step can still have logged errors: CI reporters show <system-err> next to the test.
+      if (evidence.length === 0) out.push(`${open}/>`)
+      else out.push(`${open}>`, `      <system-err>${xmlEscape(evidence.join('\n'))}</system-err>`, '    </testcase>')
     } else if (step.status === 'failed') {
       out.push(
         `${open}>`,
@@ -182,10 +253,11 @@ export function toJUnitXml(record: RunRecord): string {
     }
   }
   if (runError) {
-    const message = xmlEscape(record.error ?? 'the run failed before any step')
+    const message = record.error ?? 'the run failed before any step'
+    const body = [message, ...evidenceLines(record.opening ?? {}).map((l) => `  ${l}`)].join('\n')
     out.push(
       `    <testcase classname="${suite}" name="(run)" time="0.000">`,
-      `      <error message="${message}" type="run_failed">${message}</error>`,
+      `      <error message="${xmlEscape(message)}" type="run_failed">${xmlEscape(body)}</error>`,
       '    </testcase>'
     )
   }

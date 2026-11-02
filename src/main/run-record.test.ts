@@ -90,6 +90,101 @@ describe('buildRunRecord', () => {
   })
 })
 
+const WITH_EVIDENCE: FlowRun = {
+  status: 'failed',
+  startedAt: T0,
+  durationMs: 900,
+  failedStepId: 's2',
+  opening: { failedRequests: [{ method: 'GET', url: 'https://app.example/missing.css', resource_type: 'Stylesheet', status: 404 }] },
+  finalUrl: 'https://app.example/invoices',
+  steps: [
+    {
+      id: 's1',
+      action: 'click',
+      status: 'passed',
+      startedAt: T0,
+      durationMs: 300,
+      url: 'https://app.example/invoices',
+      consoleErrors: [{ source: 'console', message: 'save <failed> & retried' }],
+      consoleErrorsDropped: 2,
+      failedRequests: [{ method: 'POST', url: 'https://app.example/api/save', resource_type: 'Fetch', status: 500 }]
+    },
+    {
+      id: 's2',
+      action: 'assert',
+      status: 'failed',
+      startedAt: T0 + 300,
+      durationMs: 600,
+      error: 'assertion failed',
+      url: 'https://app.example/invoices',
+      failedRequests: [{ method: 'GET', url: 'https://cdn.example/x.js', error: 'net::ERR_NAME_NOT_RESOLVED' }],
+      failedRequestsDropped: 1
+    }
+  ]
+}
+
+describe('page evidence in the record (F4b)', () => {
+  it('spells console errors, failed requests and URLs the run.json way, and leaves them out when there are none', () => {
+    const { record: r } = record(WITH_EVIDENCE)
+    expect(r.opening, 'evidence from opening the target').toEqual({
+      failed_requests: [{ method: 'GET', url: 'https://app.example/missing.css', resource_type: 'Stylesheet', status: 404 }]
+    })
+    expect(r.final_url).toBe('https://app.example/invoices')
+    expect(r.steps[0]).toEqual({
+      id: 's1',
+      action: 'click',
+      status: 'passed',
+      started_at: '2026-11-02T10:39:00.123Z',
+      duration_ms: 300,
+      url: 'https://app.example/invoices',
+      console_errors: [{ source: 'console', message: 'save <failed> & retried' }],
+      console_errors_dropped: 2,
+      failed_requests: [{ method: 'POST', url: 'https://app.example/api/save', resource_type: 'Fetch', status: 500 }]
+    })
+    expect(Object.keys(r.steps[1]), 'no camelCase evidence keys in run.json').not.toEqual(
+      expect.arrayContaining(['consoleErrors', 'failedRequests', 'failedRequestsDropped'])
+    )
+    expect(r.steps[1].failed_requests_dropped).toBe(1)
+    const plain = record().record
+    expect('opening' in plain || 'final_url' in plain, 'a run without evidence has no opening/final_url').toBe(false)
+    expect(plain.steps.some((st) => 'console_errors' in st || 'failed_requests' in st || 'url' in st)).toBe(false)
+  })
+
+  it('puts evidence in JUnit: <system-err> on a passing step, the failure text on a failed one', () => {
+    const xml = toJUnitXml(record(WITH_EVIDENCE).record)
+    expect(xml).toContain(
+      '<testcase classname="Save invoice" name="s1 (click)" time="0.300">\n' +
+        '      <system-err>console console: save &lt;failed&gt; &amp; retried\n(2 more console errors not kept)\n' +
+        'request POST https://app.example/api/save: HTTP 500</system-err>\n    </testcase>'
+    )
+    expect(xml).toContain(
+      'type="step_failed">assertion failed\n  page: https://app.example/invoices\n' +
+        '  request GET https://cdn.example/x.js: net::ERR_NAME_NOT_RESOLVED\n  (1 more failed requests not kept)</failure>'
+    )
+  })
+
+  it('puts what failed while opening the target in the suite <system-err> when the run reached its steps', () => {
+    const xml = toJUnitXml(record(WITH_EVIDENCE).record)
+    expect(xml).toContain(
+      '    </properties>\n    <system-err>while opening the target:\nrequest GET https://app.example/missing.css: HTTP 404</system-err>'
+    )
+  })
+
+  it("adds what failed while opening the target to the (run) error of a run that never reached a step", () => {
+    const run: FlowRun = {
+      status: 'failed',
+      startedAt: T0,
+      durationMs: 30_000,
+      error: "could not open the flow's target: did not finish loading",
+      opening: { consoleErrors: [{ source: 'exception', message: 'ReferenceError: boot is not defined' }] },
+      steps: [{ id: 's1', action: 'click', status: 'not_run' }]
+    }
+    expect(toJUnitXml(record(run).record)).toContain(
+      'type="run_failed">could not open the flow&apos;s target: did not finish loading\n  console exception: ReferenceError: boot is not defined</error>'
+    )
+  })
+})
+
 describe('toJUnitXml', () => {
   it('has one testcase per step: failure with every locator miss, skipped for disabled and not-run steps', () => {
     const xml = toJUnitXml(record().record)

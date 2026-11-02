@@ -3,8 +3,19 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FlowSchema } from '@shared/flow'
-import { MAX_FLOW_FILE_BYTES, defaultOpenPage, resolveFlowFile, runFlowFile, withVars, type BrowserPage, type OpenPage } from './flow-run'
+import {
+  MAX_FLOW_FILE_BYTES,
+  REPORTED_EVIDENCE_PER_STEP,
+  defaultOpenPage,
+  resolveFlowFile,
+  runFlowFile,
+  trimEvidence,
+  withVars,
+  type BrowserPage,
+  type OpenPage
+} from './flow-run'
 import { ToolError } from './mcp/errors'
+import type { StepEvidence } from './replay/evidence'
 
 /** The typed code a call failed with, or 'resolved'. */
 async function codeOf(p: Promise<unknown>): Promise<string> {
@@ -68,6 +79,22 @@ describe('resolveFlowFile: which files a run may read', () => {
     const file = join(root, 'big.nawi.yaml')
     writeFileSync(file, `# ${'x'.repeat(MAX_FLOW_FILE_BYTES)}\n`)
     expect(await codeOf(resolveFlowFile(file, [root]))).toBe('INVALID_ARGUMENTS')
+  })
+})
+
+describe("trimEvidence: run_flow's answer stays small on a noisy page", () => {
+  it(`keeps the first ${REPORTED_EVIDENCE_PER_STEP} of each kind and adds the rest to the dropped counts`, () => {
+    const errors = Array.from({ length: 20 }, (_, i) => ({ source: 'console' as const, message: `e${i}` }))
+    const requests = Array.from({ length: 5 }, (_, i) => ({ method: 'GET', url: `https://a.example/${i}`, status: 500 }))
+    const input: StepEvidence = { consoleErrors: errors, consoleErrorsDropped: 7, failedRequests: requests, url: 'https://a.example/' }
+    const out = trimEvidence(input)
+    expect(out.consoleErrors?.map((c) => c.message)).toEqual(['e0', 'e1', 'e2'])
+    expect(out.consoleErrorsDropped, '17 trimmed + 7 the record already dropped').toBe(24)
+    expect(out.failedRequests).toHaveLength(3)
+    expect(out.failedRequestsDropped).toBe(2)
+    expect(out.url).toBe('https://a.example/')
+    const small = { consoleErrors: errors.slice(0, 2) }
+    expect(trimEvidence(small), 'under the limit: unchanged').toEqual(small)
   })
 })
 

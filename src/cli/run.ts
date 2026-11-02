@@ -162,7 +162,13 @@ interface ReportStep {
   durationMs?: number
   matched?: { index: number; selector: Record<string, unknown> }
   error?: string
+  consoleErrors?: Array<{ source: string; message: string }>
+  consoleErrorsDropped?: number
+  failedRequests?: Array<{ method: string; url: string; status?: number; error?: string }>
+  failedRequestsDropped?: number
 }
+
+type ReportEvidence = Pick<ReportStep, 'consoleErrors' | 'consoleErrorsDropped' | 'failedRequests' | 'failedRequestsDropped'>
 
 export interface RunReport {
   flow: string
@@ -170,19 +176,50 @@ export interface RunReport {
   duration_ms: number
   error?: string
   steps: ReportStep[]
+  opening?: ReportEvidence
   run_dir?: string
   record_error?: string
 }
 
 const MARK: Record<string, string> = { passed: 'ok  ', failed: 'FAIL', skipped: 'skip', not_run: '--  ' }
+/** Evidence lines shown per kind and step; the run record has them all. */
+const SHOWN_PER_KIND = 3
+const MAX_LINE_CHARS = 200
+
+const oneLine = (text: string): string => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > MAX_LINE_CHARS ? `${flat.slice(0, MAX_LINE_CHARS)}…` : flat
+}
+
+/** Console errors and failed requests under a step, a few of each, then how many more. */
+function evidenceLines(e: ReportEvidence, indent: string): string[] {
+  const lines: string[] = []
+  const consoleErrors = e.consoleErrors ?? []
+  for (const c of consoleErrors.slice(0, SHOWN_PER_KIND)) lines.push(`${indent}console ${c.source}: ${oneLine(c.message)}`)
+  const moreConsole = Math.max(0, consoleErrors.length - SHOWN_PER_KIND) + (e.consoleErrorsDropped ?? 0)
+  if (moreConsole > 0) lines.push(`${indent}… ${moreConsole} more console error${moreConsole === 1 ? '' : 's'}`)
+  const requests = e.failedRequests ?? []
+  for (const r of requests.slice(0, SHOWN_PER_KIND)) {
+    const why = r.status !== undefined ? `HTTP ${r.status}` : (r.error ?? 'failed')
+    lines.push(`${indent}request ${r.method} ${oneLine(r.url)}: ${why}`)
+  }
+  const moreRequests = Math.max(0, requests.length - SHOWN_PER_KIND) + (e.failedRequestsDropped ?? 0)
+  if (moreRequests > 0) lines.push(`${indent}… ${moreRequests} more failed request${moreRequests === 1 ? '' : 's'}`)
+  return lines
+}
 
 /** One line per step, then a summary; failures carry the replayer's reason. */
 export function renderRun(report: RunReport): string {
   const lines = [`${report.flow}`]
+  if (report.opening) {
+    const opening = evidenceLines(report.opening, '       ')
+    if (opening.length > 0) lines.push('  while opening the target:', ...opening)
+  }
   for (const step of report.steps) {
     const ms = step.durationMs !== undefined ? ` (${step.durationMs} ms)` : ''
     lines.push(`  ${MARK[step.status] ?? step.status} ${step.id} ${step.action}${ms}`)
     if (step.error) lines.push(`       ${step.error}`)
+    lines.push(...evidenceLines(step, '       '))
   }
   const count = (s: string): number => report.steps.filter((x) => x.status === s).length
   if (report.error) lines.push(`error: ${report.error}`)
