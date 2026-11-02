@@ -14,10 +14,10 @@ roadmap is to make that loop the most useful one for people **and** AI agents:
 3. Flows that an agent can **author, run and triage** through MCP.
 4. **Determinism and flake control** so a green run means something.
 5. A place in **CI** that reviewers actually read.
-7. **Mobile that configures itself**: drop an app file in, and Nawi opens what it needs, studies the app and
-   suggests how to test it (Track M below).
 6. **Fully drivable from outside**: every capability reachable by CLI and by MCP, with an LLM provider layer and
    ready-made integrations for agent harnesses, so Nawi is a tool other systems call, not only an app.
+7. **Mobile that configures itself**: drop an app file in, and Nawi opens what it needs, studies the app and
+   suggests how to test it (Track M below).
 
 ## Principles
 
