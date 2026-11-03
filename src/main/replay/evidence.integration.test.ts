@@ -5,6 +5,7 @@ import { CdpClient } from '../cdp/client'
 import { findBrowserExecutable, launchDebugBrowser, type LaunchedBrowser } from '../cdp/launcher'
 import { parseFlow } from '@shared/flow'
 import { replayFlow, type FlowRun } from './replay'
+import { TEST_BROWSER_ARGS } from '../cdp/test-browser-args'
 
 /**
  * F4b against a real Chromium: a local HTTP server (127.0.0.1, random port)
@@ -38,7 +39,6 @@ const PAGE = `<!doctype html>
 </body></html>`
 
 const executable = findBrowserExecutable(['playwright-chromium'])
-const TEST_BROWSER_ARGS = process.platform === 'linux' ? ['--no-sandbox'] : []
 const describeWithBrowser = executable ? describe : describe.skip
 if (!executable) console.warn('[evidence.integration] no Playwright Chromium found; evidence tests SKIPPED, not passed')
 

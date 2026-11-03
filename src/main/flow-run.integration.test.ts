@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { findBrowserExecutable, launchDebugBrowser, type LaunchedBrowser } from './cdp/launcher'
 import { defaultOpenPage, runFlowFile, type FlowRunReport, type RunFlowDeps } from './flow-run'
+import { TEST_BROWSER_ARGS } from './cdp/test-browser-args'
 
 /**
  * `run_flow` end to end against a real Chromium: the flow is read from disk,
@@ -15,7 +16,6 @@ import { defaultOpenPage, runFlowFile, type FlowRunReport, type RunFlowDeps } fr
 const APP = pathToFileURL(resolve(__dirname, 'replay/__fixtures__/app.html')).href
 const PASSWORD = 'hunter2-run-flow-secret'
 const executable = findBrowserExecutable(['playwright-chromium'])
-const TEST_BROWSER_ARGS = process.platform === 'linux' ? ['--no-sandbox'] : []
 const describeWithBrowser = executable ? describe : describe.skip
 if (!executable) console.warn('[flow-run.integration] no Playwright Chromium found; run_flow tests SKIPPED, not passed')
 
@@ -174,7 +174,7 @@ steps:
   describe('attached to a browser that is already running', () => {
     let browser: LaunchedBrowser
     beforeAll(async () => {
-      browser = await launchDebugBrowser({ prefer: ['playwright-chromium'], headless: true, extraArgs: TEST_BROWSER_ARGS, startUrl: 'about:blank' })
+      browser = await launchDebugBrowser({ prefer: ['playwright-chromium'], headless: true, extraArgs: [...TEST_BROWSER_ARGS], startUrl: 'about:blank' })
     }, 60_000)
     afterAll(async () => browser?.close())
 

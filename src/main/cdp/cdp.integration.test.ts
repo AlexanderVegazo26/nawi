@@ -14,6 +14,7 @@ import {
 import { CaptureClock, calibrateBrowserClock } from './clock'
 import { injectProbe, markAndResolveSecrets, rankSelectorsFor } from './probe'
 import { distinctStrategies } from './selectors'
+import { TEST_BROWSER_ARGS } from './test-browser-args'
 
 /**
  * Playwright launches (or, in one case, merely provides) a real Chromium.
@@ -28,7 +29,6 @@ const OTP_VALUE = '314159-otp-secret'
 const NESTED_SECRET_VALUE = 'inherited-secret-value'
 
 const executable = findBrowserExecutable(['playwright-chromium'])
-const TEST_BROWSER_ARGS = process.platform === 'linux' ? ['--no-sandbox'] : []
 
 /** A missing browser download is reported as a skip, never as a pass. */
 const describeWithBrowser = executable ? describe : describe.skip
@@ -50,7 +50,7 @@ describeWithBrowser('CDP client against a real Chromium (launched by our own lau
       headless: true,
       // Test browser only: hosts that restrict unprivileged user namespaces (Ubuntu 24.04+
       // AppArmor, CI runners) abort Chromium's sandbox with SIGABRT. Playwright drops it the same way.
-      extraArgs: TEST_BROWSER_ARGS,
+      extraArgs: [...TEST_BROWSER_ARGS],
       startUrl: FIXTURE_URL
     })
 

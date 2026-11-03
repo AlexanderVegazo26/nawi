@@ -15,6 +15,7 @@ import { seal } from '../sidecar/seal'
 import { writeSealedRevision } from '../sidecar/writer'
 import { capturesRoot } from '../sidecar/paths'
 import { FILE_PATHS, Harvester } from './harvest'
+import { TEST_BROWSER_ARGS } from '../cdp/test-browser-args'
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -128,7 +129,6 @@ const SURFACE: Surface = {
 }
 
 const executable = findBrowserExecutable(['playwright-chromium'])
-const TEST_BROWSER_ARGS = process.platform === 'linux' ? ['--no-sandbox'] : []
 /** A missing browser download is reported as a SKIP, never as a pass. */
 const describeGate = executable ? describe : describe.skip
 if (!executable) {
@@ -179,7 +179,7 @@ describeGate('RELEASE GATE — FR-SEC.2 secret suppression, verified on raw byte
       headless: true,
       // Test browser only: hosts that restrict unprivileged user namespaces (Ubuntu 24.04+
       // AppArmor, CI runners) abort Chromium's sandbox with SIGABRT. Playwright drops it the same way.
-      extraArgs: TEST_BROWSER_ARGS,
+      extraArgs: [...TEST_BROWSER_ARGS],
       startUrl: 'about:blank'
     })
     client = await CdpClient.connect(await browser.endpoint.browserWebSocketUrl(), {
@@ -788,7 +788,7 @@ describeGate('a Tier A leak IS detected as a Tier A failure, not a routine redac
       headless: true,
       // Test browser only: hosts that restrict unprivileged user namespaces (Ubuntu 24.04+
       // AppArmor, CI runners) abort Chromium's sandbox with SIGABRT. Playwright drops it the same way.
-      extraArgs: TEST_BROWSER_ARGS,
+      extraArgs: [...TEST_BROWSER_ARGS],
       startUrl: 'about:blank'
     })
     client = await CdpClient.connect(await browser.endpoint.browserWebSocketUrl(), {

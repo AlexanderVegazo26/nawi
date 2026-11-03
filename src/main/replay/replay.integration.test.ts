@@ -5,6 +5,7 @@ import { CdpClient } from '../cdp/client'
 import { findBrowserExecutable, launchDebugBrowser, type LaunchedBrowser } from '../cdp/launcher'
 import { FlowSchema, parseFlow, type Flow, type FlowStep } from '@shared/flow'
 import { replayFlow, type FlowRun, type ReplayOptions } from './replay'
+import { TEST_BROWSER_ARGS } from '../cdp/test-browser-args'
 
 /**
  * The replayer against a real Chromium, launched by our own launcher and
@@ -21,7 +22,6 @@ const ODD_SECRET = 'odd"pass\\word  & more'
 const SECRETS: Record<string, string> = { pw: PASSWORD, odd: ODD_SECRET }
 
 const executable = findBrowserExecutable(['playwright-chromium'])
-const TEST_BROWSER_ARGS = process.platform === 'linux' ? ['--no-sandbox'] : []
 const describeWithBrowser = executable ? describe : describe.skip
 if (!executable) console.warn('[replay.integration] no Playwright Chromium found; replay tests SKIPPED, not passed')
 
