@@ -36,7 +36,8 @@ export const DEFAULT_KEEP_RUNS = 200
 export const RUN_ID_RE = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/
 const STEP_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'
 const STEP_ID_RE = new RegExp(`^${STEP_ID}$`)
-const ASSET_RE = new RegExp(`^steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.jpg)$`)
+/** A screenshot file inside a run folder, relative to it (`steps/003-save.after.jpg`). */
+export const RUN_ASSET_RE = new RegExp(`^steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.jpg)$`)
 /** Folders a write in progress uses; one older than this was left by a crash. */
 const STALE_TEMP_MS = 60 * 60 * 1000
 
@@ -317,7 +318,7 @@ export async function writeRunRecord(
     await fs.mkdir(temp)
     if (assets.size > 0) await fs.mkdir(join(temp, 'steps'))
     for (const [name, bytes] of assets) {
-      if (!ASSET_RE.test(name)) throw new Error(`unsafe asset name ${name}`)
+      if (!RUN_ASSET_RE.test(name)) throw new Error(`unsafe asset name ${name}`)
       await fs.writeFile(join(temp, name), bytes)
     }
     await fs.writeFile(join(temp, 'junit.xml'), toJUnitXml(record))

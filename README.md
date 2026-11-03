@@ -231,6 +231,16 @@ another's call; a caller without a session (the CLI, a plain HTTP request) cance
 stdio bridge passes progress through and handles a cancel itself, at once: it drops the request if it is still
 queued, or closes the request it sent. Code: `src/main/mcp/progress.ts`, `src/mcp/forward.ts`.
 
+Saved runs are also MCP resources, so a client can read them without a tool call: `resources/list` names the
+record and HTML report of the 50 newest runs, `resources/templates/list` gives the patterns
+`nawi://runs/{run_id}/run.json`, `report.html`, `junit.xml` and `{+screenshot}` (a step's `screenshot` or
+`shots.before`/`shots.after` path from run.json, returned as base64), and `resources/read` returns one file
+(up to 8 MiB). A URI that isn't one of those is JSON-RPC -32602, a run or file that doesn't exist -32002; both
+carry Nawi's typed code in `error.data.code`, like tool errors. Only files a run writer makes are reachable
+(links out of the run's own folder are refused), the token and the agent kill switch apply as for tools (templates
+stay listable while paused, like `tools/list`), and each list or read goes to the same call log.
+Code: `src/main/mcp/resources.ts`.
+
 `nawi` is a command-line front end to the **same** endpoint, with the same
 bearer token and the same tools, so every rule the app enforces — the agent kill
 switch, redaction gating, path confinement — applies unchanged.

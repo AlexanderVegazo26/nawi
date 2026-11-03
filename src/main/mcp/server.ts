@@ -14,7 +14,8 @@ import {
 } from './dispatch'
 import { ToolError, toToolError } from './errors'
 import { InFlightCalls, progressNotification, progressTokenOf, sseEvent, type JsonRpcId } from './progress'
-import { TOOLS } from './tools'
+import { RESOURCE_TEMPLATES, listRunResources, readRunResource } from './resources'
+import { TOOLS, runsDir } from './tools'
 import * as settings from '../settings'
 
 /**
@@ -45,6 +46,9 @@ import * as settings from '../settings'
  * `dependencies`, and electron-vite's dependency externalization would ship all of it in the asar
  * — a large surface for the three methods actually needed (`initialize`,
  * `tools/list`, `tools/call`). The milestone plan pre-authorized this fallback.
+ *
+ * Saved runs are also MCP resources (`resources/list`, `resources/templates/list`,
+ * `resources/read`; see `./resources.ts`), behind the same token and kill switch.
  */
 
 const PROTOCOL_VERSION = '2025-06-18'
@@ -104,6 +108,10 @@ function rpcResult(id: JsonRpcId, result: unknown): string {
  */
 const APP_ERROR = -32000
 
+/** MCP's code for a resource that does not exist (spec: Resources, Error Handling). */
+const RESOURCE_NOT_FOUND = -32002
+const INVALID_PARAMS = -32602
+
 function errorPayload(err: ToolError): { code: number; message: string; data: unknown } {
   return {
     code: APP_ERROR,
@@ -157,6 +165,8 @@ export interface StartOptions {
   /** Overridable so a test can drive the switch without touching real settings. */
   isPaused?(): Promise<boolean>
   onCall?(record: CallRecord): void
+  /** The folder saved runs live in (default `userData/runs`), served as `nawi://runs/...` resources. */
+  runsRoot?: string
 }
 
 /**
@@ -175,6 +185,7 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
     options.isPaused ?? (async (): Promise<boolean> => (await settings.getSettings()).agentAccessPaused)
 
   const deps = { isPaused, token, tools, idempotency, onCall: options.onCall }
+  const runsRoot = options.runsRoot ?? runsDir()
 
   const server: Server = createServer((req, res) => {
     void handle(req, res).catch((err: unknown) => {
@@ -246,7 +257,7 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
           200,
           rpcResult(id, {
             protocolVersion: PROTOCOL_VERSION,
-            capabilities: { tools: { listChanged: false } },
+            capabilities: { tools: { listChanged: false }, resources: { listChanged: false, subscribe: false } },
             serverInfo: { name: 'nawi', version: app.getVersion?.() ?? '0.1.0' }
           }),
           // Not required on later requests (the CLI never initializes): it only
@@ -274,6 +285,54 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
       case 'tools/list':
         send(res, 200, rpcResult(id, { tools: describeTools(tools) }))
         return
+
+      case 'resources/templates/list':
+        // Static, like tools/list: discovery works while access is paused.
+        send(res, 200, rpcResult(id, { resourceTemplates: RESOURCE_TEMPLATES }))
+        return
+
+      case 'resources/list':
+      case 'resources/read': {
+        if (isNotification) {
+          res.writeHead(202).end()
+          return
+        }
+        const startedAt = new Date().toISOString()
+        const started = Date.now()
+        let failure: string | null = null
+        try {
+          // Reads, not tool calls, but an agent reading runs and screenshots is
+          // still agent access: the kill switch (UX-AGT.3) stops these too.
+          if (await isPaused()) {
+            throw new ToolError(
+              'AGENT_ACCESS_PAUSED',
+              'Agent access is paused in Nawi. Nothing was read. Resume it from the app to let agents read saved runs again.'
+            )
+          }
+          const params = (message.params ?? {}) as { uri?: unknown }
+          const result =
+            message.method === 'resources/list'
+              ? { resources: await listRunResources(runsRoot) }
+              : { contents: [await readRunResource(runsRoot, params.uri)] }
+          send(res, 200, rpcResult(id, result))
+        } catch (err) {
+          const te = toToolError(err)
+          failure = te.code
+          const code = te.code === 'NOT_FOUND' ? RESOURCE_NOT_FOUND : te.code === 'INVALID_ARGUMENTS' ? INVALID_PARAMS : APP_ERROR
+          send(res, 200, rpcError(id, code, te.message, { code: te.code, ...te.detail }))
+        } finally {
+          // The same activity log as tool calls (UX-AGT.4), under the method's name.
+          options.onCall?.({
+            callId: randomUUID(),
+            tool: message.method,
+            ok: failure === null,
+            code: failure,
+            startedAt,
+            durationMs: Date.now() - started
+          })
+        }
+        return
+      }
 
       case 'tools/call': {
         const params = (message.params ?? {}) as { name?: unknown; arguments?: unknown }

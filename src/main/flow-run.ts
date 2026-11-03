@@ -130,7 +130,8 @@ export interface FlowRunReport {
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 
-function within(root: string, path: string): boolean {
+/** Whether `path` is strictly inside `root` (both already resolved). */
+export function within(root: string, path: string): boolean {
   const rel = relative(root, path)
   // `..flows/x` is a folder named "..flows" inside the root; only `..` as a whole segment leaves it.
   return rel !== '' && !/^\.\.(?:[\\/]|$)/.test(rel) && !isAbsolute(rel)

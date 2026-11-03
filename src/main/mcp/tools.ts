@@ -656,7 +656,8 @@ const inputMap = (what: string) =>
     .refine((m) => Object.keys(m).length <= 200, `at most 200 ${what}`)
     .optional()
 
-const runsDir = (): string => join(app.getPath('userData'), 'runs')
+/** Where saved runs live: one folder per run (see run-record.ts). */
+export const runsDir = (): string => join(app.getPath('userData'), 'runs')
 
 /**
  * Roadmap F3b: replay a flow file in a browser. The kill switch is checked by
