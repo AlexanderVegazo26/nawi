@@ -245,6 +245,30 @@ not running.
 It **will not start the app for you** — a shell command silently opening a GUI
 is a surprise nobody consented to. That refusal is inherited from the MCP bridge.
 
+The one explicit way to start it from a shell is **`nawi serve`**: it runs the
+engine headless, as a local daemon, with no window and no global hotkeys, and the
+other commands and MCP clients attach to it as they would to the app. It stays
+in the foreground, prints one `nawi serve: ready on <url> (pid <n>, ...)` line
+once the endpoint is up (never the token), and Ctrl-C or SIGTERM stops it with
+exit 0 and removes its `mcp.json`. `--user-data-dir <dir>` runs it on a separate
+profile (point other commands at it with `NAWI_MCP_CONFIG=<dir>/mcp.json`). It
+exits 3 if Nawi is already running on that profile or the endpoint cannot start:
+one Nawi runs per profile, and opening the app a second time (also while
+`nawi serve` runs) shows the running instance's window instead of starting
+another. On Windows a stop is a hard kill, so the `mcp.json` stays until the next
+start replaces it.
+On Linux with no display it uses Chromium's headless backend, so flows run on a
+server or in CI without xvfb (`nawi run --headless`); screen capture and
+recording still need a desktop session.
+
+```bash
+nawi serve --user-data-dir /tmp/nawi-ci &
+export NAWI_MCP_CONFIG=/tmp/nawi-ci/mcp.json
+until nawi tools >/dev/null 2>&1; do sleep 0.2; done   # exit 3 until the endpoint is up
+nawi run login.nawi.yaml --headless --junit report.xml
+kill %1   # SIGTERM: clean stop
+```
+
 The installers do **not** put `nawi` on your `PATH` — see
 [Putting the `nawi` CLI on your PATH](#putting-the-nawi-cli-on-your-path) for the
 shipped binary's location on each platform and why the installer leaves PATH

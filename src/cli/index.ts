@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { NOT_RUNNING, readEndpoint } from '../mcp/endpoint'
 import { postJson, type PostResult } from '../mcp/post'
 import {
@@ -24,6 +26,16 @@ import {
   runExitCode,
   type RunReport
 } from './run'
+import {
+  SERVE_SUMMARY,
+  SERVE_USAGE,
+  ServeUsageError,
+  findApp,
+  parseServeArgs,
+  serveCommand,
+  serveEnv,
+  serveExitCode
+} from './serve'
 
 /**
  * `nawi` — the command-line front end to a running Nawi.
@@ -38,7 +50,8 @@ import {
  * **It does not launch the app.** Inherited verbatim from the bridge (see
  * `endpoint.ts`): a shell command silently starting a GUI on someone's desktop
  * is a surprise they never consented to. `nawi` reports that the app is
- * not running and exits non-zero.
+ * not running and exits non-zero. The one exception is `nawi serve`, the
+ * explicit request to start the engine, and it opens no window (serve.ts).
  *
  * **Plain node, zero dependencies, no `electron` import.** A packaged Electron
  * binary cannot serve as a CLI (no usable stdout on Windows — the constraint
@@ -68,6 +81,7 @@ ${Object.entries(COMMANDS)
   .map(([name, c]) => `  ${name.padEnd(16)}${c.summary}`)
   .join('\n')}
   ${'tools'.padEnd(16)}${TOOLS_COMMAND_SUMMARY}
+  ${'serve'.padEnd(16)}${SERVE_SUMMARY}
 
 Global flags:
   --json            Print the raw JSON-RPC result instead of formatted text.
@@ -81,9 +95,11 @@ objects) and kept as strings otherwise, so --width 800 sends a number and
 
 Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usage, 3 Nawi not running.
 
-Nawi must already be running; this command will not start it for you.
+Nawi must already be running (the app, or \`nawi serve\`); no other command starts it for you.
 
-${RUN_USAGE}`
+${RUN_USAGE}
+
+${SERVE_USAGE}`
 
 /**
  * Parses `--flag value` pairs into a tool argument object.
@@ -163,6 +179,7 @@ async function main(): Promise<void> {
   }
 
   if (command === 'tools') return toolsCommand(argv.slice(1))
+  if (command === 'serve') return serveCommandMain(argv.slice(1))
 
   const entry = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined
   if (!entry) {
@@ -317,6 +334,40 @@ async function followRuns(filter: Record<string, unknown>, intervalMs: number): 
     await new Promise((r) => setTimeout(r, intervalMs))
     for (const run of newRuns(seen, await list())) process.stdout.write(`${JSON.stringify(run)}\n`)
   }
+}
+
+/**
+ * `nawi serve`: runs the app with `--serve` in the foreground and exits with its code. Ctrl-C, SIGTERM and
+ * SIGHUP are passed on so the app quits through its own shutdown (which removes mcp.json), never killed from here.
+ */
+async function serveCommandMain(argv: string[]): Promise<void> {
+  let args: ReturnType<typeof parseServeArgs>
+  try {
+    args = parseServeArgs(argv, process.cwd())
+  } catch (err) {
+    if (err instanceof ServeUsageError) fail(`${err.message}\n\n${SERVE_USAGE}`, EXIT_USAGE)
+    throw err
+  }
+  if (args.help) {
+    process.stdout.write(`${SERVE_USAGE}\n`)
+    process.exit(EXIT_OK)
+  }
+  // "Already running on this profile" is the app's single-instance lock to decide (exit 3 from there), not a guess from mcp.json.
+  const app = findApp(fileURLToPath(import.meta.url), process.platform, existsSync)
+  if (!app) fail('Cannot find the Nawi app next to this CLI (neither an installed app nor a checkout with Electron).', EXIT_NOT_RUNNING)
+
+  const { command, args: appArgs } = serveCommand(app, args, process.platform, process.env)
+  const child = spawn(command, appArgs, { stdio: 'inherit', env: serveEnv(process.env) })
+  let forwarded = false
+  // On Windows child.kill() is a hard TerminateProcess: the app cannot clean up there (see SERVE_USAGE).
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(sig, () => {
+      forwarded = true
+      child.kill(sig)
+    })
+  }
+  child.once('error', (err) => fail(`Could not start Nawi (${command}): ${err.message}`, EXIT_NOT_RUNNING))
+  child.once('exit', (code, signal) => process.exit(serveExitCode(code, signal, forwarded)))
 }
 
 void main()

@@ -359,11 +359,25 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
   return {
     info,
     async close() {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
       // The file names a port nothing is listening on once we stop; leaving it
       // would make the bridge report a confusing connection refusal instead of
-      // "Nawi is not running".
-      await fs.rm(mcpConfigPath(), { force: true }).catch(() => undefined)
+      // "Nawi is not running". Removed first: closing the socket waits for
+      // in-flight calls, and a quit that stops waiting must not keep the file.
+      // Only our own file: another instance that published since owns it now.
+      await removeIfOwned(mcpConfigPath(), process.pid)
+      await new Promise<void>((resolve) => server.close(() => resolve()))
     }
+  }
+}
+
+/** Removes the published endpoint file if it still names `pid`; a missing or unreadable file is left alone. */
+export async function removeIfOwned(path: string, pid: number): Promise<boolean> {
+  try {
+    const published = JSON.parse(await fs.readFile(path, 'utf8')) as { pid?: unknown }
+    if (published.pid !== pid) return false
+    await fs.rm(path, { force: true })
+    return true
+  } catch {
+    return false
   }
 }

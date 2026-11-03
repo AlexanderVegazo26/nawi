@@ -36,9 +36,40 @@ import * as settings from './settings'
 import * as recording from './recording/orchestrator'
 import { answerDisplayMedia, listSourcesFor } from './recording/display-media'
 import { startMcpServer, type McpServerHandle } from './mcp/server'
+import { SERVE_EXIT_NO_ENDPOINT, isServeMode, serveReadyLine } from './headless'
 import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
 const isDev = !app.isPackaged
+
+/** `nawi serve`: no window, no hotkeys, only the agent endpoint; see headless.ts. */
+const serveMode = isServeMode(process.argv)
+
+/**
+ * One Nawi per profile: the library, settings and mcp.json would otherwise have two writers, and the
+ * instance that quits first would delete the endpoint file the other one still serves. A second
+ * launch of the app shows the running one's window instead (also when that one is `nawi serve`);
+ * a second `nawi serve` exits with the CLI's environment code.
+ */
+if (!app.requestSingleInstanceLock()) {
+  if (serveMode) {
+    console.error(
+      `nawi serve: Nawi is already running on this profile (${app.getPath('userData')}); the CLI and MCP clients can use it as it is.`
+    )
+  }
+  app.exit(serveMode ? SERVE_EXIT_NO_ENDPOINT : 0)
+} else {
+  app.on('second-instance', (_event, argv) => {
+    // The `nawi serve` that lost the lock reports it itself; it asked for no window.
+    if (isServeMode(argv) || !app.isReady()) return
+    if (!mainWindow) {
+      createMainWindow()
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
+}
 
 let mainWindow: BrowserWindow | null = null
 
@@ -74,6 +105,9 @@ let pendingRecordingAudio = false
  * and says so instead of failing to open a window.
  */
 let mcpServer: McpServerHandle | null = null
+
+/** The endpoint's startup; shutdown waits for it, so a quit during startup still removes the mcp.json it writes. */
+let mcpStartup: Promise<McpServerHandle | null> = Promise.resolve(null)
 
 /* ------------------------------------------------------------------ *
  * Protocol — file:// is unusable under webSecurity against a dev-server
@@ -672,6 +706,8 @@ function broadcastSettings(next: Settings): void {
  * the loop and silently cost the user their remaining hotkeys.
  */
 async function registerShortcuts(): Promise<void> {
+  // A background daemon must not take chords away from the user's desktop.
+  if (serveMode) return
   const current = await settings.getSettings()
   globalShortcut.unregisterAll()
 
@@ -778,9 +814,18 @@ app.whenReady().then(() => {
    * bind must degrade the agent interface, never prevent the window from
    * appearing.
    */
-  void startMcpServer()
+  mcpStartup = startMcpServer()
     .then((handle) => {
       mcpServer = handle
+      if (serveMode) {
+        // The endpoint is serve mode's only purpose: without it, fail loudly with the CLI's environment code.
+        if (!handle) {
+          console.error('nawi serve: the agent endpoint could not start (see the [mcp] error above)')
+          app.exit(SERVE_EXIT_NO_ENDPOINT)
+          return null
+        }
+        process.stdout.write(`${serveReadyLine(handle.info)}\n`)
+      }
       if (handle) {
         // FR-SEC.1: a *listening* loopback socket is not network egress. Nothing
         // leaves this machine because of it, so a local-only indicator must not
@@ -789,12 +834,21 @@ app.whenReady().then(() => {
       } else {
         console.error('[mcp] agent endpoint is not available; MCP tool calls cannot reach this app')
       }
+      return handle
     })
     .catch((err: unknown) => {
       console.error('[mcp] agent endpoint failed to start', err)
+      if (serveMode) app.exit(SERVE_EXIT_NO_ENDPOINT)
+      return null
     })
 
-  createMainWindow()
+  if (serveMode) {
+    app.dock?.hide()
+    // Ctrl-C, a service manager's stop or a closed terminal: quit through will-quit so mcp.json is removed.
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, () => app.quit())
+  } else {
+    createMainWindow()
+  }
 
   // Subscribed synchronously: an update landing before the first read resolved
   // would otherwise persist with nothing broadcast and no rebind.
@@ -813,17 +867,37 @@ app.whenReady().then(() => {
   })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
+    if (!serveMode && BrowserWindow.getAllWindows().length === 0) createMainWindow()
   })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // Serve mode has no window to begin with; a tool's transient window closing must not end the daemon.
+  if (process.platform !== 'darwin' && !serveMode) app.quit()
 })
 
-app.on('will-quit', () => {
+/** How long quitting waits for the endpoint to close (an in-flight run_flow holds its connection open). */
+const ENDPOINT_CLOSE_TIMEOUT_MS = 2000
+
+let endpointShutdown: 'running' | 'closing' | 'closed' = 'running'
+
+app.on('will-quit', (event) => {
   globalShortcut.unregisterAll()
   // Removes userData/mcp.json as well, so a bridge spawned after we exit reports
-  // "Nawi is not running" rather than a bare connection refusal.
-  void mcpServer?.close()
+  // "Nawi is not running" rather than a bare connection refusal. The quit waits
+  // for that (bounded): a fire-and-forget close could be cut off by the exit and
+  // leave a stale mcp.json behind. Every quit until it is done is held, not just
+  // the first: Ctrl-C reaches serve mode twice (from the terminal and from the CLI).
+  if (endpointShutdown === 'closed') return
+  event.preventDefault()
+  if (endpointShutdown === 'closing') return
+  endpointShutdown = 'closing'
+  const close = mcpStartup.then((handle) => handle?.close())
+  void Promise.race([close, new Promise((resolve) => setTimeout(resolve, ENDPOINT_CLOSE_TIMEOUT_MS))])
+    .catch((err: unknown) => console.error('[mcp] could not close the agent endpoint', err))
+    .finally(() => {
+      endpointShutdown = 'closed'
+      mcpServer = null
+      app.quit()
+    })
 })
