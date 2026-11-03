@@ -14,7 +14,7 @@ import { ToolError, agentAccessPaused, notImplemented } from './errors'
 import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
-import { runFlowFile } from '../flow-run'
+import { MAX_FLOW_PATH, runFlowFile } from '../flow-run'
 import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, readRunRecord } from '../run-record'
 
 /**
@@ -684,7 +684,7 @@ const runFlow = defineTool({
     'stops a run after the step in progress.',
   idempotent: false,
   schema: z.object({
-    file: z.string().min(1).max(4096).describe('Absolute path to the flow file.'),
+    file: z.string().min(1).max(MAX_FLOW_PATH).describe('Absolute path to the flow file.'),
     vars: inputMap('vars').describe('Values for vars the flow declares, overriding the file\'s defaults.'),
     env: inputMap('env values').describe('Values for ${env.NAME} references.'),
     secrets: inputMap('secrets').describe('Values for ${secret.name} references. Never stored or reported.'),
@@ -739,7 +739,7 @@ const listRunsTool = defineTool({
   schema: z.object({
     limit: z.number().int().min(1).max(DEFAULT_KEEP_RUNS).default(20),
     status: z.enum(['passed', 'failed']).optional(),
-    flow_file: z.string().min(1).max(4096).optional().describe('Resolved absolute path (symlinks followed) of the flow file, as the run recorded it (`flow.file` in list_runs).')
+    flow_file: z.string().min(1).max(MAX_FLOW_PATH).optional().describe('Resolved absolute path (symlinks followed) of the flow file, as the run recorded it (`flow.file` in list_runs).')
   }),
   async run(args) {
     const runs = await listRuns(runsDir(), { limit: args.limit, status: args.status, flowFile: args.flow_file })

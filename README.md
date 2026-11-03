@@ -241,6 +241,18 @@ carry Nawi's typed code in `error.data.code`, like tool errors. Only files a run
 stay listable while paused, like `tools/list`), and each list or read goes to the same call log.
 Code: `src/main/mcp/resources.ts`.
 
+Two common jobs are MCP prompts, which a client can offer as ready-made requests (`prompts/list`, `prompts/get`):
+`run_and_triage` (argument `file`, an absolute `*.nawi.yaml` path) runs the flow with `run_flow` and, when a step
+fails, has the model read the run record and screenshots and call it an app bug, locator bug, flake or environment
+problem, with the evidence and a minimal repro. `heal_flow` (argument `run_id`) has it check that a failed step's
+locator no longer finds its element and propose the smallest change to the flow as a diff, without writing or running
+anything (checking the fix is left to you). A prompt only returns message text: it reads and runs nothing itself, so
+it works while agent access is paused, and the tool calls the model makes afterwards are checked as usual. Every
+argument is checked before it goes into the text: a run id must be a run id; a file must be an absolute `*.nawi.yaml`
+path on one line with no invisible or direction-changing characters, and goes in only as a quoted JSON string that
+the text calls a path. A path can still contain words, so only pass paths you trust. An unknown prompt or a bad
+argument is JSON-RPC -32602 with `data.code` `NOT_FOUND` or `INVALID_ARGUMENTS`. Code: `src/main/mcp/prompts.ts`.
+
 `nawi` is a command-line front end to the **same** endpoint, with the same
 bearer token and the same tools, so every rule the app enforces — the agent kill
 switch, redaction gating, path confinement — applies unchanged.

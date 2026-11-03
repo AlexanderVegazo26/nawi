@@ -13,6 +13,7 @@ import {
   type ToolDefinition
 } from './dispatch'
 import { ToolError, toToolError } from './errors'
+import { getPrompt, PROMPTS } from './prompts'
 import { InFlightCalls, progressNotification, progressTokenOf, sseEvent, type JsonRpcId } from './progress'
 import { RESOURCE_TEMPLATES, listRunResources, readRunResource } from './resources'
 import { TOOLS, runsDir } from './tools'
@@ -49,6 +50,7 @@ import * as settings from '../settings'
  *
  * Saved runs are also MCP resources (`resources/list`, `resources/templates/list`,
  * `resources/read`; see `./resources.ts`), behind the same token and kill switch.
+ * Common jobs are MCP prompts (`prompts/list`, `prompts/get`; see `./prompts.ts`).
  */
 
 const PROTOCOL_VERSION = '2025-06-18'
@@ -257,7 +259,11 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
           200,
           rpcResult(id, {
             protocolVersion: PROTOCOL_VERSION,
-            capabilities: { tools: { listChanged: false }, resources: { listChanged: false, subscribe: false } },
+            capabilities: {
+              tools: { listChanged: false },
+              resources: { listChanged: false, subscribe: false },
+              prompts: { listChanged: false }
+            },
             serverInfo: { name: 'nawi', version: app.getVersion?.() ?? '0.1.0' }
           }),
           // Not required on later requests (the CLI never initializes): it only
@@ -290,6 +296,29 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
         // Static, like tools/list: discovery works while access is paused.
         send(res, 200, rpcResult(id, { resourceTemplates: RESOURCE_TEMPLATES }))
         return
+
+      case 'prompts/list':
+        // Static templates: like tools/list, listable while access is paused.
+        send(res, 200, rpcResult(id, { prompts: PROMPTS }))
+        return
+
+      case 'prompts/get': {
+        // Builds message text from checked arguments and reads nothing, so it is
+        // not gated: the tools and resources the model calls afterwards are.
+        if (isNotification) {
+          res.writeHead(202).end()
+          return
+        }
+        const params = (message.params ?? {}) as { name?: unknown; arguments?: unknown }
+        try {
+          send(res, 200, rpcResult(id, getPrompt(params.name, params.arguments)))
+        } catch (err) {
+          // MCP answers an unknown prompt and bad arguments alike with -32602.
+          const te = toToolError(err)
+          send(res, 200, rpcError(id, te.code === 'INTERNAL' ? -32603 : INVALID_PARAMS, te.message, { code: te.code, ...te.detail }))
+        }
+        return
+      }
 
       case 'resources/list':
       case 'resources/read': {

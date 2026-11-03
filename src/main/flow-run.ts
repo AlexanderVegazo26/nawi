@@ -51,6 +51,8 @@ import { toHtmlReport } from './run-report'
  */
 
 export const MAX_FLOW_FILE_BYTES = 1024 * 1024
+/** Longest flow file path a caller may pass (run_flow, the run_and_triage prompt). */
+export const MAX_FLOW_PATH = 4096
 
 export interface FlowRunRequest {
   /** Absolute path to the flow file. */
