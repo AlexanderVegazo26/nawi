@@ -16,6 +16,7 @@ import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
 import { MAX_FLOW_PATH, runFlowFile } from '../flow-run'
 import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, readRunRecord } from '../run-record'
+import { REVISION_RE } from '../sidecar/paths'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -67,9 +68,12 @@ function itemView(item: LibraryItem): Record<string, unknown> {
   }
 }
 
+/** An unknown display id is the caller's mistake: NOT_FOUND, not an INTERNAL "retry may help". */
 function displayFor(displayId?: number): Electron.Display {
-  if (typeof displayId === 'number') return capture.displayById(displayId)
-  return screen.getPrimaryDisplay()
+  if (typeof displayId !== 'number') return screen.getPrimaryDisplay()
+  const found = screen.getAllDisplays().find((d) => d.id === displayId)
+  if (!found) throw new ToolError('NOT_FOUND', `No display with id ${displayId}.`, { display_id: displayId })
+  return found
 }
 
 /**
@@ -204,6 +208,7 @@ const captureScreen = defineTool({
     'Capture a full display as a PNG and store it in the Nawi library. Returns a stable capture_id. ' +
     'Pass idempotency_key to make retries safe: the same key returns the first call\'s capture_id without capturing again.',
   idempotent: true,
+  errors: ['NOT_FOUND'],
   schema: z.object({
     display_id: z
       .number()
@@ -236,6 +241,7 @@ const captureRegion = defineTool({
     'Capture a rectangular region of a display as a PNG. Coordinates are in that display\'s own DIP space ' +
     '(top-left origin), and are converted to physical pixels and clamped to the display. Returns a stable capture_id.',
   idempotent: true,
+  errors: ['NOT_FOUND'],
   schema: z.object({
     x: z.number().int().min(0).max(100_000),
     y: z.number().int().min(0).max(100_000),
@@ -286,6 +292,7 @@ const captureElement = defineTool({
     'falling back to a screen grab — a full-screen image returned in place of one element is both wrong and a ' +
     'confidentiality problem, since it captures everything else on screen too.',
   idempotent: true,
+  errors: ['NO_BROWSER_ATTACHED'],
   schema: z.object({
     selector: z.string().min(1).max(2000),
     idempotency_key: idempotencyKey
@@ -315,6 +322,7 @@ const startRecording = defineTool({
   name: 'start_recording',
   description: `Start a screen recording. NOT AVAILABLE in this build: ${RECORDING_UNAVAILABLE}`,
   idempotent: true,
+  errors: ['NOT_IMPLEMENTED'],
   schema: z.object({
     display_id: z.number().int().optional(),
     audio: z.boolean().optional(),
@@ -329,6 +337,7 @@ const stopRecording = defineTool({
   name: 'stop_recording',
   description: `Stop the current recording and store it. NOT AVAILABLE in this build: ${RECORDING_UNAVAILABLE}`,
   idempotent: true,
+  errors: ['NOT_IMPLEMENTED'],
   schema: z.object({ idempotency_key: idempotencyKey }),
   run: async () => {
     throw notImplemented('stop_recording', RECORDING_UNAVAILABLE)
@@ -345,6 +354,7 @@ const getCapture = defineTool({
     'Metadata for one capture by id: dimensions, kind, timestamps, sidecar revision, and a capture:// asset URL. ' +
     'Does not return image bytes — use the asset_url.',
   idempotent: false,
+  errors: ['NOT_FOUND'],
   schema: z.object({ capture_id: z.string().min(1).max(200) }),
   async run(args) {
     return itemView(await requireItem(args.capture_id))
@@ -359,9 +369,10 @@ const getStateLayer = defineTool({
     'are returned — pass the cursor back to continue. Every entry keeps its t_ms and carries a seekable video_url. ' +
     'A source that was never harvested is reported as unavailable with a reason, not omitted.',
   idempotent: false,
+  errors: ['NOT_FOUND', 'UNAVAILABLE'],
   schema: z.object({
     capture_id: z.string().min(1).max(200),
-    revision: z.string().max(16).optional().describe('e.g. "v1". Defaults to the current revision.'),
+    revision: z.string().max(16).regex(REVISION_RE, 'a revision such as "v1"').optional().describe('e.g. "v1". Defaults to the current revision.'),
     fields: z.array(z.enum(PROJECTABLE_FIELDS)).max(16).optional(),
     level: z.array(z.enum(['log', 'info', 'warn', 'error', 'debug'])).max(8).optional(),
     type: z.array(z.enum(['click', 'keydown', 'scroll', 'navigate', 'resize'])).max(8).optional(),
@@ -399,6 +410,7 @@ const listCaptures = defineTool({
   description:
     'List captures, newest first, with offset/limit paging. Optionally filter by kind or by source (user vs agent).',
   idempotent: false,
+  errors: [],
   schema: z.object({
     limit: z.number().int().min(1).max(100).default(25),
     offset: z.number().int().min(0).max(1_000_000).default(0),
@@ -426,6 +438,7 @@ const searchCaptures = defineTool({
     'Substring search over capture names and tags, newest first. This is a literal match, not semantic search ' +
     '(FR-AI.5) — it does not search transcripts, OCR text or DOM text, because none of those are indexed yet.',
   idempotent: false,
+  errors: [],
   schema: z.object({
     query: z.string().min(1).max(200),
     limit: z.number().int().min(1).max(100).default(25)
@@ -471,6 +484,7 @@ const annotate = defineTool({
     'Coordinates are in image-pixel space. Shapes are appended to any the user already drew. This also writes a ' +
     'NEW sidecar revision recording the agent trace; it never edits an existing revision in place (DC-6).',
   idempotent: true,
+  errors: ['NOT_FOUND'],
   schema: z.object({
     capture_id: z.string().min(1).max(200),
     shapes: z.array(shapeSchema).min(1).max(100),
@@ -560,6 +574,7 @@ const redact = defineTool({
     'reporting a region as redacted while the original pixels are still in the exported PNG, which is exactly the ' +
     'P0 that DC-3 forbids. Use annotate for a visible marker that is honestly non-destructive.',
   idempotent: true,
+  errors: ['NOT_FOUND', 'NOT_IMPLEMENTED'],
   schema: z.object({
     capture_id: z.string().min(1).max(200),
     region: z.object({
@@ -589,6 +604,7 @@ const exportGuide = defineTool({
     'Export a recording as a step-by-step guide (Markdown or HTML). NOT AVAILABLE in this build: guide generation ' +
     '(FR-GDE) has not been built — there is no step extractor, no guide schema writer and no exporter. This lands in M2.',
   idempotent: true,
+  errors: ['NOT_FOUND', 'NOT_IMPLEMENTED'],
   schema: z.object({
     capture_id: z.string().min(1).max(200),
     format: z.enum(['markdown', 'html']).default('markdown'),
@@ -616,9 +632,10 @@ const exportFlow = defineTool({
     'ranked selectors. Fields the app marked secret become ${secret.<name>} placeholders: their values were never ' +
     'recorded. Scrolls, resizes and modifier keys are left out and counted. Returns the YAML text and writes nothing.',
   idempotent: false,
+  errors: ['NOT_FOUND', 'UNAVAILABLE'],
   schema: z.object({
     capture_id: z.string().min(1).max(200),
-    revision: z.string().max(16).optional().describe('e.g. "v1". Defaults to the current revision.'),
+    revision: z.string().max(16).regex(REVISION_RE, 'a revision such as "v1"').optional().describe('e.g. "v1". Defaults to the current revision.'),
     name: z.string().max(200).optional().describe('Flow name. Defaults to "Recording <created_at>".')
   }),
   async run(args) {
@@ -683,6 +700,7 @@ const runFlow = defineTool({
     'each step settles. Pausing agent access, cancelling the call (notifications/cancelled), or disconnecting ' +
     'stops a run after the step in progress.',
   idempotent: false,
+  errors: ['NOT_FOUND', 'NOT_IMPLEMENTED', 'UNAVAILABLE'],
   schema: z.object({
     file: z.string().min(1).max(MAX_FLOW_PATH).describe('Absolute path to the flow file.'),
     vars: inputMap('vars').describe('Values for vars the flow declares, overriding the file\'s defaults.'),
@@ -736,6 +754,7 @@ const listRunsTool = defineTool({
     'duration, step totals and the failing step. Filter by status or flow file; limit defaults to 20. ' +
     'Use get_run for one run\'s steps and evidence.',
   idempotent: true,
+  errors: [],
   schema: z.object({
     limit: z.number().int().min(1).max(DEFAULT_KEEP_RUNS).default(20),
     status: z.enum(['passed', 'failed']).optional(),
@@ -756,6 +775,7 @@ const getRun = defineTool({
     'run_dir: before/after JPEGs in steps[].shots, PNGs of screenshot steps). run_dir also holds junit.xml and ' +
     'report.html (runs saved by this version of Nawi or later): a self-contained page with the screenshots embedded that a person can open in a browser.',
   idempotent: true,
+  errors: ['NOT_FOUND'],
   schema: z.object({
     run_id: z.string().regex(RUN_ID_RE, 'a run id such as 20261102T103900123Z-a1b2c3 (see list_runs)')
   }),

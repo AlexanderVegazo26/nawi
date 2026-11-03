@@ -187,6 +187,8 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
     options.isPaused ?? (async (): Promise<boolean> => (await settings.getSettings()).agentAccessPaused)
 
   const deps = { isPaused, token, tools, idempotency, onCall: options.onCall }
+  // Static for the server's lifetime: built once, not per tools/list.
+  const descriptors = describeTools(tools)
   const runsRoot = options.runsRoot ?? runsDir()
 
   const server: Server = createServer((req, res) => {
@@ -289,7 +291,7 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
         return
 
       case 'tools/list':
-        send(res, 200, rpcResult(id, { tools: describeTools(tools) }))
+        send(res, 200, rpcResult(id, { tools: descriptors }))
         return
 
       case 'resources/templates/list':

@@ -27,6 +27,7 @@ const tools = [
     name: 'count',
     description: 'reports two progress updates, then answers',
     idempotent: false,
+    errors: [],
     schema: z.object({}),
     async run(_args, ctx) {
       ctx.progress?.({ progress: 1, total: 2, message: 'step 1/2 a (click): passed' })
@@ -38,6 +39,7 @@ const tools = [
     name: 'wait',
     description: 'runs until its call is stopped, then answers with the reason',
     idempotent: false,
+    errors: [],
     schema: z.object({}),
     async run(_args, ctx) {
       const signal = ctx.signal as AbortSignal

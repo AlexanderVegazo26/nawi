@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import { ToolError, agentAccessPaused, toToolError } from './errors'
+import { DISPATCH_ERROR_CODES, ToolError, agentAccessPaused, toToolError, type ToolErrorCode } from './errors'
 
 /**
  * The single chokepoint through which every MCP tool body is invoked.
@@ -65,6 +65,13 @@ export interface ToolDefinition<S extends z.ZodType = z.ZodType> {
    * are already naturally idempotent (reads) or for which replay is meaningless.
    */
   idempotent: boolean
+  /**
+   * The typed codes this tool's own body can end with, on top of
+   * DISPATCH_ERROR_CODES (which every call can end with). Published in
+   * `tools/list` and docs/MCP-ERRORS.md; the tool contract test checks the list
+   * against the body both ways, so it cannot go stale.
+   */
+  errors: readonly ToolErrorCode[]
   run(args: z.output<S>, ctx: ToolContext): Promise<unknown>
 }
 
@@ -72,18 +79,28 @@ export function defineTool<S extends z.ZodType>(def: ToolDefinition<S>): ToolDef
   return def as unknown as ToolDefinition<z.ZodType>
 }
 
+/** `_meta` key on each `tools/list` entry: every `error.data.code` a call to that tool can return. */
+export const ERRORS_META_KEY = 'nawi/errors'
+
 /** The `tools/list` payload for one tool. */
 export interface ToolDescriptor {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  _meta?: { [ERRORS_META_KEY]: ToolErrorCode[] }
+}
+
+/** Every typed code a call to `tool` can end with: dispatch's, then the tool's own. */
+export function errorCodesOf(tool: Pick<ToolDefinition, 'errors'>): ToolErrorCode[] {
+  return [...DISPATCH_ERROR_CODES, ...tool.errors]
 }
 
 export function describeTools(tools: ToolDefinition[]): ToolDescriptor[] {
   return tools.map((t) => ({
     name: t.name,
     description: t.description,
-    inputSchema: z.toJSONSchema(t.schema, { io: 'input' }) as Record<string, unknown>
+    inputSchema: z.toJSONSchema(t.schema, { io: 'input' }) as Record<string, unknown>,
+    _meta: { [ERRORS_META_KEY]: errorCodesOf(t) }
   }))
 }
 

@@ -38,6 +38,7 @@ const noop = defineTool({
   name: 'noop',
   description: 'test',
   idempotent: false,
+  errors: [],
   schema: z.object({ n: z.number().optional() }),
   run: async (args) => ({ echoed: args.n ?? null })
 })
@@ -58,6 +59,7 @@ describe('UX-AGT.3 — the kill switch', () => {
       name: 'capture_screen',
       description: 'test',
       idempotent: true,
+      errors: [],
       schema: z.object({}),
       run
     })
@@ -89,7 +91,7 @@ describe('UX-AGT.3 — the kill switch', () => {
 
   it('applies to every tool, because there is only one way in', async () => {
     const tools = ['a', 'b', 'c'].map((n) =>
-      defineTool({ name: n, description: 't', idempotent: false, schema: z.object({}), run: async () => ({}) })
+      defineTool({ name: n, description: 't', idempotent: false, errors: [], schema: z.object({}), run: async () => ({}) })
     )
     const deps = makeDeps({ isPaused: async () => true, tools })
     for (const t of tools) {
@@ -156,6 +158,7 @@ describe('FR-AGT.3 — idempotency', () => {
       name: 'capture_screen',
       description: 't',
       idempotent: true,
+      errors: [],
       schema: z.object({ idempotency_key: z.string().optional() }),
       run: async () => {
         calls++
@@ -216,6 +219,7 @@ describe('FR-AGT.3 — idempotency', () => {
       name: 'flaky',
       description: 't',
       idempotent: true,
+      errors: [],
       schema: z.object({ idempotency_key: z.string().optional() }),
       run: async () => {
         calls++
@@ -257,6 +261,7 @@ describe('caller disconnect', () => {
       name: 'noop',
       description: 'test',
       idempotent: false,
+      errors: [],
       schema: z.object({}),
       run: async (_args, ctx) => {
         seen = ctx.signal

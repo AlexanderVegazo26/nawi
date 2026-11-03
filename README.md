@@ -218,7 +218,11 @@ Nawi exposes sixteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`) and `get_run` (CLI: `nawi run-info --run_id <id>`). Every tool has a CLI command (a test keeps the
 two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
 `nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
-Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usage, 3 Nawi not running. The MCP server, its dispatch layer, the state
+Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usage, 3 Nawi not running.
+A refused tool call is JSON-RPC -32000 with a typed code in `error.data.code` (`NOT_FOUND`, `INVALID_ARGUMENTS` with
+`data.issues`, `AGENT_ACCESS_PAUSED`, ...); each `tools/list` entry names the codes that tool can return under
+`_meta["nawi/errors"]`, and [docs/MCP-ERRORS.md](docs/MCP-ERRORS.md) documents the shape and every code (a contract
+test drives every tool through it and keeps the page in step with the code). The MCP server, its dispatch layer, the state
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 

@@ -27,6 +27,39 @@ export type ToolErrorCode =
   | 'UNAVAILABLE'
   | 'INTERNAL'
 
+/**
+ * What each code means, in the words docs/MCP-ERRORS.md uses. A `Record` over
+ * the union, so adding a code without explaining it does not compile.
+ */
+export const TOOL_ERROR_MEANINGS: Record<ToolErrorCode, string> = {
+  AGENT_ACCESS_PAUSED: 'Agent access is paused in Nawi (the kill switch). Nothing was read, run or created.',
+  UNAUTHORIZED: 'No bearer token, or not the one in userData/mcp.json.',
+  FORBIDDEN_ORIGIN: 'The request carried an Origin header (a web page); only local, non-browser clients are served.',
+  INVALID_ARGUMENTS:
+    'The arguments failed the tool\'s input schema (`data.issues`: `path` + `message` each), or a value the schema ' +
+    'cannot judge was refused (an empty region, a path outside your home, a flow that does not parse).',
+  UNKNOWN_TOOL: 'No tool by that name (`data.tool`).',
+  NOT_FOUND: 'The capture, run, flow file or display named in the arguments does not exist.',
+  NO_BROWSER_ATTACHED: 'The tool needs a browser attached over CDP and none is.',
+  NOT_IMPLEMENTED:
+    'This build cannot do that yet (a listed tool such as `redact`, with `data.tool`; or a desktop-target flow). Nothing was changed.',
+  UNAVAILABLE: 'The target exists but cannot serve this call (no state layer, no input events, a browser that cannot be used).',
+  INTERNAL: 'An unexpected failure inside Nawi. The message says what failed; retrying may help.'
+}
+
+/**
+ * Codes any call to an existing tool can end with, because `dispatch` raises
+ * them before (or around) the tool body. A tool declares only the codes its own
+ * body adds. (UNKNOWN_TOOL is dispatch's too, but only for a name that is no tool.)
+ */
+export const DISPATCH_ERROR_CODES: readonly ToolErrorCode[] = [
+  'UNAUTHORIZED',
+  'FORBIDDEN_ORIGIN',
+  'AGENT_ACCESS_PAUSED',
+  'INVALID_ARGUMENTS',
+  'INTERNAL'
+]
+
 export class ToolError extends Error {
   readonly code: ToolErrorCode
   /** Extra machine-readable context. Never contains secrets. */
