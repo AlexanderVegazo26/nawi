@@ -4,6 +4,16 @@ import { dirname, join } from 'node:path'
 import { NOT_RUNNING, readEndpoint } from '../mcp/endpoint'
 import { postJson, type PostResult } from '../mcp/post'
 import {
+  COMMANDS,
+  FollowUsageError,
+  TOOLS_COMMAND_SUMMARY,
+  newRuns,
+  parseFollow,
+  renderTools,
+  toolDescriptors,
+  type RunSummary
+} from './commands'
+import {
   RUN_USAGE,
   RunUsageError,
   flowReferences,
@@ -48,25 +58,6 @@ const EXIT_APP_ERROR = 1
 const EXIT_USAGE = 2
 const EXIT_NOT_RUNNING = 3
 
-/** Commands are a thin naming layer over the MCP tools; see `src/main/mcp/tools.ts`. */
-const COMMANDS: Record<string, { tool: string; summary: string }> = {
-  capture: { tool: 'capture_screen', summary: 'Capture the whole screen.' },
-  'capture-region': { tool: 'capture_region', summary: 'Capture a region: --x --y --width --height.' },
-  'capture-element': { tool: 'capture_element', summary: 'Capture a page element: --selector.' },
-  record: { tool: 'start_recording', summary: 'Start a screen recording.' },
-  'record-stop': { tool: 'stop_recording', summary: 'Stop the active recording.' },
-  get: { tool: 'get_capture', summary: 'Fetch one capture: --id.' },
-  list: { tool: 'list_captures', summary: 'List captures in the library.' },
-  search: { tool: 'search_captures', summary: 'Search captures: --query.' },
-  annotate: { tool: 'annotate', summary: 'Add an annotation to a capture.' },
-  redact: { tool: 'redact', summary: 'Redact a region of a capture.' },
-  export: { tool: 'export_guide', summary: 'Export captures as a guide.' },
-  'export-flow': { tool: 'export_flow', summary: 'Turn a recording into a flow file: --capture_id.' },
-  run: { tool: 'run_flow', summary: 'Replay a flow file: nawi run <file> [--headless] [--var k=v]. Exit 1 if a step fails.' },
-  runs: { tool: 'list_runs', summary: 'List saved run records, newest first: [--limit 20] [--status failed] [--flow_file path].' },
-  'run-info': { tool: 'get_run', summary: 'One run record in full: --run_id.' }
-}
-
 const USAGE = `nawi — command-line access to a running Nawi.
 
 Usage:
@@ -76,15 +67,19 @@ Commands:
 ${Object.entries(COMMANDS)
   .map(([name, c]) => `  ${name.padEnd(16)}${c.summary}`)
   .join('\n')}
+  ${'tools'.padEnd(16)}${TOOLS_COMMAND_SUMMARY}
 
 Global flags:
   --json            Print the raw JSON-RPC result instead of formatted text.
+                    ('runs --follow' always prints NDJSON: one run per line.)
   --help, -h        Show this help.
   --version, -v     Show the CLI version.
 
 Values are parsed as JSON when they look like JSON (numbers, true/false, arrays,
 objects) and kept as strings otherwise, so --width 800 sends a number and
 --name "My shot" sends a string. A flag with no value is the boolean true.
+
+Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usage, 3 Nawi not running.
 
 Nawi must already be running; this command will not start it for you.
 
@@ -167,7 +162,9 @@ async function main(): Promise<void> {
     process.exit(EXIT_OK)
   }
 
-  const entry = COMMANDS[command]
+  if (command === 'tools') return toolsCommand(argv.slice(1))
+
+  const entry = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined
   if (!entry) {
     fail(`Unknown command "${command}".\n\n${USAGE}`, EXIT_USAGE)
   }
@@ -181,6 +178,17 @@ async function main(): Promise<void> {
     fail(`${err instanceof Error ? err.message : String(err)}\n\n${USAGE}`, EXIT_USAGE)
   }
 
+  if (command === 'runs') {
+    let follow: ReturnType<typeof parseFollow>
+    try {
+      follow = parseFollow(parsed.args)
+    } catch (err) {
+      if (err instanceof FollowUsageError) fail(`${err.message}\n\n${USAGE}`, EXIT_USAGE)
+      throw err
+    }
+    if (follow) return followRuns(follow.filter, follow.interval)
+  }
+
   const result = await callTool(entry.tool, parsed.args)
   process.stdout.write(`${parsed.json ? JSON.stringify(result, null, 2) : render(result)}\n`)
   process.exit(EXIT_OK)
@@ -188,6 +196,11 @@ async function main(): Promise<void> {
 
 /** One `tools/call` against the running app; exits with the contract's code on any failure. */
 async function callTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
+  return callRpc('tools/call', { name: tool, arguments: args })
+}
+
+/** One JSON-RPC request against the running app; exits with the contract's code on any failure. */
+async function callRpc(method: string, params: Record<string, unknown>): Promise<unknown> {
   const endpoint = readEndpoint()
   if (!endpoint) fail(NOT_RUNNING, EXIT_NOT_RUNNING)
 
@@ -204,8 +217,8 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<un
       JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
-        method: 'tools/call',
-        params: { name: tool, arguments: args }
+        method,
+        params
       })
     )
   } catch (err) {
@@ -274,6 +287,36 @@ async function runCommand(argv: string[]): Promise<void> {
     }
   }
   process.exit(runExitCode(report))
+}
+
+/** `nawi tools [--json]`: what the running app offers, straight from `tools/list`. */
+async function toolsCommand(argv: string[]): Promise<void> {
+  if (argv.some((a) => a !== '--json')) fail(`nawi tools takes only --json.\n\n${USAGE}`, EXIT_USAGE)
+  const tools = toolDescriptors(await callRpc('tools/list', {}))
+  process.stdout.write(`${argv.includes('--json') ? JSON.stringify({ tools }, null, 2) : renderTools(tools)}\n`)
+  process.exit(EXIT_OK)
+}
+
+/**
+ * `nawi runs --follow`: polls list_runs and prints each run that appears after the command started as one JSON
+ * line (NDJSON), oldest first. Runs that already exist are not replayed; use `nawi runs` for those. Ends on
+ * Ctrl-C / SIGTERM (exit 0); a lost connection exits 3 like any other command.
+ */
+async function followRuns(filter: Record<string, unknown>, intervalMs: number): Promise<void> {
+  const list = async (): Promise<RunSummary[]> => {
+    const result = (await callTool('list_runs', filter)) as { structuredContent?: { runs?: RunSummary[] } }
+    const runs = result?.structuredContent?.runs
+    if (!Array.isArray(runs)) fail(`Nawi returned an unexpected list_runs result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
+    return runs
+  }
+  const seen = new Set<string>()
+  newRuns(seen, await list())
+  // Exit at once: a handler that only sets a flag would replace the default and leave Ctrl-C waiting for the next poll.
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(EXIT_OK))
+  for (;;) {
+    await new Promise((r) => setTimeout(r, intervalMs))
+    for (const run of newRuns(seen, await list())) process.stdout.write(`${JSON.stringify(run)}\n`)
+  }
 }
 
 void main()

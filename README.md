@@ -212,10 +212,13 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 Nawi exposes sixteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
-`get_capture`, `get_state_layer`, `list_captures`, `search_captures`, `annotate`,
+`get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
 `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
-`list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`) and `get_run` (CLI: `nawi run-info --run_id <id>`). The MCP server, its dispatch layer, the state
+`list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`) and `get_run` (CLI: `nawi run-info --run_id <id>`). Every tool has a CLI command (a test keeps the
+two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
+`nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
+Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usage, 3 Nawi not running. The MCP server, its dispatch layer, the state
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 
