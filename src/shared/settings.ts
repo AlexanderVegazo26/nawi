@@ -75,6 +75,49 @@ export interface Settings {
    * "disabled" and silently break a working agent setup on upgrade.
    */
   agentAccessPaused: boolean
+  /** Model access for AI features (roadmap AI13). Off until the user picks a provider. */
+  ai: AiSettings
+}
+
+export const AI_PROVIDERS = ['none', 'anthropic', 'openai-compatible'] as const
+export type AiProviderSetting = (typeof AI_PROVIDERS)[number]
+
+/**
+ * Which model AI features may call, and how much one run may spend.
+ *
+ * API keys are deliberately not here: this file is plain JSON on disk. Keys come
+ * from the environment (`NAWI_LLM_API_KEY`, or the provider's own variables).
+ */
+export interface AiSettings {
+  /** `none` (default) means no model is ever called; features report "not evaluated". */
+  provider: AiProviderSetting
+  /** The model id sent to the provider. Empty = not configured. Never defaulted by Nawi. */
+  model: string
+  /** Endpoint override. Required for `openai-compatible` (e.g. a local server). */
+  baseUrl: string
+  /** Offline mode: no model call at all; cached answers are still used. */
+  offline: boolean
+  /** Per-run caps. A run that hits one gets "not evaluated" for the rest of its AI checks. */
+  maxCallsPerRun: number
+  maxTokensPerRun: number
+  /** Cost cap in USD, enforced only when both prices below are set (> 0). */
+  maxCostPerRunUsd: number
+  inputUsdPerMTok: number
+  outputUsdPerMTok: number
+}
+
+export function defaultAiSettings(): AiSettings {
+  return {
+    provider: 'none',
+    model: '',
+    baseUrl: '',
+    offline: false,
+    maxCallsPerRun: 20,
+    maxTokensPerRun: 200_000,
+    maxCostPerRunUsd: 1,
+    inputUsdPerMTok: 0,
+    outputUsdPerMTok: 0
+  }
 }
 
 /**
@@ -106,7 +149,8 @@ export function defaultSettings(): Settings {
     },
     maskedApps: [],
     redactionRules: [],
-    agentAccessPaused: false
+    agentAccessPaused: false,
+    ai: defaultAiSettings()
   }
 }
 
@@ -118,6 +162,7 @@ export type SettingsPatch = {
   maskedApps?: unknown
   redactionRules?: unknown
   agentAccessPaused?: unknown
+  ai?: Partial<Record<string, unknown>>
 }
 
 const THEMES: readonly ThemePreference[] = ['system', 'dark', 'light']
@@ -238,6 +283,61 @@ function sanitizeRedactionRules(v: unknown, fallback: RedactionRule[]): Redactio
   return out
 }
 
+const AI_LIMITS = {
+  maxCallsPerRun: 10_000,
+  maxTokensPerRun: 100_000_000,
+  maxCostPerRunUsd: 10_000,
+  inputUsdPerMTok: 10_000,
+  outputUsdPerMTok: 10_000
+} as const
+
+/**
+ * A model endpoint: http(s), no credentials, no query or fragment (it is stored
+ * in plain JSON and written to the outbound log, so it must not carry a key).
+ */
+export function isSafeBaseUrl(v: string): boolean {
+  if (v.length > 2048) return false
+  try {
+    const u = new URL(v)
+    return (
+      (u.protocol === 'http:' || u.protocol === 'https:') &&
+      u.username === '' &&
+      u.password === '' &&
+      u.search === '' &&
+      u.hash === ''
+    )
+  } catch {
+    return false
+  }
+}
+
+function mergeAi(base: AiSettings, patch: unknown): AiSettings {
+  const out = { ...base }
+  if (!isRecord(patch)) return out
+  const has = (k: string): boolean => Object.prototype.hasOwnProperty.call(patch, k)
+  if (has('provider') && AI_PROVIDERS.includes(patch.provider as AiProviderSetting)) {
+    out.provider = patch.provider as AiProviderSetting
+  }
+  if (has('model') && typeof patch.model === 'string') {
+    const m = patch.model.trim()
+    // A model id is one short printable token; empty clears it.
+    if (m === '' || (m.length <= 200 && /^[\x21-\x7e]+$/.test(m))) out.model = m
+  }
+  if (has('baseUrl') && typeof patch.baseUrl === 'string') {
+    const u = patch.baseUrl.trim()
+    // No credentials in the URL: it is stored in plain JSON and written to the outbound log.
+    if (u === '' || isSafeBaseUrl(u)) out.baseUrl = u
+  }
+  if (has('offline') && typeof patch.offline === 'boolean') out.offline = patch.offline
+  for (const key of Object.keys(AI_LIMITS) as Array<keyof typeof AI_LIMITS>) {
+    if (!has(key)) continue
+    const v = patch[key]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > AI_LIMITS[key]) continue
+    out[key] = key === 'maxCallsPerRun' || key === 'maxTokensPerRun' ? Math.floor(v) : v
+  }
+  return out
+}
+
 /**
  * Coerces arbitrary parsed JSON into a complete `Settings`, filling anything
  * missing or malformed from the defaults. Used on the read path so a hand-edited
@@ -303,7 +403,8 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
     // Only an actual boolean moves the switch. A truthy string from a
     // hand-edited file must not be able to *unpause* agent access.
     agentAccessPaused:
-      typeof p.agentAccessPaused === 'boolean' ? p.agentAccessPaused : base.agentAccessPaused
+      typeof p.agentAccessPaused === 'boolean' ? p.agentAccessPaused : base.agentAccessPaused,
+    ai: mergeAi(base.ai, p.ai)
   }
 }
 

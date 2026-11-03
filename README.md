@@ -426,6 +426,33 @@ alone.
   agent browse the saved records: newest first, filter by status or flow file,
   one record in full by run id. Code: `src/main/run-record.ts`,
   `src/main/run-report.ts`.
+- **Model access layer for AI features** (`src/main/llm`): the one interface
+  that semantic assertions, healing, triage and exploration will use. Backends:
+  Anthropic (official SDK), any OpenAI-compatible `/chat/completions` endpoint
+  (hosted or a local server), and an in-process stub for tests. Off by default:
+  `settings.ai.provider` is `none` and the model id is always configuration
+  (`settings.ai.model`), never built in. `settings.ai.baseUrl` is the
+  OpenAI-compatible server's address only (http/https, no credentials or
+  query); the Anthropic backend never sends there (a proxy for it is set with
+  the SDK's `ANTHROPIC_BASE_URL`, and the log shows it). The environment can
+  choose too (`NAWI_LLM_PROVIDER`, `NAWI_LLM_MODEL`, `NAWI_LLM_BASE_URL`); keys come only
+  from the environment (`NAWI_LLM_API_KEY`, `OPENAI_API_KEY` for
+  OpenAI-compatible, or the Anthropic SDK's own credentials), never from the
+  settings file. Every call is redacted first (the run's secrets, the built-in
+  key/token/card/email/phone patterns and the workspace redaction rules; images
+  are sent as is), answered from a response cache keyed by the redacted input
+  when it was asked before (on any backend, so a flow replays with the same
+  verdicts against a stub, a local or a hosted model), capped per run (calls,
+  tokens including a high estimate of the input, and cost when
+  `inputUsdPerMTok`/`outputUsdPerMTok` are set; no automatic retries), and
+  logged to `<userData>/ai/outbound.jsonl` before it is sent (exactly what left
+  the machine, images as sha256 + size; if the line can't be written, nothing is
+  sent). Offline mode (`settings.ai.offline`, or `NAWI_LLM_OFFLINE=1`, which can
+  only turn it on) makes no network call; cached answers still count. Anything
+  without an answer comes back as "not evaluated" with a reason (`offline`,
+  `no_provider`, `no_model`, `budget`, `refused`, `cancelled`, `error`), never
+  as a pass; refused, cut-off and empty answers are never cached, and a workspace
+  redaction rule that doesn't compile stops the call. No feature calls it yet, and there is no settings UI for it yet.
 
 ## Keyboard shortcuts
 
