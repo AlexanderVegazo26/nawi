@@ -14,7 +14,7 @@ import {
 import { CdpClient } from './cdp/client'
 import { attachToEndpoint, launchDebugBrowser, parseEndpoint, type LaunchOptions } from './cdp/launcher'
 import { ToolError } from './mcp/errors'
-import { replayFlow, type FlowRun, type ReplayClient, type StepRun, type StepScreenshots } from './replay/replay'
+import { replayFlow, type FlowRun, type ReplayClient, type ReplayOptions, type StepRun, type StepScreenshots } from './replay/replay'
 import type { StepEvidence } from './replay/evidence'
 import {
   buildRunRecord,
@@ -96,6 +96,8 @@ export interface RunFlowDeps {
   record?: { dir: string; appVersion?: string; keep?: number }
   /** Injected for tests; defaults to Date.now. */
   now?: () => number
+  /** Told about each step as it settles (MCP progress notifications). */
+  onStep?: ReplayOptions['onStep']
 }
 
 /** Console errors and failed requests per step in `run_flow`'s answer; the run record keeps up to 20 of each. */
@@ -460,6 +462,7 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       // Shots live only in the record: none without one.
       stepScreenshots: deps.record ? (request.screenshots ?? 'all') : 'off',
       signal: deps.signal,
+      onStep: deps.onStep,
       now
     })
     if (deps.record) facts = await browserFacts(page)

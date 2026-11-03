@@ -222,6 +222,15 @@ Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usag
 projection and the revision model live in `src/main/mcp/`; `src/mcp/stdio-bridge.ts`
 is the stdio front end an MCP client connects to.
 
+Long calls report progress and can be cancelled. An MCP client that sends `_meta.progressToken` with
+`tools/call` (and accepts `text/event-stream`, as the Streamable-HTTP transport does) gets one
+`notifications/progress` message per settled flow step (`step 3/7 save (click): passed`: ids and actions only,
+never values), then the answer. `notifications/cancelled` stops the call it names after the step in progress.
+Cancels by id are scoped to the `Mcp-Session-Id` the client got from `initialize`, so one client cannot stop
+another's call; a caller without a session (the CLI, a plain HTTP request) cancels by closing its request. The
+stdio bridge passes progress through and handles a cancel itself, at once: it drops the request if it is still
+queued, or closes the request it sent. Code: `src/main/mcp/progress.ts`, `src/mcp/forward.ts`.
+
 `nawi` is a command-line front end to the **same** endpoint, with the same
 bearer token and the same tools, so every rule the app enforces — the agent kill
 switch, redaction gating, path confinement — applies unchanged.
@@ -347,8 +356,8 @@ alone.
   the names the flow file (or a `--var` value) mentions, and the app never
   passes its own environment to a flow. Missing inputs fail the run before a
   browser starts. It prints one line per step and exits 0 when every step
-  passed, 1 otherwise (`--json` for the full report). Pausing agent access, or
-  pressing Ctrl-C on `nawi run`, stops a run after the step in progress.
+  passed, 1 otherwise (`--json` for the full report). Pausing agent access,
+  pressing Ctrl-C on `nawi run`, or an MCP `notifications/cancelled`, stops a run after the step in progress.
   Code: `src/main/flow-run.ts`, `src/cli/run.ts`.
 - **Run records** — every run, passed or failed (also one that stopped before a
   browser started), is saved in the app's data folder as `runs/<run-id>/`:

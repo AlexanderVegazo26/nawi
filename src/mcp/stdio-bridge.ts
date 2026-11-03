@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline'
-import { forward, type Frame } from './forward'
+import { Bridge, type Frame } from './forward'
 
 /**
  * stdio ↔ loopback-HTTP proxy. This is what an MCP client (Claude Code) spawns.
@@ -39,13 +39,13 @@ const writeLine = (line: string): void => {
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })
 
 /**
- * Frames are processed strictly in order.
+ * Frames are processed strictly in order (Bridge; cancellations excepted).
  *
- * Without the chain, two requests arriving in one tick would race and could be
+ * Without ordering, two requests arriving in one tick would race and could be
  * written back out of order — legal for JSON-RPC ids, but it breaks clients that
  * assume ordering, and it makes an `initialize` handshake nondeterministic.
  */
-let chain: Promise<void> = Promise.resolve()
+const bridge = new Bridge(writeLine)
 
 lines.on('line', (line) => {
   const trimmed = line.trim()
@@ -59,15 +59,10 @@ lines.on('line', (line) => {
     return
   }
 
-  // Chained on a *settled* tail: one failed forward must not stop every later
-  // frame from being processed, which would wedge the session with no error.
-  chain = chain.then(
-    () => forward(message, writeLine),
-    () => forward(message, writeLine)
-  )
+  bridge.frame(message)
 })
 
 lines.on('close', () => {
   // The client closed stdin. Drain in-flight work, then exit cleanly.
-  void chain.finally(() => process.exit(0))
+  void bridge.drain().finally(() => process.exit(0))
 })

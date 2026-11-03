@@ -434,4 +434,29 @@ steps:
     expect(run.status).toBe('failed')
     expect(run.steps[0].error).toBe('id=plan matched but that option is disabled (waited 300 ms)')
   })
+
+  it('reports every step to onStep in order (skipped, passed, failed, then not_run so progress reaches the total), and a throwing listener changes nothing', async () => {
+    const seen: string[] = []
+    const run = await replay(
+      flow([
+        { id: 'off', action: 'click', disabled: true, target: { selectors: [{ id: 'nope' }] } },
+        { id: 'ok', action: 'click', target: { selectors: [{ id: 'a-btn' }] } },
+        { id: 'broken', action: 'click', timeout_ms: 300, target: { selectors: [{ testid: 'gone' }] } },
+        { id: 'after', action: 'click', target: { selectors: [{ id: 'a-btn' }] } }
+      ]),
+      {
+        onStep: (e) => {
+          seen.push(`${e.index + 1}/${e.total} ${e.id} ${e.action} ${e.status}`)
+          throw new Error('listener bug')
+        }
+      }
+    )
+    expect(seen, why(run)).toEqual(['1/4 off click skipped', '2/4 ok click passed', '3/4 broken click failed', '4/4 after click not_run'])
+    expect(statuses(run), 'the listener throwing must not change any status').toEqual([
+      'off:skipped',
+      'ok:passed',
+      'broken:failed',
+      'after:not_run'
+    ])
+  })
 })

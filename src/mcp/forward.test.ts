@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { NOT_RUNNING } from './endpoint'
-import { APP_ERROR, forward } from './forward'
+import { APP_ERROR, Bridge, forward, type Frame } from './forward'
 import { postJson } from './post'
 
 /**
@@ -138,6 +138,111 @@ describe('stdio bridge forward()', () => {
       { jsonrpc: '2.0', id: 5, error: { code: APP_ERROR, message: NOT_RUNNING } }
     ])
     expect(received, 'no request is sent without an endpoint').toEqual([])
+  })
+})
+
+describe('streamed answers and sessions (roadmap AI12)', () => {
+  test('writes each event of a streamed answer as its own line, in order (progress, then the response)', async () => {
+    const p1 = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 't', progress: 1, total: 2 } })
+    const p2 = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 't', progress: 2, total: 2 } })
+    handler = (_req, _body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`event: message\ndata: ${p1}\n\n`)
+      // Split mid-event: the bridge must still emit whole frames.
+      res.write(`event: message\nda`)
+      res.write(`ta: ${p2}\n\nevent: message\ndata: ${RUN_REPLY}\n\n`)
+      res.end()
+    }
+    const out: string[] = []
+    await forward({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { _meta: { progressToken: 't' } } }, (l) => out.push(l))
+    expect(out).toEqual([p1, p2, RUN_REPLY])
+    expect(received[0]?.headers.accept, 'the bridge must say it can take an event stream').toBe('application/json, text/event-stream')
+  })
+
+  test('answers a stream that ends after progress but without the response with an app error', async () => {
+    const p1 = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 't', progress: 1 } })
+    handler = (_req, _body, res) => res.writeHead(200, { 'content-type': 'text/event-stream' }).end(`data: ${p1}\n\n: bye\n\n`)
+    const out: string[] = []
+    await forward({ jsonrpc: '2.0', id: 8, method: 'tools/call' }, (l) => out.push(l))
+    expect(out.map((l) => JSON.parse(l)), 'progress, then an error so the client is not left waiting').toEqual([
+      JSON.parse(p1),
+      { jsonrpc: '2.0', id: 8, error: { code: APP_ERROR, message: 'Nawi ended the event stream without an answer.' } }
+    ])
+  })
+
+  test('a cancelled forward closes its connection and writes nothing back', async () => {
+    let closed = false
+    handler = (req) => req.socket.once('close', () => (closed = true))
+    const out: string[] = []
+    const ac = new AbortController()
+    const done = forward({ jsonrpc: '2.0', id: 9, method: 'tools/call' }, (l) => out.push(l), ac.signal)
+    await untilReceived(1)
+    ac.abort()
+    await done
+    await vi.waitFor(() => expect(closed, 'the app must see the caller leave').toBe(true))
+    expect(out, 'a cancelled request gets no reply, not a not-running error').toEqual([])
+  })
+})
+
+describe('Bridge scheduling', () => {
+  /** A fake transport that records each frame and holds it until released or cancelled. */
+  function fakeSend(): { send: typeof forward; sent: string[]; cancelled: string[]; release: (id: unknown) => void } {
+    const sent: string[] = []
+    const cancelled: string[] = []
+    const holds = new Map<string, () => void>()
+    const send = (async (m: Frame, _w: unknown, signal?: AbortSignal) => {
+      const id = JSON.stringify(m.id)
+      sent.push(`${String(m.method)}#${id}`)
+      await new Promise<void>((r) => {
+        holds.set(id, r)
+        signal?.addEventListener('abort', () => {
+          cancelled.push(id)
+          r()
+        })
+      })
+    }) as typeof forward
+    return { send, sent, cancelled, release: (id) => holds.get(JSON.stringify(id))?.() }
+  }
+  const call = (id: unknown): Frame => ({ jsonrpc: '2.0', id, method: 'tools/call' })
+  const cancel = (requestId: unknown): Frame => ({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId } })
+
+  test('cancels a call in flight at once by closing its own request, without queueing the cancel behind it', async () => {
+    const t = fakeSend()
+    const bridge = new Bridge(() => undefined, t.send)
+    bridge.frame(call(1))
+    await vi.waitFor(() => expect(t.sent).toEqual(['tools/call#1']))
+    bridge.frame(cancel(1))
+    expect(t.cancelled, 'call 1 is stopped by the cancel, not left to finish').toEqual(['1'])
+    await bridge.drain()
+    expect(t.sent, 'the cancel itself is not sent to the app').toEqual(['tools/call#1'])
+  })
+
+  test('drops a cancelled request that is still queued, and still sends the ones after it, in order', async () => {
+    const t = fakeSend()
+    const bridge = new Bridge(() => undefined, t.send)
+    bridge.frame(call(1))
+    bridge.frame(call(2))
+    bridge.frame(call(3))
+    await vi.waitFor(() => expect(t.sent, 'call 1 in flight, 2 and 3 queued').toEqual(['tools/call#1']))
+    bridge.frame(cancel(2))
+    t.release(1)
+    await vi.waitFor(() => expect(t.sent.at(-1)).toBe('tools/call#3'))
+    t.release(3)
+    await bridge.drain()
+    expect(t.sent, 'call 2 was never sent').toEqual(['tools/call#1', 'tools/call#3'])
+    expect(t.cancelled, 'nothing in flight was cancelled').toEqual([])
+  })
+
+  test('a cancel for an id that is neither queued nor in flight changes nothing later (id "1" is not id 1)', async () => {
+    const t = fakeSend()
+    const bridge = new Bridge(() => undefined, t.send)
+    bridge.frame(cancel('1'))
+    bridge.frame(call(1))
+    await vi.waitFor(() => expect(t.sent).toEqual(['tools/call#1']))
+    bridge.frame(cancel('1'))
+    t.release(1)
+    await bridge.drain()
+    expect(t.cancelled, 'call 1 was not touched by cancels for "1"').toEqual([])
   })
 })
 

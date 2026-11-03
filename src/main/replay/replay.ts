@@ -120,6 +120,23 @@ export interface ReplayOptions extends FlowInputs {
   signal?: AbortSignal
   /** Page screenshots around each step; default `off`. */
   stepScreenshots?: StepScreenshots
+  /**
+   * Told about every step in order as it settles: passed, failed, skipped, or
+   * not_run once the run has failed or stopped.
+   * For progress reports: it carries no error text, values or URLs, and a
+   * throwing listener never affects the run.
+   */
+  onStep?: (event: StepProgress) => void
+}
+
+/** One settled step, for progress reporting. `index` is 0-based into `flow.steps`. */
+export interface StepProgress {
+  index: number
+  total: number
+  id: string
+  action: string
+  /** `not_run`: a step after the failure (or the stop), so progress still reaches `total`. */
+  status: 'passed' | 'failed' | 'skipped' | 'not_run'
 }
 
 /** Shapes returned by `inject/replay.js`. */
@@ -329,7 +346,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
     } catch (error) {
       run = abort(interp.redact(`could not open the flow's target: ${(error as Error).message ?? error}`))
     }
-    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence, options.stepScreenshots ?? 'off')
+    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence, options.stepScreenshots ?? 'off', options.onStep)
   } finally {
     evidence.stop()
     offDialog?.()
@@ -366,9 +383,17 @@ async function runSteps(
   now: () => number,
   signal: AbortSignal | undefined,
   evidence: EvidenceCollector,
-  shots: StepScreenshots
+  shots: StepScreenshots,
+  onStep?: (event: StepProgress) => void
 ): Promise<FlowRun> {
   const steps: StepRun[] = []
+  const settled = (index: number, step: FlowStep, status: StepProgress['status']): void => {
+    try {
+      onStep?.({ index, total: flow.steps.length, id: step.id, action: step.action, status })
+    } catch {
+      // A progress listener is a spectator: its failure must not change the run.
+    }
+  }
   let failed: string | undefined
   let stopped: string | undefined
   // The latest "after" shot; a disabled step in between changes nothing on the page.
@@ -376,11 +401,13 @@ async function runSteps(
   for (const [index, step] of flow.steps.entries()) {
     if (step.disabled) {
       steps.push({ id: step.id, action: step.action, status: 'skipped' })
+      settled(index, step, 'skipped')
       continue
     }
     if (failed === undefined && stopped === undefined && signal?.aborted) stopped = stopReason(signal)
     if (failed !== undefined || stopped !== undefined) {
       steps.push({ id: step.id, action: step.action, status: 'not_run' })
+      settled(index, step, 'not_run')
       continue
     }
     const before = shots === 'all' ? (lastAfter ?? (await runner.capturePage())) : undefined
@@ -395,6 +422,7 @@ async function runSteps(
     }
     steps.push(run)
     if (run.status === 'failed') failed = step.id
+    settled(index, step, run.status === 'failed' ? 'failed' : 'passed')
   }
   await evidence.settle()
 

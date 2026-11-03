@@ -9,9 +9,11 @@ import {
   describeTools,
   dispatch,
   type CallRecord,
+  type ProgressUpdate,
   type ToolDefinition
 } from './dispatch'
 import { ToolError, toToolError } from './errors'
+import { InFlightCalls, progressNotification, progressTokenOf, sseEvent, type JsonRpcId } from './progress'
 import { TOOLS } from './tools'
 import * as settings from '../settings'
 
@@ -81,7 +83,8 @@ interface JsonRpcRequest {
   params?: unknown
 }
 
-type JsonRpcId = string | number | null
+/** Issued on `initialize`; scopes `notifications/cancelled` to the client that sent the call. */
+const SESSION_HEADER = 'mcp-session-id'
 
 function rpcError(id: JsonRpcId, code: number, message: string, data?: unknown): string {
   return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message, ...(data ? { data } : {}) } })
@@ -133,13 +136,14 @@ function header(req: IncomingMessage, name: string): string | null {
   return typeof v === 'string' ? v : null
 }
 
-function send(res: ServerResponse, status: number, body: string): void {
+function send(res: ServerResponse, status: number, body: string, extra: Record<string, string> = {}): void {
   res.writeHead(status, {
     'content-type': 'application/json',
     'content-length': String(Buffer.byteLength(body, 'utf8')),
     // This endpoint is never for browsers. No CORS headers are emitted, so a page
     // cannot read a response even if it somehow got one.
-    'cache-control': 'no-store'
+    'cache-control': 'no-store',
+    ...extra
   })
   res.end(body)
 }
@@ -166,6 +170,7 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
   const tools = options.tools ?? TOOLS
   const token = randomBytes(32).toString('base64url')
   const idempotency = new IdempotencyCache()
+  const inFlight = new InFlightCalls()
   const isPaused =
     options.isPaused ?? (async (): Promise<boolean> => (await settings.getSettings()).agentAccessPaused)
 
@@ -201,8 +206,9 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
       return
     }
     if (req.method !== 'POST') {
-      // No SSE stream is offered: nothing here pushes server-initiated messages,
-      // and advertising a stream we never write to just makes clients wait.
+      // No standalone SSE stream (GET): nothing here pushes messages outside a
+      // call, and advertising a stream we never write to makes clients wait.
+      // Progress travels on the call's own POST response instead.
       send(res, 405, rpcError(null, -32601, 'Only POST is supported on this endpoint'))
       return
     }
@@ -228,6 +234,7 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
     }
 
     const id: JsonRpcId = message.id ?? null
+    const session = header(req, SESSION_HEADER)
 
     // A notification (no id) gets no body — answering one confuses a strict client.
     const isNotification = message.id === undefined || message.id === null
@@ -241,12 +248,22 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
             protocolVersion: PROTOCOL_VERSION,
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: 'nawi', version: app.getVersion?.() ?? '0.1.0' }
-          })
+          }),
+          // Not required on later requests (the CLI never initializes): it only
+          // scopes cancellation. Holds no authority; the bearer token does.
+          { [SESSION_HEADER]: randomUUID() }
         )
         return
 
+      case 'notifications/cancelled': {
+        // A call that already finished, or one this session never sent, is a no-op.
+        const params = (message.params ?? {}) as { requestId?: unknown }
+        inFlight.cancel(session, params.requestId)
+        res.writeHead(202).end()
+        return
+      }
+
       case 'notifications/initialized':
-      case 'notifications/cancelled':
         res.writeHead(202).end()
         return
 
@@ -264,12 +281,35 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
           send(res, 200, rpcError(id, -32602, 'tools/call requires a string "name"'))
           return
         }
-        // A caller that hangs up (Ctrl-C on `nawi run`, a client timeout) cancels
-        // long tools such as run_flow instead of leaving them driving a browser.
+        // A caller that hangs up (Ctrl-C on `nawi run`, a client timeout) or sends
+        // notifications/cancelled stops long tools such as run_flow instead of
+        // leaving them driving a browser. The first reason wins.
         const gone = new AbortController()
+        const left = 'the caller disconnected, so the remaining steps were not run'
         res.once('close', () => {
-          if (!res.writableEnded) gone.abort('the caller disconnected, so the remaining steps were not run')
+          if (!res.writableEnded) gone.abort(left)
         })
+        // A caller that left while its body was being read closed before the listener existed.
+        if (req.socket.destroyed) gone.abort(left)
+        const unregister = inFlight.add(session, id, gone)
+
+        // Progress needs a stream to travel on: with a token and an SSE-capable
+        // caller the answer becomes an event stream (progress..., then the
+        // response); otherwise the plain JSON answer, without progress.
+        const token = isNotification ? null : progressTokenOf(message.params, header(req, 'accept'))
+        if (token !== null) {
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
+        }
+        const reply = (body: string): void => {
+          if (token === null) send(res, 200, body)
+          else res.end(sseEvent(body))
+        }
+        const progress =
+          token === null
+            ? undefined
+            : (update: ProgressUpdate): void => {
+                if (!res.writableEnded && !res.destroyed) res.write(sseEvent(JSON.stringify(progressNotification(token, update))))
+              }
         try {
           const value = await dispatch(deps, {
             name: params.name,
@@ -277,11 +317,12 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
             authorization,
             origin,
             callId: randomUUID(),
-            signal: gone.signal
+            signal: gone.signal,
+            progress
           })
-          send(
-            res,
-            200,
+          // Answered even after a cancel: the HTTP request is still open and must
+          // end, and the run report says why it stopped. Clients ignore it.
+          reply(
             rpcResult(id, {
               // Both shapes: `content` for clients that render text, and
               // `structuredContent` for clients that want the object.
@@ -299,7 +340,9 @@ export async function startMcpServer(options: StartOptions = {}): Promise<McpSer
           }
           // 200 with a JSON-RPC error: the HTTP request succeeded, the call did
           // not. A 4xx here would make transports retry a deterministic refusal.
-          send(res, 200, rpcError(id, payload.code, payload.message, payload.data))
+          reply(rpcError(id, payload.code, payload.message, payload.data))
+        } finally {
+          unregister()
         }
         return
       }

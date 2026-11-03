@@ -9,6 +9,7 @@ import * as settings from '../settings'
 import type { Surface } from '@shared/sidecar/types'
 import type { AnnotationDoc, LibraryItem, Shape } from '@shared/types'
 import { defineTool, type ToolDefinition } from './dispatch'
+import { stepProgress } from './progress'
 import { ToolError, agentAccessPaused, notImplemented } from './errors'
 import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
@@ -677,7 +678,9 @@ const runFlow = defineTool({
     'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +
     'come only from this call\'s env and secrets; secret values are scrubbed from everything reported. A step ' +
     'failure is a normal result with status "failed"; errors are for files or browsers that cannot be used. ' +
-    'Pausing agent access, or disconnecting, stops a run after the step in progress.',
+    'Send a progressToken in _meta (and accept text/event-stream) to get a notifications/progress message as ' +
+    'each step settles. Pausing agent access, cancelling the call (notifications/cancelled), or disconnecting ' +
+    'stops a run after the step in progress.',
   idempotent: false,
   schema: z.object({
     file: z.string().min(1).max(4096).describe('Absolute path to the flow file.'),
@@ -714,7 +717,8 @@ const runFlow = defineTool({
         },
         {
           signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
-          record: { dir: runsDir(), appVersion: app.getVersion() }
+          record: { dir: runsDir(), appVersion: app.getVersion() },
+          onStep: ctx.progress ? (step) => ctx.progress?.(stepProgress(step)) : undefined
         }
       )
     } finally {
