@@ -370,5 +370,6 @@ describe('flow files — round trip (property)', () => {
       { seed: 20261031, numRuns: 300 }
     )
     expect(refused, 'the arbitrary should exercise reserved var names').toBeGreaterThan(0)
-  })
+    // 300 seeded runs are CPU work (~1 s idle); under load they overran vitest's default 5 s.
+  }, 30_000)
 })
