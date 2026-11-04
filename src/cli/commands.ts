@@ -31,6 +31,10 @@ export const COMMANDS: Record<string, { tool: string; summary: string }> = {
   'mobile-doctor': {
     tool: 'mobile_doctor',
     summary: 'Check the Android SDK, adb, emulator, virtualization and devices, with one fix: nawi mobile-doctor [file.apk]. Exit 1 if nothing can run it.'
+  },
+  'mobile-open': {
+    tool: 'mobile_open',
+    summary: 'Install and start an Android app on a device (booting a virtual device if needed): nawi mobile-open <file.apk|profile>. Exit 1 if it is not running.'
   }
 }
 

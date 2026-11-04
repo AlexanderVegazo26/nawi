@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ApkInfo } from '../main/mobile/apk'
 import type { MobileDoctorReport } from '../main/mobile/doctor'
-import { MobileUsageError, parseMobileDoctorArgs, parseMobileInspectArgs, renderApkInfo, renderDoctorReport } from './mobile'
+import { MobileUsageError, parseMobileDoctorArgs, parseMobileInspectArgs, parseMobileOpenArgs, renderApkInfo, renderDoctorReport, renderOpenResult, type MobileOpenReport } from './mobile'
 
 describe('parseMobileInspectArgs', () => {
   it('resolves a positional or --file path against the shell folder, and takes --json', () => {
@@ -125,5 +125,80 @@ describe('renderDoctorReport', () => {
     const out = renderDoctorReport({ ...report, ready: true, fix: null, apk: null, recommended: { kind: 'avd', name: 'pixel-36' } })
     expect(out.split('\n')[0]).toBe('Ready: use virtual device pixel-36.')
     expect(out, 'no Next line when ready').not.toContain('Next:')
+  })
+})
+
+describe('parseMobileOpenArgs', () => {
+  it('resolves the app and --profile against the shell folder and maps each flag to a tool argument', () => {
+    expect(parseMobileOpenArgs(['dl/app.apk'], '/home/u')).toEqual({ file: '/home/u/dl/app.apk', json: false })
+    expect(
+      parseMobileOpenArgs(['app.nawi.mobile.yaml', '--target', 'emulator-5554', '--headless', '--no-grant', '--profile', 'out.nawi.mobile.yaml', '--boot-timeout-ms', '60000', '--json'], '/home/u')
+    ).toEqual({
+      file: '/home/u/app.nawi.mobile.yaml',
+      json: true,
+      target: 'emulator-5554',
+      headless: true,
+      grant: false,
+      profile: '/home/u/out.nawi.mobile.yaml',
+      boot_timeout_ms: 60000
+    })
+    expect(parseMobileOpenArgs(['--no-profile', '--file', '/a/app.apk'], '/home/u')).toEqual({ file: '/a/app.apk', json: false, save_profile: false })
+  })
+
+  it.each([
+    [[], /Which app\?/],
+    [['a.apk', 'b.apk'], /Give one APK or profile/],
+    [['a.apk', '--target'], /--target needs a value/],
+    [['a.apk', '--boot-timeout-ms', '1m'], /whole number/],
+    [['a.apk', '--boot-timeout-ms', '5000'], /from 10000 to 900000/],
+    [['a.apk', '--profile', 'p.nawi.mobile.yaml', '--no-profile'], /contradict/],
+    [['a.apk', '--force'], /Unknown flag --force/]
+  ])('refuses %j', (argv, message) => {
+    expect(() => parseMobileOpenArgs(argv, '/home/u')).toThrow(MobileUsageError)
+    expect(() => parseMobileOpenArgs(argv, '/home/u')).toThrow(message)
+  })
+})
+
+describe('renderOpenResult', () => {
+  const result: MobileOpenReport = {
+    ok: true,
+    fix: null,
+    package: 'com.example',
+    target: { kind: 'avd', name: 'pixel-36', serial: 'emulator-5554', api: 36, booted: true },
+    permissions: { granted: ['android.permission.CAMERA'], not_granted: [] },
+    launched: { activity: 'com.example.Main', total_time_ms: 300, pid: 7 },
+    steps: [
+      { id: 'doctor', status: 'ok', summary: 'virtual device pixel-36 (API 36)', fix: null },
+      { id: 'boot', status: 'ok', summary: 'pixel-36 booted as emulator-5554', fix: null },
+      { id: 'grant', status: 'warn', summary: 'granted 1 of 2', fix: 'Those permissions will be asked for in a dialog.' }
+    ],
+    doctor: null,
+    apk: '/home/u/app.apk',
+    sha256: null,
+    profile: '/home/u/com.example.nawi.mobile.yaml',
+    profile_error: null,
+    apk_changed: true
+  }
+
+  it('prints where it runs, one line per step, the profile, and a warning\'s note', () => {
+    expect(renderOpenResult(result).split('\n')).toEqual([
+      'com.example is running on virtual device pixel-36 (emulator-5554).',
+      '  ok    doctor   virtual device pixel-36 (API 36)',
+      '  ok    boot     pixel-36 booted as emulator-5554',
+      '  warn  grant    granted 1 of 2',
+      '',
+      'The .apk changed since the profile was saved (its SHA-256 differs); the profile now records the new one.',
+      '',
+      'Profile: /home/u/com.example.nawi.mobile.yaml',
+      '',
+      'Note: Those permissions will be asked for in a dialog.'
+    ])
+  })
+
+  it('ends with the one next step when it is not running', () => {
+    const out = renderOpenResult({ ...result, ok: false, fix: 'Reconnect R58M.', target: { ...result.target!, kind: 'device', name: 'R58M', serial: 'R58M' }, profile: null, apk_changed: true })
+    expect(out.split('\n')[0]).toBe('com.example is not running on device R58M.')
+    expect(out.split('\n').at(-1)).toBe('Next: Reconnect R58M.')
+    expect(out, 'no profile was written, so it must not claim one was updated').toContain('(its SHA-256 differs).')
   })
 })

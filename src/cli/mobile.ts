@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import type { ApkInfo } from '../main/mobile/apk'
 import type { CheckStatus, MobileDoctorReport } from '../main/mobile/doctor'
+import type { MobileOpenResult, OpenStepStatus } from '../main/mobile/open'
 
 /**
  * `nawi mobile-inspect <file.apk>` — the CLI half of the `inspect_apk` tool (roadmap M1). Pure functions so the
@@ -89,5 +90,74 @@ export function renderApkInfo(info: ApkInfo): string {
     lines.push(`  unresolved   ${info.unresolved.length} (resource references, not read yet)`)
     for (const u of info.unresolved) lines.push(`    ${u}`)
   }
+  return lines.join('\n')
+}
+
+export const MOBILE_OPEN_USAGE = `nawi mobile-open <file.apk | profile.nawi.mobile.yaml> [--target <serial|avd>] [--headless]
+                 [--no-grant] [--profile <out.nawi.mobile.yaml> | --no-profile] [--boot-timeout-ms n] [--json]
+
+  Installs an Android app on a device and starts it: picks a connected device or boots a virtual device (AVD)
+  that can run it, installs the app, grants its runtime permissions and starts its launcher activity. On success
+  it saves a mobile profile (next to the .apk as <package>.nawi.mobile.yaml unless --profile says where) that
+  repeats the same setup when passed instead of the .apk. Exit 0 when the app is running, 1 when not.`
+
+export interface MobileOpenArgs {
+  file: string
+  json: boolean
+  target?: string
+  headless?: true
+  grant?: false
+  save_profile?: false
+  profile?: string
+  boot_timeout_ms?: number
+}
+
+/** `nawi mobile-open` arguments; paths are resolved against the shell's folder like the other mobile commands. */
+export function parseMobileOpenArgs(argv: string[], cwd: string): MobileOpenArgs {
+  let file: string | undefined
+  const out: Omit<MobileOpenArgs, 'file'> = { json: false }
+  const value = (flag: string, v: string | undefined): string => {
+    if (v === undefined || v.startsWith('--')) throw new MobileUsageError(`${flag} needs a value.`)
+    return v
+  }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--json') out.json = true
+    else if (a === '--headless') out.headless = true
+    else if (a === '--no-grant') out.grant = false
+    else if (a === '--no-profile') out.save_profile = false
+    else if (a === '--target') out.target = value(a, argv[++i])
+    else if (a === '--profile') out.profile = resolve(cwd, value(a, argv[++i]))
+    else if (a === '--boot-timeout-ms') {
+      const v = value(a, argv[++i])
+      if (!/^\d+$/.test(v) || Number(v) < 10_000 || Number(v) > 900_000) throw new MobileUsageError('--boot-timeout-ms needs a whole number of milliseconds from 10000 to 900000.')
+      out.boot_timeout_ms = Number(v)
+    } else if (a === '--file') {
+      if (file !== undefined) throw new MobileUsageError('Give one APK or profile.')
+      file = value(a, argv[++i])
+    } else if (a.startsWith('--')) throw new MobileUsageError(`Unknown flag ${a}.`)
+    else if (file !== undefined) throw new MobileUsageError('Give one APK or profile.')
+    else file = a
+  }
+  if (file === undefined) throw new MobileUsageError('Which app? nawi mobile-open <file.apk | profile.nawi.mobile.yaml>')
+  if (out.profile !== undefined && out.save_profile === false) throw new MobileUsageError('--profile and --no-profile contradict each other.')
+  return { file: resolve(cwd, file), ...out }
+}
+
+const STEP_MARK: Record<OpenStepStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL', skipped: '-   ' }
+
+export type MobileOpenReport = MobileOpenResult & { apk: string; sha256: string | null; profile: string | null; profile_error: string | null; apk_changed: boolean | null }
+
+/** A terminal summary of a mobile_open result; `--json` prints the object itself. */
+export function renderOpenResult(r: MobileOpenReport): string {
+  const where = r.target ? ` on ${r.target.kind === 'avd' ? `virtual device ${r.target.name}${r.target.serial ? ` (${r.target.serial})` : ''}` : `device ${r.target.name}`}` : ''
+  const lines = [r.ok ? `${r.package} is running${where}.` : `${r.package} is not running${where}.`]
+  for (const s of r.steps) lines.push(`  ${STEP_MARK[s.status]}  ${s.id.padEnd(9)}${s.summary}`)
+  if (r.apk_changed) lines.push('', `The .apk changed since the profile was saved (its SHA-256 differs)${r.profile ? '; the profile now records the new one' : ''}.`)
+  if (r.profile) lines.push('', `Profile: ${r.profile}`)
+  if (r.profile_error) lines.push('', `Profile not saved: ${r.profile_error}`)
+  const warn = r.steps.find((s) => s.status === 'warn' && s.fix)
+  if (r.fix) lines.push('', `Next: ${r.fix}`)
+  else if (warn) lines.push('', `Note: ${warn.fix}`)
   return lines.join('\n')
 }

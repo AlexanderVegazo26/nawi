@@ -211,17 +211,18 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes seventeen tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes eighteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
 `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`) and
-`inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`) and `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
-exit 1 when no device can run it). Every tool has a CLI command (a test keeps the
+`inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`), `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
+exit 1 when no device can run it) and `mobile_open` (CLI: `nawi mobile-open <file.apk|profile.nawi.mobile.yaml>`,
+exit 1 when the app is not running). Every tool has a CLI command (a test keeps the
 two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
 `nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
-Exit codes: 0 success, 1 the app reported an error, a flow step failed or `mobile-doctor` found no device, 2 usage, 3 Nawi not running.
+Exit codes: 0 success, 1 the app reported an error, a flow step failed, `mobile-doctor` found no device or `mobile-open` did not get the app running, 2 usage, 3 Nawi not running.
 A refused tool call is JSON-RPC -32000 with a typed code in `error.data.code` (`NOT_FOUND`, `INVALID_ARGUMENTS` with
 `data.issues`, `AGENT_ACCESS_PAUSED`, ...); each `tools/list` entry names the codes that tool can return under
 `_meta["nawi/errors"]`, and [docs/MCP-ERRORS.md](docs/MCP-ERRORS.md) documents the shape and every code (a contract
@@ -485,6 +486,24 @@ alone.
   nothing (adb may start its server). It reads the environment Nawi was started
   with (the app or `nawi serve`), so set `ANDROID_HOME` there, not only in the
   shell running the CLI.
+- **Install and launch an Android app** (`mobile_open`, CLI
+  `nawi mobile-open <file.apk|profile.nawi.mobile.yaml> [--target serial|avd]
+  [--headless] [--no-grant]`, `src/main/mobile/open.ts`): picks the device the
+  way `mobile_doctor` does (or the one `--target` names), boots a virtual device
+  that is not running (on a free emulator port; it keeps running afterwards),
+  installs the app (`adb install -r -t`: replaces an installed copy, keeps its
+  data), grants its runtime permissions with `pm grant` so no dialog blocks a
+  run, starts the launcher activity (`am start -W`, with its start time) and
+  checks the app is still alive. Each failure stops at its step with one fix
+  (a different signing key or a newer version installed, no storage, no
+  matching ABI, an unsigned APK, the phone refusing USB installs, an emulator
+  that exits or never finishes booting, a missing or unexported activity, a
+  crash at startup). On success it saves a **mobile profile**
+  (`<package>.nawi.mobile.yaml` next to the APK, or `--profile <path>`): the APK
+  path and SHA-256, the device, the permissions to grant and the activity to
+  start (schema: `docs/schemas/mobile-profile.v1.schema.json`). Passing the
+  profile instead of the APK repeats that setup, including any edits to its
+  permission list or activity.
 
 ## Keyboard shortcuts
 
@@ -585,10 +604,10 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Mobile is read-only so far.** `inspect_apk` reads an APK and `mobile_doctor`
-  finds adb, the emulator and devices, but Nawi does not yet create or boot a
-  virtual device, install, grant permissions, launch, or show the device screen, and there is no drag-and-drop of an APK onto the window or
-  `*.nawi.mobile.yaml` profile yet. `.aab` bundles and zip64 APKs are refused
+- **Mobile runs from the CLI/MCP only so far.** `mobile_open` installs and
+  launches an app on a device or an existing virtual device, but Nawi does not
+  yet create a virtual device for you (the doctor prints the commands), show the
+  device screen, or take an APK dropped onto the window. `.aab` bundles and zip64 APKs are refused
   with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from

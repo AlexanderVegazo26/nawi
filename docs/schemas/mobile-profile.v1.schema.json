@@ -1,0 +1,141 @@
+{
+  "$id": "https://github.com/AlexanderVegazo26/nawi/blob/main/docs/schemas/mobile-profile.v1.schema.json",
+  "title": "Nawi mobile profile (version 1)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "app": {
+      "type": "object",
+      "properties": {
+        "apk": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "The .apk this profile installs."
+        },
+        "package": {
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+$"
+        },
+        "version_code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version_name": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 200
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Of the .apk when the profile was saved."
+        }
+      },
+      "required": [
+        "apk",
+        "package",
+        "version_code",
+        "version_name",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "target": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "device",
+                "avd"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Where the app ran: a connected device (adb serial) or a virtual device (AVD) name. Null: the best one available."
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "grant": {
+          "maxItems": 200,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 255,
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_]+)+$"
+          },
+          "description": "Runtime permissions granted before launch (`pm grant`), so no dialog blocks a run."
+        }
+      },
+      "required": [
+        "grant"
+      ],
+      "additionalProperties": false
+    },
+    "launch": {
+      "type": "object",
+      "properties": {
+        "activity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 500,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_$]*(?:\\.[A-Za-z_][A-Za-z0-9_$]*)+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "activity"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version",
+    "app",
+    "target",
+    "permissions",
+    "launch"
+  ],
+  "additionalProperties": false
+}

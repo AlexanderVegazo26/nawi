@@ -23,7 +23,7 @@ let endpoint: { url: string; token: string; port: number }
 const BRIDGE = join(process.cwd(), 'out', 'mcp', 'stdio-bridge.js')
 
 /**
- * The FR-AGT.1 surface plus `export_flow` (roadmap F2), `run_flow` (F3b), `list_runs`/`get_run` (F4c), `inspect_apk` (M1a) and `mobile_doctor` (M1b). Named here so the
+ * The FR-AGT.1 surface plus `export_flow` (roadmap F2), `run_flow` (F3b), `list_runs`/`get_run` (F4c), `inspect_apk` (M1a), `mobile_doctor` (M1b) and `mobile_open` (M1c). Named here so the
  * kill-switch test cannot quietly skip one.
  */
 const TOOL_NAMES = [
@@ -44,7 +44,8 @@ const TOOL_NAMES = [
   'list_runs',
   'get_run',
   'inspect_apk',
-  'mobile_doctor'
+  'mobile_doctor',
+  'mobile_open'
 ]
 
 /* ------------------------------------------------------------------ *
