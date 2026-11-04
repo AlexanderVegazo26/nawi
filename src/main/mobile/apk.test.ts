@@ -41,6 +41,14 @@ const SAMPLE_INFO: ApkInfo = {
     { kind: 'service', name: 'dev.nawi.sample.sync.SyncService', why: 'explicit' },
     { kind: 'receiver', name: 'dev.nawi.sample.BootReceiver', why: 'explicit' }
   ],
+  // fixtures/sample.apk ships placeholder libsample.so files and assets/readme.txt: no framework's marker files.
+  framework: {
+    kind: 'native',
+    read_strategy: 'accessibility',
+    evidence: [],
+    also: [],
+    note: 'Android views or Compose: Nawi reads the accessibility tree. Resource ids (android:id, or a Compose testTag with testTagsAsResourceId) and content descriptions make locators stable.'
+  },
   unresolved: []
 }
 

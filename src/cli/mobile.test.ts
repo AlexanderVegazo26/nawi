@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ApkInfo } from '../main/mobile/apk'
+import { detectFramework } from '../main/mobile/framework'
 import type { MobileDoctorReport } from '../main/mobile/doctor'
 import { MobileUsageError, parseMobileDoctorArgs, parseMobileInspectArgs, parseMobileOpenArgs, renderApkInfo, renderDoctorReport, renderOpenResult, type MobileOpenReport } from './mobile'
 
@@ -39,6 +40,7 @@ describe('renderApkInfo', () => {
     ],
     deep_links: [{ component: 'com.example.Links', uri: 'https://example.test/x*', auto_verify: true }],
     exported_components: [{ kind: 'receiver', name: 'com.example.Boot', why: 'intent-filter' }],
+    framework: detectFramework([], false),
     unresolved: []
   }
 
@@ -49,12 +51,22 @@ describe('renderApkInfo', () => {
       '  launcher     com.example.Main',
       '  ABIs         arm64-v8a',
       '  debuggable   no',
+      '  framework    native Android, screen read from the accessibility tree',
+      '    Android views or Compose: Nawi reads the accessibility tree. Resource ids (android:id, or a Compose testTag with testTagsAsResourceId) and content descriptions make locators stable.',
       '  permissions  2 (1 runtime: CAMERA)',
       '  deep links   1',
       '    https://example.test/x* (verified) -> com.example.Links',
       '  exported     1',
       '    receiver com.example.Boot (implicit: intent filter, no android:exported)'
     ])
+  })
+
+  it('names the framework, how its screen is read, the deciding files and the outranked ones', () => {
+    const framework = detectFramework(['lib/arm64-v8a/libflutter.so', 'assets/www/cordova.js'], false)
+    const lines = renderApkInfo({ ...base, framework }).split('\n')
+    const at = lines.indexOf("  framework    Flutter, screen read from Flutter's semantics tree (also found: WebView (hybrid web app))")
+    expect(at, `framework line in:\n${lines.join('\n')}`).toBeGreaterThan(0)
+    expect(lines.slice(at + 1, at + 3)).toEqual(['    decided by lib/arm64-v8a/libflutter.so', `    ${framework.note}`])
   })
 
   it('says what an absent launcher, ABI list, link list or export list means', () => {

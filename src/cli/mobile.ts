@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import type { ApkInfo } from '../main/mobile/apk'
 import type { CheckStatus, MobileDoctorReport } from '../main/mobile/doctor'
+import type { FrameworkInfo } from '../main/mobile/framework'
 import type { MobileOpenResult, OpenStepStatus } from '../main/mobile/open'
 
 /**
@@ -13,7 +14,8 @@ import type { MobileOpenResult, OpenStepStatus } from '../main/mobile/open'
 export const MOBILE_INSPECT_USAGE = `nawi mobile-inspect <file.apk> [--json]
 
   Reads an Android app package without installing it: package, versions, SDK levels, launcher activity,
-  native ABIs, debuggable, permissions (runtime ones marked), deep links and exported components.
+  native ABIs, debuggable, permissions (runtime ones marked), deep links, exported components, and the UI
+  framework (native, Flutter, React Native, game engine, WebView) with how Nawi reads its screen.
   An .aab is refused with the bundletool command that converts it.`
 
 export class MobileUsageError extends Error {}
@@ -64,6 +66,14 @@ export function renderDoctorReport(r: MobileDoctorReport): string {
   return lines.join('\n')
 }
 
+const FRAMEWORK_LABEL: Record<FrameworkInfo['kind'], string> = { native: 'native Android', flutter: 'Flutter', react_native: 'React Native', game_engine: 'game engine', webview: 'WebView (hybrid web app)' }
+const STRATEGY_LABEL: Record<FrameworkInfo['read_strategy'], string> = {
+  accessibility: 'the accessibility tree',
+  flutter_semantics: 'Flutter\'s semantics tree',
+  webview_cdp: 'the WebView\'s DOM over DevTools',
+  screenshot: 'screenshots only (no element tree)'
+}
+
 /** A terminal summary of an inspect_apk result; `--json` prints the object itself. */
 export function renderApkInfo(info: ApkInfo): string {
   const version = [info.version_name, info.version_code !== null ? `(${info.version_code})` : null].filter(Boolean).join(' ')
@@ -72,7 +82,10 @@ export function renderApkInfo(info: ApkInfo): string {
     `  SDK          min ${info.min_sdk}, target ${info.target_sdk}`,
     `  launcher     ${info.launcher_activity ?? '(none: the app has no launcher activity)'}`,
     `  ABIs         ${info.abis.length ? info.abis.join(', ') : 'any (no native code)'}`,
-    `  debuggable   ${info.debuggable ? 'yes' : 'no'}`
+    `  debuggable   ${info.debuggable ? 'yes' : 'no'}`,
+    `  framework    ${FRAMEWORK_LABEL[info.framework.kind]}, screen read from ${STRATEGY_LABEL[info.framework.read_strategy]}${info.framework.also.length ? ` (also found: ${info.framework.also.map((k) => FRAMEWORK_LABEL[k]).join(', ')})` : ''}`,
+    ...(info.framework.evidence.length ? [`    decided by ${info.framework.evidence.join(', ')}`] : []),
+    `    ${info.framework.note}`
   ]
   const runtime = info.permissions.filter((p) => p.runtime)
   lines.push(`  permissions  ${info.permissions.length} (${runtime.length} runtime${runtime.length ? `: ${runtime.map((p) => p.name.replace(/^android\.permission\./, '')).join(', ')}` : ''})`)

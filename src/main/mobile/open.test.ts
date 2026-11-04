@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApkInfo } from './apk'
+import { detectFramework } from './framework'
 import type { ExecResult } from './doctor'
 import {
   BOOT_POLL_MS,
@@ -144,6 +145,7 @@ const apk = (over: Partial<ApkInfo> = {}): ApkInfo => ({
   ],
   deep_links: [],
   exported_components: [],
+  framework: detectFramework([], true),
   unresolved: [],
   ...over
 })

@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApkInfo } from './apk'
+import { detectFramework } from './framework'
 import {
   abisForImage,
   compatibility,
@@ -114,6 +115,7 @@ const apk = (over: Partial<ApkInfo> = {}): ApkInfo => ({
   permissions: [],
   deep_links: [],
   exported_components: [],
+  framework: detectFramework([], true),
   unresolved: [],
   ...over
 })

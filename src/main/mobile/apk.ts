@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path'
 import { within } from '../confine'
 import { androidAttr, isReference, parseAxml, plainAttr, type AndroidAttr, type AxmlElement, type AxmlValue } from './axml'
 import { ApkError, corrupt } from './errors'
+import { detectFramework, type FrameworkInfo } from './framework'
 import { readCentralDirectory, readEntry, type ByteSource, type ZipEntry } from './zip'
 
 /**
@@ -51,6 +52,8 @@ export interface ApkInfo {
   permissions: ApkPermission[]
   deep_links: ApkDeepLink[]
   exported_components: ApkExportedComponent[]
+  /** The UI framework (native, Flutter, React Native, WebView) and how Nawi reads its screen (roadmap M2). */
+  framework: FrameworkInfo
   /**
    * Values the manifest takes from the app's resources (`@string/...`), which this reader does not resolve, so they
    * are left out above rather than shown as a raw id: e.g. "deep link host of com.x.Links (@0x7f120034)".
@@ -139,7 +142,7 @@ function filterUris(filter: AxmlElement, value: (el: AxmlElement, attr: AndroidA
   return uris
 }
 
-/** Reads the facts M1 needs from a parsed manifest and the archive's entry names. */
+/** Reads the facts M1 and M2 need from a parsed manifest and the archive's entry names. */
 export function describeManifest(manifest: AxmlElement, entryNames: readonly string[]): ApkInfo {
   if (manifest.name !== 'manifest') throw corrupt(`the manifest's root element is <${manifest.name}>, not <manifest>`)
   const pkg = str(plainAttr(manifest, 'package'))
@@ -201,6 +204,7 @@ export function describeManifest(manifest: AxmlElement, entryNames: readonly str
     if (m) abis.add(m[1])
   }
 
+  const debuggable = app !== undefined && isTrue(androidAttr(app, 'debuggable'))
   return {
     package: pkg,
     version_code: int(androidAttr(manifest, 'versionCode')),
@@ -209,10 +213,11 @@ export function describeManifest(manifest: AxmlElement, entryNames: readonly str
     target_sdk: targetSdk,
     launcher_activity: launcher,
     abis: [...abis].sort(),
-    debuggable: app !== undefined && isTrue(androidAttr(app, 'debuggable')),
+    debuggable,
     permissions: [...permissions.values()],
     deep_links: deepLinks,
     exported_components: exported,
+    framework: detectFramework(entryNames, debuggable),
     unresolved
   }
 }

@@ -466,7 +466,14 @@ alone.
   activity, verified App Links flagged) and exported components, also from
   release builds whose attribute names were stripped. Values the manifest takes
   from the app's resources (`@string/...`) are listed as `unresolved` rather than
-  shown as raw ids (resources.arsc isn't read yet). The file must be inside
+  shown as raw ids (resources.arsc isn't read yet). It also names the UI
+  framework from the files the package ships (Flutter engine and assets, the
+  React Native bundle, a game engine library, Cordova's or Capacitor's runtime;
+  otherwise native) and how Nawi will read that app's screen: the accessibility
+  tree, Flutter's semantics tree, the WebView's DOM over DevTools (debug builds;
+  a release WebView app is read from the accessibility tree), or screenshots
+  only for a game engine, with the files that decided it and a note on what
+  makes locators reliable (test ids, Semantics labels). The file must be inside
   your home folder (as flow files are). Every refusal says what to do: an `.aab`
   gets the bundletool command that converts it, a damaged download gets "download
   it again". Tested against an APK built by the Android toolchain (`aapt2`,

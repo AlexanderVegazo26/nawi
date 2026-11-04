@@ -812,7 +812,11 @@ const inspectApk = defineTool({
     'needing the Android SDK: package name, version code/name, min and target SDK, the launcher activity ' +
     '(`am start -n <package>/<launcher_activity>`), native ABIs (empty: runs on any device), whether it is ' +
     'debuggable, requested permissions (runtime: true for the ones a dialog would ask for), deep links ' +
-    '(scheme://host/path per activity, auto_verify for verified App Links) and exported components. ' +
+    '(scheme://host/path per activity, auto_verify for verified App Links), exported components, and `framework`: ' +
+    'the UI framework (native, flutter, react_native, game_engine, webview, from marker files in the package) with ' +
+    'the `read_strategy` for its screen (accessibility, flutter_semantics, webview_cdp for a debuggable WebView app, ' +
+    'or screenshot when there is no element tree), ' +
+    'the deciding files as `evidence` and a `note` on what makes its locators reliable. ' +
     'An .aab is refused with the bundletool command that converts it. Every error has detail.fix: the one thing ' +
     'to do about it.',
   idempotent: true,
