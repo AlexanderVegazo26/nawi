@@ -28,6 +28,7 @@ npm run dev
 | `npm run typecheck` | `tsc --noEmit` over both the node and web projects |
 | `npm run typecheck:node` / `typecheck:web` | One project at a time |
 | `npm run test:unit` | Vitest unit suite (no app launch, no DOM required) |
+| `npm run test:agent` | Typecheck + unit suite, with a fix-ready report in `.test-report/summary.md` |
 | `npm run test:e2e` | Builds, then runs Playwright against the real app |
 | `npm run package` | Builds an unpacked app into `release/win-unpacked/` |
 | `npm run dist` | Builds a distributable installer for the current platform |
@@ -523,8 +524,18 @@ index rather than being used as path segments. An E2E test asserts that
 
 ```bash
 npm run test:unit    # vitest
+npm run test:agent   # typecheck + vitest, writes .test-report/ (what CI's verify job runs)
 npm run test:e2e     # builds, then drives the real Electron app
 ```
+
+`npm run test:agent` writes `.test-report/summary.md`: every type error with
+`file:line:col`, and every failing test with `file:line`, its source line, the
+expected/received diff and a command that reruns only that test, plus
+`results.json`, `junit.xml`, `failures.json` and `run.log`. Exit 0 means
+everything ran and passed, 1 that something failed, 3 that nothing failed but a
+test was skipped (for example the browser suites with no Playwright Chromium
+installed) or a step was left out. `-- <files>` narrows the Vitest run,
+`-- --no-typecheck` skips the typecheck.
 
 64 Playwright tests across six specs drive the actual built app:
 

@@ -20,7 +20,7 @@ export default defineConfig({
     // only honest way to check them without a browser is to render the
     // component. `react-dom/server` does that in a node environment with no new
     // dependency.
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'scripts/**/*.test.ts'],
     // e2e/ is Playwright's; running it under Vitest would load a different runner's globals.
     exclude: ['e2e/**', 'node_modules/**', 'out/**', 'release/**']
   }

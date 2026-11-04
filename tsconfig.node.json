@@ -11,6 +11,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
+    // scripts/ runs on Node's own type stripping, which needs the .ts extension in relative imports
+    "allowImportingTsExtensions": true,
     "paths": {
       "@shared/*": ["./src/shared/*"],
       "@/*": ["./src/renderer/*"]
@@ -23,6 +25,7 @@
     "src/cli/**/*",
     "src/preload/**/*",
     "src/shared/**/*",
+    "scripts/**/*",
     "electron.vite.config.ts"
   ]
 }

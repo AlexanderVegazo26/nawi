@@ -25,6 +25,7 @@
     "dist": "npm run build && electron-builder",
     "test": "npm run typecheck && npm run test:unit",
     "test:unit": "vitest run",
+    "test:agent": "node scripts/test-agent.ts",
     "test:e2e": "npm run build && playwright test",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:mac": "npm run build && electron-builder --mac --publish never",

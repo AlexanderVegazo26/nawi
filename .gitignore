@@ -14,6 +14,8 @@ test-results/
 playwright-report/
 blob-report/
 .playwright/
+# `npm run test:agent` report (summary.md, results.json, junit.xml, run.log)
+.test-report/
 
 # Acceptance-evidence artifacts produced by driving the real app. Regenerated
 # on every run, and large — the measurement is the deliverable, not the file.
