@@ -79,12 +79,30 @@ export async function flowFromSidecar(options: {
   }
 
   const surface = sidecar.surface
-  const target: FlowTarget =
-    surface.url && /\S/.test(surface.url)
-      ? { kind: 'browser', url: surface.url }
+  const hasUrl = typeof surface.url === 'string' && /\S/.test(surface.url)
+  // A browser recording that didn't save its start page is still a browser flow:
+  // its steps use page selectors, which a desktop target can never replay.
+  const missingStartUrl = !hasUrl && surface.type === 'browser'
+  const target: FlowTarget = hasUrl
+    ? { kind: 'browser', url: surface.url as string }
+    : missingStartUrl
+      ? { kind: 'browser', url: 'about:blank' }
       : { kind: 'desktop', app: /\S/.test(surface.app) ? surface.app : 'unknown' }
   const name = options.name && /\S/.test(options.name) ? options.name : `Recording ${sidecar.created_at}`
   const result = flowFromRecording(events, { name, target })
+
+  const warnings = [
+    ...(truncated
+      ? [`Only the first ${maxEvents} input events were read; the flow covers the start of the recording only.`]
+      : []),
+    ...(missingStartUrl
+      ? [
+          "The recording didn't save the page it started on, so the flow starts on about:blank; " +
+            'set target.url to that page before replaying.'
+        ]
+      : []),
+    ...result.warnings
+  ]
 
   return {
     revision: options.revision,
@@ -93,9 +111,7 @@ export async function flowFromSidecar(options: {
     events: events.length,
     merged: result.merged,
     skipped: result.skipped,
-    warnings: truncated
-      ? [`Only the first ${maxEvents} input events were read; the flow covers the start of the recording only.`, ...result.warnings]
-      : result.warnings,
+    warnings,
     flow_yaml: stringifyFlow(result.flow)
   }
 }

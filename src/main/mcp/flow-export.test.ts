@@ -95,6 +95,36 @@ describe('flowFromSidecar', () => {
     expect(out.warnings).toContain('No replayable steps were found in this recording.')
   })
 
+  it.each([
+    ['null', null],
+    ['blank', '  ']
+  ])('keeps a browser recording whose start URL is %s a browser flow on about:blank, and says so', async (_label, url) => {
+    const base = recording({ input_events: LINES as never })
+    const out = await flowFromSidecar({
+      revisionDir: dir,
+      sidecar: { ...base, surface: { ...base.surface, type: 'browser', url, app: 'Chrome' } },
+      revision: 'v3',
+      name: 'No start URL'
+    })
+    const parsed = parseFlow(out.flow_yaml)
+    expect(parsed.ok, parsed.ok ? '' : `${formatFlowErrors(parsed.errors)}\n${out.flow_yaml}`).toBe(true)
+    if (!parsed.ok) return
+    expect(
+      parsed.flow.target,
+      `a browser surface with url ${JSON.stringify(url)} must stay replayable (CSS/testid steps), got:\n${out.flow_yaml}`
+    ).toEqual({ kind: 'browser', url: 'about:blank' })
+    expect(parsed.flow.steps.map((s) => s.action)).toEqual(['fill', 'press', 'click'])
+    expect(out.warnings[0], `warnings: ${JSON.stringify(out.warnings)}`).toBe(
+      "The recording didn't save the page it started on, so the flow starts on about:blank; " +
+        'set target.url to that page before replaying.'
+    )
+  })
+
+  it('does not warn about a missing start URL when the browser recording has one', async () => {
+    const out = await flowFromSidecar({ revisionDir: dir, sidecar: recording(), revision: 'v1', name: 'x' })
+    expect(out.warnings.some((w) => w.includes('about:blank')), `warnings: ${JSON.stringify(out.warnings)}`).toBe(false)
+  })
+
   it('reports why there is nothing to export when input events were not harvested', async () => {
     const sidecar = recording({
       input_events: null,
