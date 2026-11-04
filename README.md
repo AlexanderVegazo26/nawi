@@ -352,7 +352,8 @@ alone.
 - **Recording → flow** (`export_flow` over MCP, `nawi export-flow` on the CLI) —
   turns a capture's harvested input events into flow YAML: clicks, one `fill`
   per field with its final value (`select` for a `<select>`), named keys such as
-  Enter, each with its ranked selectors. Fields marked secret at capture become
+  Enter (and ArrowUp/ArrowDown in an autocomplete, so Enter picks the same
+  suggestion on replay), each with its ranked selectors. Fields marked secret at capture become
   `${secret.<name>}` placeholders (their values were never recorded). Scrolls,
   resizes, modifier and editing keys, the click that only focused a field, and
   what was entered in fields a flow can't fill (file pickers, sliders, color

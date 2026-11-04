@@ -16,7 +16,8 @@ import { FLOW_VERSION, FlowSchema, RESERVED_KEYS, type Flow, type FlowStep, type
  *    A field the probe marked secret (FR-SEC.2) never has a value here: it
  *    becomes `${secret.<name>}`, resolved at run time, never stored.
  *  - `keydown` → a `press` step, except modifiers and editing keys inside a
- *    text field (the fill already holds their result).
+ *    text field (the fill already holds their result). ArrowUp/ArrowDown in
+ *    an autocomplete combobox are kept: they pick the suggestion Enter takes.
  *  - Dropped as noise, and counted: scrolls and resizes (a replayer scrolls a
  *    target into view itself), inputs on checkboxes/radios (the click is the
  *    action), events without a usable locator, and malformed lines.
@@ -290,6 +291,8 @@ const MODIFIER_KEYS = new Set([
 const EDITING_KEYS = new Set([
   'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Insert'
 ])
+/** Keys that move the highlight in a combobox's suggestion list (kept there, see `keydown`). */
+const LIST_KEYS = new Set(['ArrowUp', 'ArrowDown'])
 /** Named keys only (`Enter`, `F5`, `ArrowDown`): the listener never sends single characters, so one here is forged. */
 const KEY_RE = /^[A-Za-z][A-Za-z0-9]{1,31}$/
 
@@ -483,7 +486,13 @@ export function flowFromRecording(
           skip('modifier_key')
           break
         }
-        if (EDITING_KEYS.has(key) && (TEXT_ENTRY_ROLES.has(role) || tagOf(target) === 'select')) {
+        const isSelect = tagOf(target) === 'select'
+        // In an autocomplete (a combobox that isn't a native <select>), ArrowUp/
+        // ArrowDown move through the suggestions without changing the typed
+        // value, and the Enter after them picks the highlighted one: dropping
+        // them would replay Enter on a different option.
+        const picksOption = role === 'combobox' && !isSelect && LIST_KEYS.has(key)
+        if (EDITING_KEYS.has(key) && !picksOption && (TEXT_ENTRY_ROLES.has(role) || isSelect)) {
           skip('editing_key')
           break
         }

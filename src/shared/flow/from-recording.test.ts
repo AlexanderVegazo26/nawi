@@ -187,6 +187,68 @@ describe('flowFromRecording: other controls', () => {
     expect(merged).toBe(1)
   })
 
+  const CITY = {
+    role: 'combobox',
+    accessible_name: 'City',
+    bounds: null,
+    input_type: 'text',
+    selectors: [
+      { strategy: 'id', value: '#city', stability: 0.9 },
+      { strategy: 'css', value: 'form > input.city', stability: 0.4 }
+    ]
+  }
+  const CITY_TARGET = { selectors: [{ id: 'city' }, { css: 'form > input.city' }] }
+
+  it('keeps ArrowDown/ArrowUp in an autocomplete combobox so Enter replays on the suggestion the user picked', () => {
+    clock = 0
+    const { flow, skipped } = flowFromRecording(
+      [
+        ev('click', CITY),
+        typed(CITY, 'Sa'),
+        typed(CITY, 'San'),
+        ev('keydown', CITY, { key: 'ArrowDown' }),
+        ev('keydown', CITY, { key: 'ArrowDown' }),
+        ev('keydown', CITY, { key: 'ArrowUp' }),
+        ev('keydown', CITY, { key: 'Enter' })
+      ],
+      OPTIONS
+    )
+    expect(flow.steps, `steps were:\n${stringifyFlow(flow)}`).toEqual([
+      { id: 's1', action: 'fill', target: CITY_TARGET, value: 'San', note: 'Fill "City"' },
+      { id: 's2', action: 'press', target: CITY_TARGET, key: 'ArrowDown', note: 'Press ArrowDown in "City"' },
+      { id: 's3', action: 'press', target: CITY_TARGET, key: 'ArrowDown', note: 'Press ArrowDown in "City"' },
+      { id: 's4', action: 'press', target: CITY_TARGET, key: 'ArrowUp', note: 'Press ArrowUp in "City"' },
+      { id: 's5', action: 'press', target: CITY_TARGET, key: 'Enter', note: 'Press Enter in "City"' }
+    ])
+    expect(skipped, 'only the focusing click is noise here').toEqual({ focus_click: 1 })
+  })
+
+  it('still drops caret and deletion keys in an autocomplete combobox (the fill holds their result)', () => {
+    clock = 0
+    const { flow, skipped } = flowFromRecording(
+      [
+        typed(CITY, 'Sam'),
+        ev('keydown', CITY, { key: 'Backspace' }),
+        ev('keydown', CITY, { key: 'ArrowLeft' }),
+        ev('keydown', CITY, { key: 'Home' }),
+        typed(CITY, 'San')
+      ],
+      OPTIONS
+    )
+    expect(flow.steps.map((s) => [s.action, 'value' in s ? s.value : 'key' in s ? s.key : null])).toEqual([['fill', 'San']])
+    expect(skipped).toEqual({ editing_key: 3 })
+  })
+
+  it('still drops ArrowDown on a native <select> combobox (the select step holds the option)', () => {
+    clock = 0
+    const { flow, skipped } = flowFromRecording(
+      [typed(COUNTRY, 'pe'), ev('keydown', COUNTRY, { key: 'ArrowDown' }), ev('keydown', COUNTRY, { key: 'ArrowUp' })],
+      OPTIONS
+    )
+    expect(flow.steps.map((s) => s.action)).toEqual(['select'])
+    expect(skipped).toEqual({ editing_key: 2 })
+  })
+
   it('keeps the click on a checkbox and drops the input event it fires', () => {
     clock = 0
     const { flow, skipped } = flowFromRecording([ev('click', TERMS), typed(TERMS, 'on')], OPTIONS)
