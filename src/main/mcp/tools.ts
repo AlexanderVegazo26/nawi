@@ -19,6 +19,7 @@ import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, readRunRecord } from '../run-re
 import { REVISION_RE } from '../sidecar/paths'
 import { inspectApkFile } from '../mobile/apk'
 import { ApkError } from '../mobile/errors'
+import { runMobileDoctor } from '../mobile/doctor'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -808,15 +809,43 @@ const inspectApk = defineTool({
     file: z.string().min(1).max(MAX_FLOW_PATH).describe('Absolute path to the .apk file.')
   }),
   async run(args) {
-    try {
-      return await inspectApkFile(args.file)
-    } catch (err) {
-      if (!(err instanceof ApkError)) throw err
-      const detail = { file: args.file, fix: err.fix }
-      if (err.kind === 'not_found') throw new ToolError('NOT_FOUND', err.message, detail)
-      if (err.kind === 'unsupported') throw new ToolError('NOT_IMPLEMENTED', err.message, detail)
-      throw new ToolError('INVALID_ARGUMENTS', err.message, detail)
-    }
+    return readApk(args.file)
+  }
+})
+
+/** inspectApkFile with each ApkError kind mapped onto a typed code and the fix in detail (inspect_apk, mobile_doctor). */
+async function readApk(file: string) {
+  try {
+    return await inspectApkFile(file)
+  } catch (err) {
+    if (!(err instanceof ApkError)) throw err
+    const detail = { file, fix: err.fix }
+    if (err.kind === 'not_found') throw new ToolError('NOT_FOUND', err.message, detail)
+    if (err.kind === 'unsupported') throw new ToolError('NOT_IMPLEMENTED', err.message, detail)
+    throw new ToolError('INVALID_ARGUMENTS', err.message, detail)
+  }
+}
+
+const mobileDoctor = defineTool({
+  name: 'mobile_doctor',
+  description:
+    'Check whether this machine can run an Android app, and if not, the one thing to do next. Finds the Android ' +
+    'SDK (ANDROID_HOME, ANDROID_SDK_ROOT, the default install folder, adb on PATH), adb, the emulator, hardware ' +
+    'virtualization (KVM on Linux, `emulator -accel-check` elsewhere), connected devices (API level and ABIs over ' +
+    'adb) and virtual devices (AVDs, read from their config without booting them). With `file` (an .apk inside your ' +
+    'home directory, as for inspect_apk) each device is matched against the app\'s min SDK and native ABIs. ' +
+    'It reads the environment Nawi itself started with (ANDROID_HOME etc. of the app or `nawi serve`). ' +
+    'Returns ready, recommended ({kind: device|avd, name}), fix (one sentence, null when ready) and per-check ' +
+    'status ok/warn/fail/skipped with its own fix. Changes nothing (it may start the adb server); installing, booting ' +
+    'and launching are not available yet.',
+  idempotent: false,
+  errors: ['NOT_FOUND', 'NOT_IMPLEMENTED'],
+  schema: z.object({
+    file: z.string().min(1).max(MAX_FLOW_PATH).optional().describe('Absolute path to an .apk to match devices against.')
+  }),
+  async run(args) {
+    const apk = args.file === undefined ? null : await readApk(args.file)
+    return runMobileDoctor(apk)
   }
 })
 
@@ -838,7 +867,8 @@ export const TOOLS: ToolDefinition[] = [
   runFlow,
   listRunsTool,
   getRun,
-  inspectApk
+  inspectApk,
+  mobileDoctor
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ApkInfo } from '../main/mobile/apk'
-import { MobileUsageError, parseMobileInspectArgs, renderApkInfo } from './mobile'
+import type { MobileDoctorReport } from '../main/mobile/doctor'
+import { MobileUsageError, parseMobileDoctorArgs, parseMobileInspectArgs, renderApkInfo, renderDoctorReport } from './mobile'
 
 describe('parseMobileInspectArgs', () => {
   it('resolves a positional or --file path against the shell folder, and takes --json', () => {
@@ -70,5 +71,59 @@ describe('renderApkInfo', () => {
   it('lists the values taken from resources that were not resolved', () => {
     const out = renderApkInfo({ ...base, unresolved: ['versionName (@0x7f120001)'] })
     expect(out.split('\n').slice(-2)).toEqual(['  unresolved   1 (resource references, not read yet)', '    versionName (@0x7f120001)'])
+  })
+})
+
+describe('parseMobileDoctorArgs', () => {
+  it('takes no APK, or one resolved against the shell folder', () => {
+    expect(parseMobileDoctorArgs([], '/home/u')).toEqual({ file: undefined, json: false })
+    expect(parseMobileDoctorArgs(['--json'], '/home/u')).toEqual({ file: undefined, json: true })
+    expect(parseMobileDoctorArgs(['dl/app.apk'], '/home/u')).toEqual({ file: '/home/u/dl/app.apk', json: false })
+  })
+
+  it.each([
+    [['a.apk', 'b.apk'], /one APK/],
+    [['--file'], /--file needs a path/],
+    [['--fix'], /Unknown flag --fix/]
+  ])('refuses %j as a usage error', (argv, message) => {
+    expect(() => parseMobileDoctorArgs(argv, '/home/u')).toThrow(MobileUsageError)
+    expect(() => parseMobileDoctorArgs(argv, '/home/u')).toThrow(message)
+  })
+})
+
+describe('renderDoctorReport', () => {
+  const report: MobileDoctorReport = {
+    ready: false,
+    recommended: null,
+    fix: 'Add yourself to the kvm group (`sudo usermod -aG kvm $USER`), then log out and back in.',
+    apk: { package: 'com.example', min_sdk: 24, target_sdk: 35, abis: [] },
+    sdk: { path: '/sdk', source: 'ANDROID_HOME' },
+    adb: { path: '/sdk/platform-tools/adb', version: '1.0.41' },
+    emulator: { path: '/sdk/emulator/emulator' },
+    virtualization: { status: 'no_permission', detail: '/dev/kvm exists but this user cannot open it' },
+    devices: [],
+    avds: [],
+    checks: [
+      { id: 'sdk', status: 'ok', summary: '/sdk (ANDROID_HOME)', fix: null },
+      { id: 'virtualization', status: 'fail', summary: '/dev/kvm exists but this user cannot open it', fix: 'x' },
+      { id: 'devices', status: 'skipped', summary: 'no device connected', fix: null }
+    ]
+  }
+
+  it('prints the verdict, one line per check, and the one next step', () => {
+    expect(renderDoctorReport(report).split('\n')).toEqual([
+      'Not ready to run com.example.',
+      '  ok    sdk            /sdk (ANDROID_HOME)',
+      '  FAIL  virtualization /dev/kvm exists but this user cannot open it',
+      '  -     devices        no device connected',
+      '',
+      'Next: Add yourself to the kvm group (`sudo usermod -aG kvm $USER`), then log out and back in.'
+    ])
+  })
+
+  it('names the recommended device when ready, with no next step', () => {
+    const out = renderDoctorReport({ ...report, ready: true, fix: null, apk: null, recommended: { kind: 'avd', name: 'pixel-36' } })
+    expect(out.split('\n')[0]).toBe('Ready: use virtual device pixel-36.')
+    expect(out, 'no Next line when ready').not.toContain('Next:')
   })
 })

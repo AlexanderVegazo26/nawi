@@ -217,10 +217,11 @@ Nawi exposes seventeen tools over a loopback JSON-RPC endpoint: `capture_screen`
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
 `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`) and
-`inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`). Every tool has a CLI command (a test keeps the
+`inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`) and `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
+exit 1 when no device can run it). Every tool has a CLI command (a test keeps the
 two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
 `nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
-Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usage, 3 Nawi not running.
+Exit codes: 0 success, 1 the app reported an error, a flow step failed or `mobile-doctor` found no device, 2 usage, 3 Nawi not running.
 A refused tool call is JSON-RPC -32000 with a typed code in `error.data.code` (`NOT_FOUND`, `INVALID_ARGUMENTS` with
 `data.issues`, `AGENT_ACCESS_PAUSED`, ...); each `tools/list` entry names the codes that tool can return under
 `_meta["nawi/errors"]`, and [docs/MCP-ERRORS.md](docs/MCP-ERRORS.md) documents the shape and every code (a contract
@@ -468,6 +469,22 @@ alone.
   gets the bundletool command that converts it, a damaged download gets "download
   it again". Tested against an APK built by the Android toolchain (`aapt2`,
   `src/main/mobile/fixtures/build-fixture.sh`).
+- **Android setup check** (`mobile_doctor`, CLI `nawi mobile-doctor [file.apk]`,
+  `src/main/mobile/doctor.ts`): finds the Android SDK (`ANDROID_HOME`,
+  `ANDROID_SDK_ROOT`, the default install folder, or adb on `PATH`), adb, the
+  emulator, hardware virtualization (KVM on Linux, `emulator -accel-check`
+  elsewhere), connected devices (API level and ABIs over adb) and virtual
+  devices (read from their config, nothing is booted). Given an APK it matches
+  each one against the app's min SDK and native ABIs, recommends a connected
+  device first and otherwise the newest matching virtual device, and when
+  nothing can run the app gives one fix: install platform-tools or the
+  emulator, fix a wrong `ANDROID_HOME`, accept the phone's USB debugging prompt,
+  join the `kvm` group or turn on virtualization, reinstall a deleted system
+  image, the exact `sdkmanager`/`avdmanager` commands for a matching virtual
+  device, or a phone for ARM-only native code on an x86 computer. It changes
+  nothing (adb may start its server). It reads the environment Nawi was started
+  with (the app or `nawi serve`), so set `ANDROID_HOME` there, not only in the
+  shell running the CLI.
 
 ## Keyboard shortcuts
 
@@ -568,9 +585,9 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Mobile is read-only so far.** `inspect_apk` reads an APK, but Nawi does not
-  yet find adb or an emulator, install, grant permissions, launch, or show the
-  device screen, and there is no drag-and-drop of an APK onto the window or
+- **Mobile is read-only so far.** `inspect_apk` reads an APK and `mobile_doctor`
+  finds adb, the emulator and devices, but Nawi does not yet create or boot a
+  virtual device, install, grant permissions, launch, or show the device screen, and there is no drag-and-drop of an APK onto the window or
   `*.nawi.mobile.yaml` profile yet. `.aab` bundles and zip64 APKs are refused
   with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in

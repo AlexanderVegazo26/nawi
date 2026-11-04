@@ -19,6 +19,15 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...os, homedir: () => home }
 })
 
+// The doctor itself is tested against fake SDK layouts (mobile/doctor.test.ts); here it must not probe this machine.
+const doctorCalls: unknown[] = []
+vi.mock('../mobile/doctor', () => ({
+  runMobileDoctor: async (apk: unknown) => {
+    doctorCalls.push(apk)
+    return { ready: false, fix: 'stub' }
+  }
+}))
+
 const { makeZip } = await import('../mobile/fixtures/make-zip')
 const { TOOLS } = await import('./tools')
 const { dispatch } = await import('./dispatch')
@@ -71,5 +80,38 @@ describe('inspect_apk', () => {
     expect(err.code, err.message).toBe(code)
     expect(err.detail.fix, `detail of ${code}`).toMatch(fix)
     expect(err.detail.file).toBe(file())
+  })
+})
+
+describe('mobile_doctor', () => {
+  const doctor = (args: Record<string, unknown>) =>
+    dispatch(
+      { token: TOKEN, tools: TOOLS, isPaused: async () => false },
+      { name: 'mobile_doctor', args, authorization: `Bearer ${TOKEN}`, origin: null, callId: 'c2' }
+    )
+
+  it('runs with no APK, or with the manifest facts of the APK it was given', async () => {
+    doctorCalls.length = 0
+    expect(await doctor({}), 'report passed through').toEqual({ ready: false, fix: 'stub' })
+    await doctor({ file: join(home, 'sample.apk') })
+    expect(doctorCalls[0], 'no file: no APK').toBeNull()
+    expect(doctorCalls[1], 'APK facts handed to the doctor').toMatchObject({ package: 'dev.nawi.sample', min_sdk: 26, abis: ['arm64-v8a', 'x86_64'] })
+  })
+
+  it.each([
+    ['a missing file', () => join(home, 'missing.apk'), 'NOT_FOUND'],
+    ['an App Bundle', () => join(home, 'app.aab'), 'NOT_IMPLEMENTED'],
+    ['an APK outside the home folder', () => join(outside, 'sample.apk'), 'INVALID_ARGUMENTS']
+  ])('refuses %s like inspect_apk does (%s, fix in detail), before probing anything', async (_what, file, code) => {
+    doctorCalls.length = 0
+    const err = (await doctor({ file: file() }).then(
+      () => {
+        throw new Error('should have been refused')
+      },
+      (e: unknown) => e
+    )) as { code: string; message: string; detail: Record<string, unknown> }
+    expect(err.code, err.message).toBe(code)
+    expect(typeof err.detail.fix, 'detail.fix').toBe('string')
+    expect(doctorCalls, 'doctor never ran for a refused APK').toEqual([])
   })
 })

@@ -27,7 +27,11 @@ export const COMMANDS: Record<string, { tool: string; summary: string }> = {
       '--follow [--interval ms] streams new runs as NDJSON until interrupted.'
   },
   'run-info': { tool: 'get_run', summary: 'One run record in full: --run_id.' },
-  'mobile-inspect': { tool: 'inspect_apk', summary: 'Read an Android app\'s manifest without installing it: nawi mobile-inspect <file.apk>.' }
+  'mobile-inspect': { tool: 'inspect_apk', summary: 'Read an Android app\'s manifest without installing it: nawi mobile-inspect <file.apk>.' },
+  'mobile-doctor': {
+    tool: 'mobile_doctor',
+    summary: 'Check the Android SDK, adb, emulator, virtualization and devices, with one fix: nawi mobile-doctor [file.apk]. Exit 1 if nothing can run it.'
+  }
 }
 
 /** `nawi tools` is answered by `tools/list`, not by a tool, so it has no entry in COMMANDS. */
