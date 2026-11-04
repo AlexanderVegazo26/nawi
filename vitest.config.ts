@@ -19,7 +19,9 @@ export default defineConfig({
     // skeleton, never a spinner") are claims about rendered output, and the
     // only honest way to check them without a browser is to render the
     // component. `react-dom/server` does that in a node environment with no new
-    // dependency.
+    // dependency. Interaction tests (clicks, IPC replies, broadcasts) opt into a
+    // DOM per file with `// @vitest-environment jsdom` + Testing Library, e.g.
+    // src/renderer/components/agent-access-toggle.test.tsx.
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'scripts/**/*.test.ts'],
     // e2e/ is Playwright's; running it under Vitest would load a different runner's globals.
     exclude: ['e2e/**', 'node_modules/**', 'out/**', 'release/**']
