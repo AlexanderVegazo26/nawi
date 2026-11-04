@@ -26,6 +26,8 @@ import {
   runExitCode,
   type RunReport
 } from './run'
+import { MOBILE_INSPECT_USAGE, MobileUsageError, parseMobileInspectArgs, renderApkInfo } from './mobile'
+import type { ApkInfo } from '../main/mobile/apk'
 import {
   SERVE_SUMMARY,
   SERVE_USAGE,
@@ -98,6 +100,8 @@ Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usag
 Nawi must already be running (the app, or \`nawi serve\`); no other command starts it for you.
 
 ${RUN_USAGE}
+
+${MOBILE_INSPECT_USAGE}
 
 ${SERVE_USAGE}`
 
@@ -187,6 +191,7 @@ async function main(): Promise<void> {
   }
 
   if (command === 'run') return runCommand(argv.slice(1))
+  if (command === 'mobile-inspect') return mobileInspectCommand(argv.slice(1))
 
   let parsed: { args: Record<string, unknown>; json: boolean }
   try {
@@ -304,6 +309,24 @@ async function runCommand(argv: string[]): Promise<void> {
     }
   }
   process.exit(runExitCode(report))
+}
+
+/** `nawi mobile-inspect <file.apk>`: positional file resolved here, the reading done by the app's inspect_apk. */
+async function mobileInspectCommand(argv: string[]): Promise<void> {
+  let args: ReturnType<typeof parseMobileInspectArgs>
+  try {
+    args = parseMobileInspectArgs(argv, process.cwd())
+  } catch (err) {
+    if (err instanceof MobileUsageError) fail(`${err.message}\n\n${MOBILE_INSPECT_USAGE}`, EXIT_USAGE)
+    throw err
+  }
+  const result = (await callTool('inspect_apk', { file: args.file })) as { structuredContent?: ApkInfo }
+  const info = result?.structuredContent
+  if (!info || typeof info.package !== 'string') {
+    fail(`Nawi returned an unexpected inspect_apk result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
+  }
+  process.stdout.write(`${args.json ? JSON.stringify(info, null, 2) : renderApkInfo(info)}\n`)
+  process.exit(EXIT_OK)
 }
 
 /** `nawi tools [--json]`: what the running app offers, straight from `tools/list`. */

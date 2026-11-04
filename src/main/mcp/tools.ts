@@ -17,6 +17,8 @@ import { carryForwardFiles } from './revision'
 import { MAX_FLOW_PATH, runFlowFile } from '../flow-run'
 import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, readRunRecord } from '../run-record'
 import { REVISION_RE } from '../sidecar/paths'
+import { inspectApkFile } from '../mobile/apk'
+import { ApkError } from '../mobile/errors'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -786,6 +788,38 @@ const getRun = defineTool({
   }
 })
 
+/**
+ * Roadmap M1 (first slice): what an Android app declares, read offline from its .apk, before Nawi installs and
+ * drives it. Each refusal carries a `fix` in its detail.
+ */
+const inspectApk = defineTool({
+  name: 'inspect_apk',
+  description:
+    'Read an Android app package (*.apk, absolute path inside your home directory) without installing it or ' +
+    'needing the Android SDK: package name, version code/name, min and target SDK, the launcher activity ' +
+    '(`am start -n <package>/<launcher_activity>`), native ABIs (empty: runs on any device), whether it is ' +
+    'debuggable, requested permissions (runtime: true for the ones a dialog would ask for), deep links ' +
+    '(scheme://host/path per activity, auto_verify for verified App Links) and exported components. ' +
+    'An .aab is refused with the bundletool command that converts it. Every error has detail.fix: the one thing ' +
+    'to do about it.',
+  idempotent: true,
+  errors: ['NOT_FOUND', 'NOT_IMPLEMENTED'],
+  schema: z.object({
+    file: z.string().min(1).max(MAX_FLOW_PATH).describe('Absolute path to the .apk file.')
+  }),
+  async run(args) {
+    try {
+      return await inspectApkFile(args.file)
+    } catch (err) {
+      if (!(err instanceof ApkError)) throw err
+      const detail = { file: args.file, fix: err.fix }
+      if (err.kind === 'not_found') throw new ToolError('NOT_FOUND', err.message, detail)
+      if (err.kind === 'unsupported') throw new ToolError('NOT_IMPLEMENTED', err.message, detail)
+      throw new ToolError('INVALID_ARGUMENTS', err.message, detail)
+    }
+  }
+})
+
 /** The FR-AGT.1 surface, in the order the requirement lists them. */
 export const TOOLS: ToolDefinition[] = [
   captureScreen,
@@ -803,7 +837,8 @@ export const TOOLS: ToolDefinition[] = [
   exportFlow,
   runFlow,
   listRunsTool,
-  getRun
+  getRun,
+  inspectApk
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)

@@ -84,6 +84,7 @@ it declares (`errors` in `src/main/mcp/tools.ts`). `tools/list` publishes the fu
 | `run_flow` | `NOT_FOUND`, `NOT_IMPLEMENTED`, `UNAVAILABLE` |
 | `list_runs` | (none) |
 | `get_run` | `NOT_FOUND` |
+| `inspect_apk` | `NOT_FOUND`, `NOT_IMPLEMENTED` |
 <!-- /generated -->
 
 ## Adding a tool or a code

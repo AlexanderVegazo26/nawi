@@ -211,12 +211,13 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes sixteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes seventeen tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
 `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
-`list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`) and `get_run` (CLI: `nawi run-info --run_id <id>`). Every tool has a CLI command (a test keeps the
+`list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`) and
+`inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`). Every tool has a CLI command (a test keeps the
 two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
 `nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
 Exit codes: 0 success, 1 the app reported an error or a flow step failed, 2 usage, 3 Nawi not running.
@@ -454,6 +455,19 @@ alone.
   `no_provider`, `no_model`, `budget`, `refused`, `cancelled`, `error`), never
   as a pass; refused, cut-off and empty answers are never cached, and a workspace
   redaction rule that doesn't compile stops the call. No feature calls it yet, and there is no settings UI for it yet.
+- **Android app inspection** (`inspect_apk`, CLI `nawi mobile-inspect <file.apk>`,
+  `src/main/mobile`): the first step of mobile testing. Reads an `.apk` offline,
+  with no Android SDK installed: package, version, min/target SDK, the launcher
+  activity, native ABIs, whether it is debuggable, permissions (the runtime ones
+  a dialog would ask for are marked), deep links (`scheme://host/path` per
+  activity, verified App Links flagged) and exported components, also from
+  release builds whose attribute names were stripped. Values the manifest takes
+  from the app's resources (`@string/...`) are listed as `unresolved` rather than
+  shown as raw ids (resources.arsc isn't read yet). The file must be inside
+  your home folder (as flow files are). Every refusal says what to do: an `.aab`
+  gets the bundletool command that converts it, a damaged download gets "download
+  it again". Tested against an APK built by the Android toolchain (`aapt2`,
+  `src/main/mobile/fixtures/build-fixture.sh`).
 
 ## Keyboard shortcuts
 
@@ -554,6 +568,11 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
+- **Mobile is read-only so far.** `inspect_apk` reads an APK, but Nawi does not
+  yet find adb or an emulator, install, grant permissions, launch, or show the
+  device screen, and there is no drag-and-drop of an APK onto the window or
+  `*.nawi.mobile.yaml` profile yet. `.aab` bundles and zip64 APKs are refused
+  with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from
   `NAWI_SECRET_*` only (no OS keychain or prompt yet).

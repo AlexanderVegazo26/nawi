@@ -222,3 +222,47 @@ steps:
     expect(r.stderr).toContain('does not declare "who" under vars')
   })
 })
+
+/* ------------------------------------------------------------------ *
+ * nawi mobile-inspect (roadmap M1): the CLI resolves the positional path,
+ * the running app reads the APK.
+ * ------------------------------------------------------------------ */
+
+test.describe('nawi mobile-inspect', () => {
+  // APK files must live under the user's home directory, so the copy does too.
+  let apkDir: string
+  test.beforeAll(async () => {
+    apkDir = await fs.mkdtemp(join(homedir(), '.nawi-cli-e2e-apk-'))
+    await fs.copyFile(join(process.cwd(), 'src', 'main', 'mobile', 'fixtures', 'sample.apk'), join(apkDir, 'sample.apk'))
+  })
+  test.afterAll(async () => {
+    await fs.rm(apkDir, { recursive: true, force: true }).catch(() => undefined)
+  })
+
+  test('exit 0 — prints the package, launcher and runtime permissions of an APK', async () => {
+    const r = await run(['mobile-inspect', join(apkDir, 'sample.apk')], config())
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stdout).toContain('dev.nawi.sample 1.4.2 (42)')
+    expect(r.stdout).toContain('launcher     dev.nawi.sample.MainActivity')
+    expect(r.stdout).toContain('permissions  6 (4 runtime: CAMERA, POST_NOTIFICATIONS, ACCESS_FINE_LOCATION, READ_CONTACTS')
+  })
+
+  test('--json prints the inspect_apk object', async () => {
+    const r = await run(['mobile-inspect', join(apkDir, 'sample.apk'), '--json'], config())
+    expect(r.code, r.stderr).toBe(0)
+    expect(JSON.parse(r.stdout)).toMatchObject({ package: 'dev.nawi.sample', min_sdk: 26, abis: ['arm64-v8a', 'x86_64'] })
+  })
+
+  test('exit 1 — a missing APK is refused by the app with what to do', async () => {
+    const r = await run(['mobile-inspect', join(apkDir, 'missing.apk')], config())
+    expect(r.code).toBe(1)
+    expect(r.stderr).toContain('No file exists at')
+    expect(r.stderr).toContain('Check the path')
+  })
+
+  test('exit 2 — no file is a usage error with the command usage', async () => {
+    const r = await run(['mobile-inspect'], config())
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('nawi mobile-inspect <file.apk> [--json]')
+  })
+})

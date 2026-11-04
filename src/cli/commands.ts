@@ -26,7 +26,8 @@ export const COMMANDS: Record<string, { tool: string; summary: string }> = {
       'List saved run records, newest first: [--limit 20] [--status failed] [--flow_file path]. ' +
       '--follow [--interval ms] streams new runs as NDJSON until interrupted.'
   },
-  'run-info': { tool: 'get_run', summary: 'One run record in full: --run_id.' }
+  'run-info': { tool: 'get_run', summary: 'One run record in full: --run_id.' },
+  'mobile-inspect': { tool: 'inspect_apk', summary: 'Read an Android app\'s manifest without installing it: nawi mobile-inspect <file.apk>.' }
 }
 
 /** `nawi tools` is answered by `tools/list`, not by a tool, so it has no entry in COMMANDS. */

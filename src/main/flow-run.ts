@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { arch, homedir, platform, release } from 'node:os'
-import { isAbsolute, relative } from 'node:path'
+import { within } from './confine'
+import { isAbsolute } from 'node:path'
 import {
   FLOW_FILE_SUFFIX,
   FlowSchema,
@@ -132,12 +133,7 @@ export interface FlowRunReport {
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 
-/** Whether `path` is strictly inside `root` (both already resolved). */
-export function within(root: string, path: string): boolean {
-  const rel = relative(root, path)
-  // `..flows/x` is a folder named "..flows" inside the root; only `..` as a whole segment leaves it.
-  return rel !== '' && !/^\.\.(?:[\\/]|$)/.test(rel) && !isAbsolute(rel)
-}
+export { within }
 
 /**
  * The real path of a flow file the run may read, or a typed refusal.

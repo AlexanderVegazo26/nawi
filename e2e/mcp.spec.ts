@@ -23,7 +23,7 @@ let endpoint: { url: string; token: string; port: number }
 const BRIDGE = join(process.cwd(), 'out', 'mcp', 'stdio-bridge.js')
 
 /**
- * The FR-AGT.1 surface plus `export_flow` (roadmap F2), `run_flow` (F3b) and `list_runs`/`get_run` (F4c). Named here so the
+ * The FR-AGT.1 surface plus `export_flow` (roadmap F2), `run_flow` (F3b), `list_runs`/`get_run` (F4c) and `inspect_apk` (M1). Named here so the
  * kill-switch test cannot quietly skip one.
  */
 const TOOL_NAMES = [
@@ -42,7 +42,8 @@ const TOOL_NAMES = [
   'export_flow',
   'run_flow',
   'list_runs',
-  'get_run'
+  'get_run',
+  'inspect_apk'
 ]
 
 /* ------------------------------------------------------------------ *
@@ -156,7 +157,7 @@ test('FR-SEC.1 — the endpoint declares itself as non-egress', async () => {
   expect(parsed.egress).toBe(false)
 })
 
-test('initialize and tools/list expose exactly the twelve FR-AGT.1 tools plus export_flow, run_flow, list_runs and get_run', async () => {
+test('initialize and tools/list expose exactly the twelve FR-AGT.1 tools plus export_flow, run_flow, list_runs, get_run and inspect_apk', async () => {
   const init = await rpc('initialize', { protocolVersion: '2025-06-18' })
   expect(init.status).toBe(200)
   expect((init.body.result as { serverInfo: { name: string } }).serverInfo.name).toBe('nawi')
@@ -289,7 +290,7 @@ test('FR-AGT.3 — the same idempotency_key returns the same capture_id and one 
  * UX-AGT.3 — the kill switch
  * ------------------------------------------------------------------ */
 
-test('UX-AGT.3 — while paused, every one of the sixteen tools returns AGENT_ACCESS_PAUSED', async () => {
+test('UX-AGT.3 — while paused, every one of the seventeen tools returns AGENT_ACCESS_PAUSED', async () => {
   const before = (await callTool('list_captures')).total as number
   await setPaused(true)
   try {
