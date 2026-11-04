@@ -80,6 +80,13 @@ export const IPC = {
   /** UX-STA.5 disk-pressure precheck. */
   getDiskPressure: 'disk:pressure',
 
+  /** Roadmap M1d: open a dropped .apk on a device, its progress broadcast, and the device's live screen. */
+  openApk: 'mobile:open',
+  cancelMobileOpen: 'mobile:cancel',
+  /** main -> renderer broadcast, one per step as it starts. */
+  mobileProgress: 'mobile:progress',
+  getMobileScreen: 'mobile:screen',
+
   shortcut: 'app:shortcut'
 } as const
 

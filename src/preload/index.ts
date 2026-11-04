@@ -1,7 +1,8 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC } from '@shared/ipc'
 import type { AgentAccessState, LibraryItem, Settings, NawiApi } from '@shared/types'
 import type { RecordingStatus, StartRecordingOptions } from '@shared/recording'
+import type { MobileProgress } from '@shared/mobile'
 
 /**
  * One place that turns a main→renderer broadcast into a subscription.
@@ -103,6 +104,20 @@ const api: NawiApi = {
   relaunchApp: () => ipcRenderer.invoke(IPC.relaunchApp),
 
   getDiskPressure: (estimateMinutes) => ipcRenderer.invoke(IPC.getDiskPressure, estimateMinutes),
+
+  /* mobile drop-in (roadmap M1d) */
+  pathForFile: (file) => {
+    // File.path is gone from Electron; webUtils is the supported way, and it only works here in the preload.
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
+  openApk: (path) => ipcRenderer.invoke(IPC.openApk, path),
+  cancelMobileOpen: () => ipcRenderer.invoke(IPC.cancelMobileOpen),
+  onMobileProgress: (cb) => subscribe<MobileProgress>(IPC.mobileProgress, cb),
+  getMobileScreen: (serial) => ipcRenderer.invoke(IPC.getMobileScreen, serial),
 
   onShortcut: (cb) => {
     // The listener receives the payload only, never the IpcRendererEvent.

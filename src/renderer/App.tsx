@@ -9,8 +9,9 @@ import { LiveAnnouncer, OfflineBanner, Toast, UNDO_WINDOW_MS } from './component
 import { failureFrom } from './lib/failure'
 import { ThemeToggle } from './components/ThemeToggle'
 import { AgentAccessToggle } from './components/AgentAccessToggle'
+import { MobileView, PhonePaths, dragHasFiles, isAndroidPackageName, useMobileOpen } from './components/MobileView'
 
-type View = 'capture' | 'library'
+type View = 'capture' | 'library' | 'mobile'
 interface ToastMsg {
   id: number
   message: string
@@ -45,6 +46,11 @@ const RAIL: Array<{ id: View; label: string; icon: React.JSX.Element }> = [
         <rect x="13.5" y="14" width="7.5" height="7.5" rx="1.5" />
       </>
     )
+  },
+  {
+    id: 'mobile',
+    label: 'Mobile',
+    icon: <PhonePaths />
   }
 ]
 
@@ -368,6 +374,58 @@ export function App(): React.JSX.Element {
     [notify]
   )
 
+  /*
+   * Roadmap M1d: an .apk dropped anywhere on the window opens on a device.
+   * Every file drag is accepted here, also so a stray drop can't navigate the
+   * window to file:// (Chromium's default for a dropped file).
+   */
+  const mobile = useMobileOpen()
+  const apkNonce = useRef(0)
+  const editingRef = useRef(editing)
+  editingRef.current = editing
+  const openApkFile = useCallback(
+    (file: File) => {
+      // A drop must not close the editor behind its unsaved-changes check.
+      if (editingRef.current) {
+        notify('Close the editor first, then drop the .apk to open it on a device.', 'err')
+        return
+      }
+      if (!isAndroidPackageName(file.name)) {
+        notify(`${file.name} is not an Android app: drop an .apk file to open it on a device.`, 'err')
+        return
+      }
+      const path = window.api.pathForFile(file)
+      if (!path) {
+        notify('Nawi needs the file on your computer: save the .apk first, then drop it from the file manager.', 'err')
+        return
+      }
+      if (!mobile.start({ path, name: file.name, nonce: ++apkNonce.current })) {
+        notify('An app is already being opened: wait for it to finish or press Cancel.', 'err')
+      }
+      setView('mobile')
+    },
+    [notify, mobile.start]
+  )
+  useEffect(() => {
+    const over = (e: DragEvent): void => {
+      if (!dragHasFiles(e.dataTransfer)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+    const drop = (e: DragEvent): void => {
+      if (!dragHasFiles(e.dataTransfer)) return
+      e.preventDefault()
+      const file = e.dataTransfer?.files[0]
+      if (file) openApkFile(file)
+    }
+    window.addEventListener('dragover', over)
+    window.addEventListener('drop', drop)
+    return () => {
+      window.removeEventListener('dragover', over)
+      window.removeEventListener('drop', drop)
+    }
+  }, [openApkFile])
+
   if (editing) {
     return (
       <>
@@ -466,7 +524,7 @@ export function App(): React.JSX.Element {
               recordingFailure={recordingFailure}
               onRecordingFailureHandled={clearRecordingFailure}
             />
-          ) : (
+          ) : view === 'mobile' ? null : (
             <LibraryView
               items={items}
               loading={loading}
@@ -479,6 +537,11 @@ export function App(): React.JSX.Element {
               onNewCapture={() => setView('capture')}
             />
           )}
+          {/* The open's state lives in App (useMobileOpen), so it keeps running
+              and keeps its progress while another view or the editor is shown. */}
+          <div hidden={view !== 'mobile'} className="h-full">
+            <MobileView open={mobile} onPick={openApkFile} active={view === 'mobile'} />
+          </div>
         </div>
       </main>
 

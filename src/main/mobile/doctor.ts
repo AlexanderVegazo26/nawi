@@ -522,3 +522,8 @@ export async function runMobileDoctor(apk: ApkInfo | null = null, host: DoctorHo
   }
   return report
 }
+
+/** The adb the doctor would use (same search order), or null. For callers that only need adb, e.g. the live screen. */
+export async function findAdb(host: DoctorHost = defaultHost()): Promise<string | null> {
+  return (await findSdk(host)).adbPath
+}

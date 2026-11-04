@@ -4,6 +4,7 @@
  */
 
 import type { Settings, SettingsPatch } from './settings'
+import type { MobileOpenView, MobileProgress, MobileScreenFrame } from './mobile'
 import { CONTAINERS, type RecordingContainer } from './recording'
 import type {
   RecordingStatus,
@@ -511,6 +512,18 @@ export interface NawiApi {
 
   /* disk pressure (UX-STA.5) */
   getDiskPressure(estimateMinutes?: number): Promise<IpcResult<DiskPressure>>
+
+  /* mobile drop-in (roadmap M1d) */
+  /** The local path of a dropped or picked File ('' when it has none, e.g. dragged from a web page). */
+  pathForFile(file: File): string
+  /** Read, install and launch an .apk on the best device; resolves when done, failed or cancelled. */
+  openApk(path: string): Promise<IpcResult<MobileOpenView>>
+  /** Stops the running open before its next step. Resolves false when none was running. */
+  cancelMobileOpen(): Promise<IpcResult<boolean>>
+  /** Fires as each step of a running open starts. Returns an unsubscribe function. */
+  onMobileProgress(cb: (progress: MobileProgress) => void): () => void
+  /** One PNG frame of a device an app was opened on from this window. */
+  getMobileScreen(serial: string): Promise<IpcResult<MobileScreenFrame>>
 
   /* app */
   onShortcut(cb: (action: string) => void): () => void

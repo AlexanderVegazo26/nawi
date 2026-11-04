@@ -20,7 +20,7 @@ import { REVISION_RE } from '../sidecar/paths'
 import { inspectApkFile } from '../mobile/apk'
 import { ApkError } from '../mobile/errors'
 import { runMobileDoctor } from '../mobile/doctor'
-import { openApp, runtimePermissionsFor } from '../mobile/open'
+import { openApp, runtimePermissionsFor, type OpenStepId } from '../mobile/open'
 import {
   ProfileFileError,
   TARGET_RE,
@@ -871,6 +871,84 @@ async function readProfile(file: string): Promise<MobileProfile> {
   }
 }
 
+/** mobile_open's arguments, also used by the window's drop-an-.apk view (roadmap M1d). */
+export interface MobileOpenArgs {
+  file: string
+  target?: string
+  grant: boolean
+  headless: boolean
+  boot_timeout_ms?: number
+  save_profile: boolean
+  profile?: string
+}
+
+/**
+ * The body of mobile_open without the agent-access gate: read the .apk (or profile), install and launch it, save the
+ * profile. The MCP tool wraps it with the kill switch; the window calls it directly, since a drop is the user's own
+ * action. Throws ToolError for a bad file (with `detail.fix`), and the abort reason when `signal` fires.
+ */
+export async function openMobileFile(
+  args: MobileOpenArgs,
+  opts: { signal: AbortSignal; onStep?: (id: OpenStepId, summary: string) => void }
+) {
+  const fromProfile = isProfilePath(args.file) ? await readProfile(args.file) : null
+  const apkFile = fromProfile ? fromProfile.app.apk : args.file
+  const apk = await readApk(apkFile)
+  if (fromProfile && apk.package !== fromProfile.app.package) {
+    throw new ToolError('INVALID_ARGUMENTS', `The profile is for ${fromProfile.app.package}, but ${apkFile} is now ${apk.package}.`, {
+      file: args.file,
+      fix: 'Open the .apk itself to write a new profile for it.'
+    })
+  }
+  // The real path goes to adb (readApk already confined it to the home folder).
+  const real = await realpath(apkFile)
+  // Hashed alongside the install, and only when a profile is written or compared.
+  const hashing = args.save_profile || fromProfile ? sha256File(real).then((h) => h, () => null) : Promise.resolve(null)
+  const grant = !args.grant ? [] : (fromProfile?.permissions.grant ?? null)
+
+  const result = await openApp({
+    apkFile: real,
+    apk,
+    target: args.target ?? fromProfile?.target?.name ?? null,
+    grant,
+    activity: fromProfile?.launch.activity ?? null,
+    headless: args.headless,
+    bootTimeoutMs: args.boot_timeout_ms,
+    signal: opts.signal,
+    onStep: opts.onStep
+  })
+  const sha256 = await hashing
+  const apkChanged = fromProfile && sha256 ? fromProfile.app.sha256 !== sha256 : null
+  let profile: string | null = null
+  let profileError: string | null = null
+  if (result.ok && args.save_profile && result.target && sha256) {
+    const app = { apk: apkFile, package: apk.package, version_code: apk.version_code, version_name: apk.version_name, sha256 }
+    // From a profile, only the app facts are refreshed: the target, permissions and activity it pins (or leaves
+    // null for "best available" / "launcher") are the user's choice, and a one-off --target doesn't change them.
+    const next: MobileProfile | null = fromProfile
+      ? apkChanged || args.profile !== undefined
+        ? { ...fromProfile, app }
+        : null
+      : {
+          version: 1,
+          app,
+          target: { kind: result.target.kind, name: result.target.name },
+          permissions: { grant: runtimePermissionsFor(apk, result.target.api) },
+          launch: { activity: result.launched?.activity ?? null }
+        }
+    const out = args.profile ?? (fromProfile ? args.file : defaultProfilePath(apkFile, apk.package))
+    if (next === null) profile = args.file
+    else {
+      try {
+        profile = await writeProfileFile(out, next)
+      } catch (err) {
+        profileError = err instanceof ProfileFileError ? `${err.message} ${err.fix}` : `the profile could not be saved: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+  }
+  return { ...result, apk: apkFile, sha256, apk_changed: apkChanged, profile, profile_error: profileError }
+}
+
 /**
  * Roadmap M1 (third slice): install an app on a device and start it, then save a mobile profile that repeats it.
  */
@@ -893,7 +971,7 @@ const mobileOpen = defineTool({
     'permission list and activity are used and kept (null target: the best device; null activity: the launcher); ' +
     'only its app facts (SHA-256, version) are updated when the .apk changed. Booting can take minutes: send a ' +
     'progressToken in _meta to get a notifications/progress message per step. Pausing agent access or cancelling ' +
-    'the call stops it before the next step. Showing the device screen is not available yet.',
+    'the call stops it before the next step. The device screen is shown in Nawi\'s window (drop the .apk there), not returned here.',
   idempotent: false,
   errors: ['NOT_FOUND', 'NOT_IMPLEMENTED'],
   schema: z.object({
@@ -906,21 +984,6 @@ const mobileOpen = defineTool({
     profile: z.string().min(1).max(MAX_FLOW_PATH).optional().describe('Where to save the profile (absolute, *.nawi.mobile.yaml).')
   }),
   async run(args, ctx) {
-    const fromProfile = isProfilePath(args.file) ? await readProfile(args.file) : null
-    const apkFile = fromProfile ? fromProfile.app.apk : args.file
-    const apk = await readApk(apkFile)
-    if (fromProfile && apk.package !== fromProfile.app.package) {
-      throw new ToolError('INVALID_ARGUMENTS', `The profile is for ${fromProfile.app.package}, but ${apkFile} is now ${apk.package}.`, {
-        file: args.file,
-        fix: 'Open the .apk itself to write a new profile for it.'
-      })
-    }
-    // The real path goes to adb (readApk already confined it to the home folder).
-    const real = await realpath(apkFile)
-    // Hashed alongside the install, and only when a profile is written or compared.
-    const hashing = args.save_profile || fromProfile ? sha256File(real).then((h) => h, () => null) : Promise.resolve(null)
-    const grant = !args.grant ? [] : (fromProfile?.permissions.grant ?? null)
-
     const stop = new AbortController()
     const off = settings.onSettingsChanged((next) => {
       if (next.agentAccessPaused) stop.abort(agentAccessPaused())
@@ -928,48 +991,11 @@ const mobileOpen = defineTool({
     let step = 0
     try {
       if ((await settings.getSettings()).agentAccessPaused) throw agentAccessPaused()
-      const result = await openApp({
-        apkFile: real,
-        apk,
-        target: args.target ?? fromProfile?.target?.name ?? null,
-        grant,
-        activity: fromProfile?.launch.activity ?? null,
-        headless: args.headless,
-        bootTimeoutMs: args.boot_timeout_ms,
+      return await openMobileFile(args, {
         signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
         // Boot and grant are skipped on some opens, so there is no fixed total.
         onStep: ctx.progress ? (id, summary) => ctx.progress?.({ progress: ++step, message: `${id}: ${summary}` }) : undefined
       })
-      const sha256 = await hashing
-      const apkChanged = fromProfile && sha256 ? fromProfile.app.sha256 !== sha256 : null
-      let profile: string | null = null
-      let profileError: string | null = null
-      if (result.ok && args.save_profile && result.target && sha256) {
-        const app = { apk: apkFile, package: apk.package, version_code: apk.version_code, version_name: apk.version_name, sha256 }
-        // From a profile, only the app facts are refreshed: the target, permissions and activity it pins (or leaves
-        // null for "best available" / "launcher") are the user's choice, and a one-off --target doesn't change them.
-        const next: MobileProfile | null = fromProfile
-          ? apkChanged || args.profile !== undefined
-            ? { ...fromProfile, app }
-            : null
-          : {
-              version: 1,
-              app,
-              target: { kind: result.target.kind, name: result.target.name },
-              permissions: { grant: runtimePermissionsFor(apk, result.target.api) },
-              launch: { activity: result.launched?.activity ?? null }
-            }
-        const out = args.profile ?? (fromProfile ? args.file : defaultProfilePath(apkFile, apk.package))
-        if (next === null) profile = args.file
-        else {
-          try {
-            profile = await writeProfileFile(out, next)
-          } catch (err) {
-            profileError = err instanceof ProfileFileError ? `${err.message} ${err.fix}` : `the profile could not be saved: ${err instanceof Error ? err.message : String(err)}`
-          }
-        }
-      }
-      return { ...result, apk: apkFile, sha256, apk_changed: apkChanged, profile, profile_error: profileError }
     } finally {
       off()
     }

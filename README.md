@@ -505,6 +505,14 @@ alone.
   start (schema: `docs/schemas/mobile-profile.v1.schema.json`). Passing the
   profile instead of the APK repeats that setup, including any edits to its
   permission list or activity.
+- **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
+  `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
+  **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
+  step (read, find a device, boot, install, grant, launch) as it happens, with
+  Cancel, the one fix when a step fails, and Try again. Once the app runs, its
+  live screen is shown next to the steps (`adb exec-out screencap`, one frame at
+  a time, paused while the view is hidden; only for a device the window opened
+  an app on). The profile is saved as with `mobile_open`.
 
 ## Keyboard shortcuts
 
@@ -605,10 +613,11 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Mobile runs from the CLI/MCP only so far.** `mobile_open` installs and
-  launches an app on a device or an existing virtual device, but Nawi does not
-  yet create a virtual device for you (the doctor prints the commands), show the
-  device screen, or take an APK dropped onto the window. `.aab` bundles and zip64 APKs are refused
+- **Mobile: install, launch and watch, not yet drive.** An APK dropped on the
+  window (or `mobile_open`) is installed and launched on a device or an existing
+  virtual device and its screen is shown live, but there is no inspector or
+  input on that screen yet, and Nawi does not create a virtual device for you
+  (the doctor prints the commands). `.aab` bundles and zip64 APKs are refused
   with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from

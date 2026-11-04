@@ -36,6 +36,10 @@ import * as settings from './settings'
 import * as recording from './recording/orchestrator'
 import { answerDisplayMedia, listSourcesFor } from './recording/display-media'
 import { startMcpServer, type McpServerHandle } from './mcp/server'
+import { openMobileFile } from './mcp/tools'
+import { MobileUiSession } from './mobile/ui-session'
+import { findAdb } from './mobile/doctor'
+import { captureScreen } from './mobile/screen'
 import { SERVE_EXIT_NO_ENDPOINT, isServeMode, serveReadyLine } from './headless'
 import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
@@ -663,6 +667,33 @@ function registerIpc(): void {
         ? Math.min(240, Math.max(1, Math.round(estimateMinutes)))
         : 5
     return disk.diskPressure(m)
+  })
+
+  /* --- roadmap M1d: drop an .apk, see it running ------------------ *
+   * The same open as the MCP tool mobile_open, minus the agent kill switch
+   * (a drop is the user's own action). Only the main window may start one,
+   * and screen frames come only from devices this window opened an app on.
+   * ---------------------------------------------------------------- */
+  const mobile = new MobileUiSession({
+    open: (file, opts) => openMobileFile({ file, grant: true, headless: false, save_profile: true }, opts),
+    findAdb: () => findAdb(),
+    capture: (adb, serial) => captureScreen(adb, serial),
+    emit: (progress) => mainWindow?.webContents.send(IPC.mobileProgress, progress)
+  })
+  const fromMainWindow = (sender: Electron.WebContents): void => {
+    if (!mainWindow || sender !== mainWindow.webContents) throw new Error('only the main window can open apps')
+  }
+  handleWithSender(IPC.openApk, (sender, file: unknown) => {
+    fromMainWindow(sender)
+    return mobile.open(file)
+  })
+  handleWithSender(IPC.cancelMobileOpen, (sender) => {
+    fromMainWindow(sender)
+    return mobile.cancel()
+  })
+  handleWithSender(IPC.getMobileScreen, (sender, serial: unknown) => {
+    fromMainWindow(sender)
+    return mobile.screen(serial)
   })
 
   handle(IPC.getSettings, () => settings.getSettings())
