@@ -20,7 +20,7 @@ function outcome(over: Partial<OpenOutcome> = {}): OpenOutcome {
     package: 'com.example.demo',
     target: { kind: 'avd', name: 'loop-api36', serial: 'emulator-5560', api: 36, booted: true },
     permissions: { granted: ['android.permission.CAMERA'], not_granted: [] },
-    settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }, applied: ['animations', 'dark_mode', 'font_scale', 'locale'], not_applied: [] },
+    settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false, network: true }, applied: ['animations', 'dark_mode', 'font_scale', 'locale', 'network'], not_applied: [] },
     launched: { activity: 'com.example.demo.MainActivity', total_time_ms: 812, pid: 4242 },
     first_screen: null,
     onboarding: null,

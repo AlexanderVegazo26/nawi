@@ -112,7 +112,7 @@ export const MOBILE_OPEN_USAGE = `nawi mobile-open <file.apk | profile.nawi.mobi
 
   Installs an Android app on a device and starts it: picks a connected device or boots a virtual device (AVD)
   that can run it, installs the app, grants its runtime permissions, applies device settings (on a virtual
-  device: en-US, light theme, font scale 1, animations off) and starts its launcher activity. On success
+  device: en-US, light theme, font scale 1, animations off, network on) and starts its launcher activity. On success
   it saves a mobile profile (next to the .apk as <package>.nawi.mobile.yaml unless --profile says where) that
   repeats the same setup when passed instead of the .apk, including its onboarding taps (tapped past the
   first-run screens after launch). --learn-onboarding also taps past the permission prompts, consent and

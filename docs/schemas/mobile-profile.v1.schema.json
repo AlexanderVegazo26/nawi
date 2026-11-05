@@ -205,6 +205,14 @@
             "boolean",
             "null"
           ]
+        },
+        "network": {
+          "default": null,
+          "description": "Network on (airplane mode off) or off (airplane mode on) for the whole device (Android 11+); false runs the app offline.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

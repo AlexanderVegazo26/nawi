@@ -14,7 +14,7 @@ import { LOCATOR_FIELD_RE, MAX_LOCATOR_FIELD, MAX_ONBOARDING_ENTRIES, ONBOARDING
  * installed and launched an app; passing the profile instead of the .apk next time reuses the same app, device,
  * permission list and launch activity, so a person (or a reviewed diff) can pin them. Versioned like flow files.
  * M2b adds two optional sections, so version 1 files from before still load: `screen` (the app's UI framework and how
- * its screen is read) and `device` (locale, dark mode, font scale and animations, set before every launch); M2c adds
+ * its screen is read) and `device` (locale, dark mode, font scale, animations and network, set before every launch); M2c adds
  * `onboarding` (the taps that get past the first-run screens, replayed after every launch).
  *
  * Every name in it is later sent to the device inside an `adb shell` command line, so the schema only accepts the
@@ -46,7 +46,12 @@ const DeviceShape = z
       .describe("The app's own language (per-app locale, Android 13+); the rest of the device keeps its language."),
     dark_mode: z.boolean().nullable().default(null).describe('Dark theme on or off for the whole device (Android 10+).'),
     font_scale: z.number().min(0.5).max(3).nullable().default(null).describe('Font size multiplier for the whole device (1 is the default size).'),
-    animations: z.boolean().nullable().default(null).describe('System animations; false turns them off so screens settle at once and runs are steadier.')
+    animations: z.boolean().nullable().default(null).describe('System animations; false turns them off so screens settle at once and runs are steadier.'),
+    network: z
+      .boolean()
+      .nullable()
+      .default(null)
+      .describe('Network on (airplane mode off) or off (airplane mode on) for the whole device (Android 11+); false runs the app offline.')
   })
   .strict()
 
@@ -57,18 +62,18 @@ const DeviceShape = z
 export type DeviceSettings = z.output<typeof DeviceShape>
 
 /** Leave the device as it is. */
-export const KEEP_DEVICE_SETTINGS: DeviceSettings = { locale: null, dark_mode: null, font_scale: null, animations: null }
+export const KEEP_DEVICE_SETTINGS: DeviceSettings = { locale: null, dark_mode: null, font_scale: null, animations: null, network: null }
 
 /**
  * The settings a new profile starts with. A virtual device gets a fixed, test-friendly setup (English, light theme,
- * default font size, animations off) so every run sees the same screen, minus what its Android version can't set
- * (dark mode needs API 29, a per-app locale API 33; unknown API: all of them). A physical phone is somebody's own
+ * default font size, animations off, network on) so every run sees the same screen, minus what its Android version
+ * can't set (dark mode needs API 29, airplane mode API 30, a per-app locale API 33; unknown API: all of them). A physical phone is somebody's own
  * device, so nothing on it is changed unless the profile is edited to ask for it.
  */
 export function defaultDeviceSettings(kind: 'device' | 'avd', api: number | null = null): DeviceSettings {
   if (kind === 'device') return { ...KEEP_DEVICE_SETTINGS }
   const has = (min: number): boolean => api === null || api >= min
-  return { locale: has(33) ? 'en-US' : null, dark_mode: has(29) ? false : null, font_scale: 1, animations: false }
+  return { locale: has(33) ? 'en-US' : null, dark_mode: has(29) ? false : null, font_scale: 1, animations: false, network: has(30) ? true : null }
 }
 
 /** One field of an element locator: the exact value from the screen dump (one line, no control characters). */

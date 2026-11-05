@@ -363,9 +363,9 @@ describe('openApp choosing and booting a virtual device', () => {
 })
 
 describe('openApp device settings (roadmap M2b)', () => {
-  const ALL_SET: DeviceSettings = { locale: 'es-419', dark_mode: true, font_scale: 1.3, animations: false }
+  const ALL_SET: DeviceSettings = { locale: 'es-419', dark_mode: true, font_scale: 1.3, animations: false, network: true }
 
-  it('on a virtual device applies the test defaults (animations off, light theme, font scale 1, en-US) after granting and before launch', async () => {
+  it('on a virtual device applies the test defaults (animations off, light theme, font scale 1, en-US, network on) after granting and before launch', async () => {
     avd('Pixel_API_36', 36)
     const r = await openApp(req(), simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }] }))
     expect(r.ok, JSON.stringify(r.steps)).toBe(true)
@@ -376,10 +376,11 @@ describe('openApp device settings (roadmap M2b)', () => {
       'emulator-5554 shell cmd uimode night no',
       'emulator-5554 shell settings put system font_scale 1',
       "emulator-5554 shell cmd locale set-app-locales 'dev.nawi.sample' --locales 'en-US'",
+      'emulator-5554 shell cmd connectivity airplane-mode disable',
       "emulator-5554 shell am start -W -n 'dev.nawi.sample/dev.nawi.sample.MainActivity'"
     ])
-    expect(r.settings).toEqual({ requested: defaultDeviceSettings('avd'), applied: ['animations', 'dark_mode', 'font_scale', 'locale'], not_applied: [] })
-    expect(step(r, 'settings')).toEqual({ id: 'settings', status: 'ok', summary: 'animations off, dark mode off, font scale 1, locale en-US', fix: null })
+    expect(r.settings).toEqual({ requested: defaultDeviceSettings('avd'), applied: ['animations', 'dark_mode', 'font_scale', 'locale', 'network'], not_applied: [] })
+    expect(step(r, 'settings')).toEqual({ id: 'settings', status: 'ok', summary: 'animations off, dark mode off, font scale 1, locale en-US, airplane mode off', fix: null })
   })
 
   it('never applies settings meant for a virtual device to a physical phone (a profile saved on an AVD, run with --target <phone>)', async () => {
@@ -393,7 +394,7 @@ describe('openApp device settings (roadmap M2b)', () => {
   it('leaves out of the virtual-device defaults what an older Android lacks, so a default open does not warn', async () => {
     avd('Pixel_API_30', 30)
     const r = await openApp(req(), simHost({ devices: [{ serial: 'emulator-5554', api: 30, avd: 'Pixel_API_30' }] }))
-    expect(r.settings).toEqual({ requested: { locale: null, dark_mode: false, font_scale: 1, animations: false }, applied: ['animations', 'dark_mode', 'font_scale'], not_applied: [] })
+    expect(r.settings).toEqual({ requested: { locale: null, dark_mode: false, font_scale: 1, animations: false, network: true }, applied: ['animations', 'dark_mode', 'font_scale', 'network'], not_applied: [] })
     expect(step(r, 'settings')?.status, 'API 30: no per-app locale, and no warning for it').toBe('ok')
   })
 
@@ -411,6 +412,21 @@ describe('openApp device settings (roadmap M2b)', () => {
     expect(left.settings.requested).toBeNull()
   })
 
+  it('never turns airplane mode on over a network adb connection (it would cut adb), and still launches', async () => {
+    const serial = '192.168.1.20:5555'
+    const r = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, font_scale: 1, network: false }, settingsOnPhone: true }), simHost({ devices: [{ serial, api: 34 }] }))
+    expect(r.ok, JSON.stringify(r.steps)).toBe(true)
+    expect(adbCalls().filter((c) => /shell (settings|cmd)/.test(c)), 'no airplane-mode command reaches a wireless-adb phone').toEqual([`${serial} shell settings put system font_scale 1`])
+    expect(r.settings.applied).toEqual(['font_scale'])
+    expect(r.settings.not_applied).toEqual([{ name: 'network', reason: `adb reaches ${serial} over the network, and airplane mode would cut that connection` }])
+    expect(step(r, 'settings')?.status).toBe('warn')
+
+    calls = []
+    const on = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, network: true }, settingsOnPhone: true }), simHost({ devices: [{ serial, api: 34 }] }))
+    expect(adbCalls().filter((c) => /shell (settings|cmd)/.test(c)), 'turning airplane mode off is safe over the network').toEqual([`${serial} shell cmd connectivity airplane-mode disable`])
+    expect(on.settings.applied).toEqual(['network'])
+  })
+
   it('skips a setting the device\'s Android version lacks with the version it needs, as a warning, and still launches', async () => {
     const r = await openApp(req({ settings: ALL_SET, settingsOnPhone: true }), simHost({ devices: [{ serial: 'R58M', api: 28 }] }))
     expect(r.ok, 'missing settings do not stop the launch').toBe(true)
@@ -421,11 +437,12 @@ describe('openApp device settings (roadmap M2b)', () => {
     expect(r.settings.applied).toEqual(['animations', 'font_scale'])
     expect(r.settings.not_applied, 'named by their profile keys').toEqual([
       { name: 'dark_mode', reason: 'needs Android 10 (API 29); R58M is API 28' },
-      { name: 'locale', reason: 'needs Android 13 (API 33); R58M is API 28' }
+      { name: 'locale', reason: 'needs Android 13 (API 33); R58M is API 28' },
+      { name: 'network', reason: 'needs Android 11 (API 30); R58M is API 28' }
     ])
     expect(step(r, 'settings')?.status).toBe('warn')
-    expect(step(r, 'settings')?.summary).toMatch(/^applied 2 of 4; not applied: dark mode on \(needs Android 10/)
-    expect(step(r, 'settings')?.fix).toMatch(/set dark_mode, locale to null in the profile's device section/)
+    expect(step(r, 'settings')?.summary).toMatch(/^applied 2 of 5; not applied: dark mode on \(needs Android 10/)
+    expect(step(r, 'settings')?.fix).toMatch(/set dark_mode, locale, network to null in the profile's device section/)
     expect(r.launched?.activity).toBe('dev.nawi.sample.MainActivity')
   })
 

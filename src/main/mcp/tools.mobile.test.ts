@@ -171,7 +171,7 @@ describe('mobile_open', () => {
         permissions: { grant: ['android.permission.CAMERA', 'android.permission.POST_NOTIFICATIONS', 'android.permission.READ_CONTACTS'] },
         launch: { activity: 'dev.nawi.sample.MainActivity' },
         screen: NATIVE,
-        device: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }
+        device: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false, network: true }
       }
     })
   })
@@ -204,7 +204,9 @@ describe('mobile_open', () => {
       .replace('dev.nawi.sample.MainActivity', 'dev.nawi.sample.Other')
       .replace('locale: en-US', 'locale: es-419')
       .replace('dark_mode: false', 'dark_mode: null')
+      .replace('network: true', 'network: false')
     expect(edited, 'the test edits the device section').toMatch(/locale: es-419\n {2}dark_mode: null/)
+    expect(edited, 'the test turns the network off (an offline run)').toMatch(/\n {2}network: false\n/)
     writeFileSync(savedProfile(), edited)
     openCalls.length = 0
     openResult = running({ launched: { activity: 'dev.nawi.sample.Other', total_time_ms: 1, pid: 8 } })
@@ -213,7 +215,7 @@ describe('mobile_open', () => {
       target: null,
       grant: ['android.permission.CAMERA'],
       activity: 'dev.nawi.sample.Other',
-      settings: { locale: 'es-419', dark_mode: null, font_scale: 1, animations: false },
+      settings: { locale: 'es-419', dark_mode: null, font_scale: 1, animations: false, network: false },
       settingsOnPhone: false,
       headless: true
     })

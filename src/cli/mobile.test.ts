@@ -179,7 +179,7 @@ describe('renderOpenResult', () => {
     package: 'com.example',
     target: { kind: 'avd', name: 'pixel-36', serial: 'emulator-5554', api: 36, booted: true },
     permissions: { granted: ['android.permission.CAMERA'], not_granted: [] },
-    settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }, applied: ['animations'], not_applied: [] },
+    settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false, network: true }, applied: ['animations'], not_applied: [] },
     launched: { activity: 'com.example.Main', total_time_ms: 300, pid: 7 },
     first_screen: null,
     onboarding: null,

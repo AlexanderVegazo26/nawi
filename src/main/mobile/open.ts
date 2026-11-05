@@ -6,7 +6,7 @@ import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult, type Mo
 import { DumpError, dumpLine, parseUiDump, type UiScreen } from './hierarchy'
 import { MAX_ONBOARDING_TAPS, nextOnboardingTap, screenKey, type OnboardingTap } from './onboarding'
 import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
-import { androidVersionFor, settingCommands, type DeviceSettingName } from './settings'
+import { androidVersionFor, isNetworkSerial, settingCommands, type DeviceSettingName } from './settings'
 import { shQuote } from './shell'
 
 export { shQuote }
@@ -15,7 +15,7 @@ export { shQuote }
  * Roadmap M1 (third slice, M1c): put an app on a device and start it. Uses the doctor (M1b) to pick a connected
  * device or a virtual device (AVD) that can run the app, boots the AVD when needed, installs the .apk, grants its
  * runtime permissions (`pm grant`, so no dialog blocks a run), applies the profile's device settings (M2b: locale,
- * dark mode, font scale, animations) and starts its launcher activity (`am start -W`). Then (M2c) it reads the screen
+ * dark mode, font scale, animations, network) and starts its launcher activity (`am start -W`). Then (M2c) it reads the screen
  * once (`uiautomator dump`) and names any first-run blocker in front of the app (a permission prompt, a consent or
  * intro screen, a sign-in form) with the element to tap past it. With the profile's onboarding taps (M2c part 2) it
  * taps past those screens itself, one saved tap at a time, re-reading the screen after each; with `learnOnboarding`
@@ -24,8 +24,8 @@ export { shQuote }
  * clock are injectable so tests never touch a real device.
  *
  * Side effects (that is the point): may start an emulator, which keeps running afterwards; installs (or replaces)
- * the app on the target; grants permissions; changes device settings (global ones like animations and font scale
- * stay changed); starts the app.
+ * the app on the target; grants permissions; changes device settings (global ones like animations, font scale and
+ * airplane mode stay changed); starts the app.
  */
 
 export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'onboarding' | 'first_screen'
@@ -60,7 +60,7 @@ export interface MobileOpenResult {
   permissions: { granted: string[]; not_granted: { name: string; reason: string }[] }
   /**
    * The device settings asked for (null fields: left alone; null: none), the ones applied and the ones not, by their
-   * key in the profile's device section (`locale`, `dark_mode`, `font_scale`, `animations`).
+   * key in the profile's device section (`locale`, `dark_mode`, `font_scale`, `animations`, `network`).
    */
   settings: { requested: DeviceSettings | null; applied: DeviceSettingName[]; not_applied: { name: DeviceSettingName; reason: string }[] }
   launched: { activity: string; total_time_ms: number | null; pid: number | null } | null
@@ -403,6 +403,12 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
         checkAbort()
         if (c.minApi !== null && api !== null && api < c.minApi) {
           const reason = `needs Android ${androidVersionFor(c.minApi)} (API ${c.minApi}); ${serial} is API ${api}`
+          result.settings.not_applied.push({ name: c.name, reason })
+          missed.push(`${c.label} (${reason})`)
+          continue
+        }
+        if (c.name === 'network' && wanted?.network === false && isNetworkSerial(serial)) {
+          const reason = `adb reaches ${serial} over the network, and airplane mode would cut that connection`
           result.settings.not_applied.push({ name: c.name, reason })
           missed.push(`${c.label} (${reason})`)
           continue

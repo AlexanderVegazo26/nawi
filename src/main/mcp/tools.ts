@@ -988,10 +988,10 @@ const mobileOpen = defineTool({
     'running afterwards; headless: true starts it without a window), installs the app (replacing an installed copy ' +
     'and keeping its data), grants its runtime permissions with `pm grant` so no permission dialog blocks a run ' +
     '(grant: false skips that), applies device settings, and starts its launcher activity. Device settings on a ' +
-    'virtual device default to English (en-US, the app\'s own locale), light theme, font scale 1 and animations ' +
-    'off (minus what its Android version lacks), so runs see the same screen; a physical phone is left as it is ' +
+    'virtual device default to English (en-US, the app\'s own locale), light theme, font scale 1, animations ' +
+    'off and network on (airplane mode off; network: false in the profile runs the app offline) (minus what its Android version lacks), so runs see the same screen; a physical phone is left as it is ' +
     'unless the profile was saved for that phone and its device section asks for a value (global settings such as ' +
-    'animations stay changed afterwards). ' +
+    'animations and airplane mode stay changed afterwards). ' +
     'Returns ok, fix (the one next step when not ok), target ({kind, name, serial, api, booted}), permissions ' +
     '({granted, not_granted}), settings ({requested, applied, not_applied}: keys of the profile\'s device section), launched ({activity, total_time_ms, ' +
     'pid}), first_screen ({package, blockers}: the screen read once with uiautomator after launch; each blocker has ' +

@@ -516,7 +516,9 @@ alone.
   only when the APK changed (its app facts and `screen`) or `--profile` names
   where to save it. Device settings (`src/main/mobile/settings.ts`) on a virtual device
   default to the app's own language `en-US` (per-app locale, Android 13+), light
-  theme (Android 10+), font scale 1 and animations off, so every run sees the
+  theme (Android 10+), font scale 1, animations off and network on (airplane
+  mode off, Android 11+; `network: false` runs the app offline, never over a
+  wireless adb connection, which airplane mode would cut), so every run sees the
   same screen (settings an older Android lacks are left out). A physical phone
   is left as it is unless the profile was saved for that phone and asks for a
   value; settings saved for a virtual device are never applied to a phone. A
