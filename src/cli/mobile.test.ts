@@ -180,6 +180,7 @@ describe('renderOpenResult', () => {
     permissions: { granted: ['android.permission.CAMERA'], not_granted: [] },
     settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }, applied: ['animations'], not_applied: [] },
     launched: { activity: 'com.example.Main', total_time_ms: 300, pid: 7 },
+    first_screen: null,
     steps: [
       { id: 'doctor', status: 'ok', summary: 'virtual device pixel-36 (API 36)', fix: null },
       { id: 'boot', status: 'ok', summary: 'pixel-36 booted as emulator-5554', fix: null },
@@ -197,10 +198,10 @@ describe('renderOpenResult', () => {
   it('prints where it runs, one line per step, the profile, and a warning\'s note', () => {
     expect(renderOpenResult(result).split('\n')).toEqual([
       'com.example is running on virtual device pixel-36 (emulator-5554).',
-      '  ok    doctor   virtual device pixel-36 (API 36)',
-      '  ok    boot     pixel-36 booted as emulator-5554',
-      '  warn  grant    granted 1 of 2',
-      '  ok    settings animations off',
+      '  ok    doctor       virtual device pixel-36 (API 36)',
+      '  ok    boot         pixel-36 booted as emulator-5554',
+      '  warn  grant        granted 1 of 2',
+      '  ok    settings     animations off',
       '',
       'The .apk changed since the profile was saved (its SHA-256 differs); the profile now records the new one.',
       '',
@@ -208,6 +209,16 @@ describe('renderOpenResult', () => {
       '',
       'Note: Those permissions will be asked for in a dialog.'
     ])
+  })
+
+  it('prints a note for every warning step, in step order', () => {
+    const out = renderOpenResult({
+      ...result,
+      apk_changed: false,
+      steps: [...result.steps, { id: 'first_screen', status: 'warn', summary: 'an intro screen ("Skip" button)', fix: 'Tap "Skip" to go past it.' }]
+    }).split('\n')
+    expect(out).toContain('  warn  first_screen an intro screen ("Skip" button)')
+    expect(out.slice(-2)).toEqual(['Note: Those permissions will be asked for in a dialog.', 'Note: Tap "Skip" to go past it.'])
   })
 
   it('ends with the one next step when it is not running', () => {

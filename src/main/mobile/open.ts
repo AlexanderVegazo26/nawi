@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import type { ApkInfo } from './apk'
+import { findFirstRunBlockers, type FirstScreen } from './blockers'
 import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult, type MobileDoctorReport } from './doctor'
+import { DumpError, dumpLine, parseUiDump } from './hierarchy'
 import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
 import { androidVersionFor, settingCommands, type DeviceSettingName } from './settings'
 import { shQuote } from './shell'
@@ -11,7 +14,9 @@ export { shQuote }
  * Roadmap M1 (third slice, M1c): put an app on a device and start it. Uses the doctor (M1b) to pick a connected
  * device or a virtual device (AVD) that can run the app, boots the AVD when needed, installs the .apk, grants its
  * runtime permissions (`pm grant`, so no dialog blocks a run), applies the profile's device settings (M2b: locale,
- * dark mode, font scale, animations) and starts its launcher activity (`am start -W`).
+ * dark mode, font scale, animations) and starts its launcher activity (`am start -W`). Then (M2c) it reads the screen
+ * once (`uiautomator dump`) and names any first-run blocker in front of the app (a permission prompt, a consent or
+ * intro screen, a sign-in form) with the element to tap past it; it doesn't tap anything itself.
  * Every failure is a normal result with the step that failed and one fix. Electron-free; adb, the emulator and the
  * clock are injectable so tests never touch a real device.
  *
@@ -20,7 +25,7 @@ export { shQuote }
  * stay changed); starts the app.
  */
 
-export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch'
+export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'first_screen'
 export type OpenStepStatus = 'ok' | 'warn' | 'fail' | 'skipped'
 
 export interface OpenStep {
@@ -56,6 +61,11 @@ export interface MobileOpenResult {
    */
   settings: { requested: DeviceSettings | null; applied: DeviceSettingName[]; not_applied: { name: DeviceSettingName; reason: string }[] }
   launched: { activity: string; total_time_ms: number | null; pid: number | null } | null
+  /**
+   * The screen right after launch (M2c): the window in front and the first-run blockers on it, each with the element
+   * to tap past it (or null). Null when the app did not start or the screen could not be read (see the step).
+   */
+  first_screen: FirstScreen | null
   steps: OpenStep[]
   /** The doctor's report, when no target could be chosen (it explains why). */
   doctor: MobileDoctorReport | null
@@ -108,6 +118,10 @@ export const BOOT_POLL_MS = 2_000
 const INSTALL_TIMEOUT_MS = 300_000
 const SHELL_TIMEOUT_MS = 30_000
 const LAUNCH_TIMEOUT_MS = 60_000
+/** After `am start -W` returns, how long a prompt or consent dialog the app opens in onCreate takes to show. */
+export const FIRST_SCREEN_SETTLE_MS = 1_500
+/** uiautomator waits up to ~10 s for the screen to go idle before it gives up. */
+const DUMP_TIMEOUT_MS = 15_000
 /** Emulator console ports adb scans (5554..5584 by default; the emulator accepts up to 5682). */
 const FIRST_PORT = 5554
 const LAST_PORT = 5682
@@ -245,6 +259,7 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
     permissions: { granted: [], not_granted: [] },
     settings: { requested: null, applied: [], not_applied: [] },
     launched: null,
+    first_screen: null,
     steps: [],
     doctor: null
   }
@@ -435,11 +450,54 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
     }
     steps.push({ id: 'launch', status: 'ok', summary: `${act} started${startedOk.totalTimeMs !== null ? ` in ${startedOk.totalTimeMs} ms` : ''}${pid !== null ? ` (pid ${pid})` : ''}`, fix: null })
     result.ok = true
+
+    // 7. The first screen: anything in front of the app a test would trip over. Never fails the open, and a cancel
+    // here keeps the result (the app is already running).
+    req.onStep?.('first_screen', 'reading the first screen')
+    await host.delay(FIRST_SCREEN_SETTLE_MS, req.signal)
+    const read = req.signal?.aborted ? { skipped: 'cancelled before the screen was read' } : await readFirstScreen(host, adbPath, serial, pkg)
+    if ('skipped' in read) steps.push({ id: 'first_screen', status: 'skipped', summary: read.skipped, fix: null })
+    else {
+      result.first_screen = read
+      steps.push(firstScreenStep(read, pkg))
+    }
     return result
   } catch (err) {
     if (err instanceof Stop) return result
     throw err
   }
+}
+
+/** Dump and read the screen; a device that can't dump (old image, a screen that never goes idle) is a skip. */
+async function readFirstScreen(host: OpenHost, adb: string, serial: string, pkg: string): Promise<FirstScreen | { skipped: string }> {
+  const r = await host.exec(adb, ['-s', serial, 'shell', dumpLine(randomBytes(6).toString('hex'))], DUMP_TIMEOUT_MS)
+  if (r.error === 'timeout') {
+    // The dump is printed only once it is complete, so output with a kill means adb's output cap cut it, not a hang.
+    return { skipped: r.stdout.includes('<hierarchy') ? 'could not read the screen: the dump is larger than 1 MB' : 'could not read the screen: uiautomator did not answer' }
+  }
+  try {
+    return findFirstRunBlockers(parseUiDump(r.stdout), pkg)
+  } catch (err) {
+    if (!(err instanceof DumpError)) throw err
+    return { skipped: `could not read the screen: ${r.code !== 0 && !r.stdout.trim() ? said(r) : err.message}` }
+  }
+}
+
+export function firstScreenStep(screen: FirstScreen, pkg: string): OpenStep {
+  const [first, ...more] = screen.blockers
+  if (first) {
+    const also = more.length > 0 ? `; also ${more.map((b) => b.summary).join('; ')}` : ''
+    return { id: 'first_screen', status: 'warn', summary: `${first.summary}${also}`, fix: first.fix }
+  }
+  if (screen.package !== null && screen.package !== pkg) {
+    return {
+      id: 'first_screen',
+      status: 'warn',
+      summary: `the screen shows ${screen.package}, not ${pkg}`,
+      fix: `Look at the device: ${pkg} may have closed, or opened another app in front of itself.`
+    }
+  }
+  return { id: 'first_screen', status: 'ok', summary: 'no permission prompt, consent, intro or sign-in screen in front of the app', fix: null }
 }
 
 type Chosen = OpenTarget | { summary: string; fix: string }

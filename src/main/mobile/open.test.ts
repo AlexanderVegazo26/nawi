@@ -8,6 +8,7 @@ import type { ExecResult } from './doctor'
 import { defaultDeviceSettings, KEEP_DEVICE_SETTINGS, type DeviceSettings } from './profile'
 import {
   BOOT_POLL_MS,
+  FIRST_SCREEN_SETTLE_MS,
   freeEmulatorPort,
   installFix,
   openApp,
@@ -78,6 +79,14 @@ interface Sim {
   pidof?: ExecResult
   /** `settings put ...` and `cmd ...` lines (device settings, M2b); default: success, printing what Android prints. */
   setting?: (line: string) => ExecResult
+  /** The `uiautomator dump` line after launch (M2c); default: the app's own screen with nothing in front. */
+  dump?: ExecResult
+}
+
+/** A uiautomator dump: one window of `pkg` with these nodes (attribute strings) inside it. */
+export function dumpXml(pkg: string, inner: string[] = []): string {
+  const nodes = inner.map((n) => `<node index="0" package="${pkg}" ${n} enabled="true"/>`).join('')
+  return `UI hierchary dumped to: /data/local/tmp/nawi-window.xml\n<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="${pkg}" content-desc="" clickable="false" enabled="true" password="false" bounds="[0,0][1080,2400]">${nodes}</node></hierarchy>`
 }
 
 const ok = (stdout = ''): ExecResult => ({ code: 0, stdout, stderr: '' })
@@ -113,6 +122,7 @@ function simHost(sim: Sim, over: Partial<OpenHost> = {}): OpenHost {
       if (line.startsWith('pm grant')) return sim.grant?.(line) ?? ok()
       if (line.startsWith('am start')) return sim.am ?? ok('Starting: Intent { cmp=x }\nStatus: ok\nLaunchState: COLD\nActivity: x\nTotalTime: 412\nWaitTime: 420\nComplete\n')
       if (line.startsWith('pidof')) return sim.pidof ?? ok('4242\n')
+      if (line.startsWith('uiautomator dump')) return sim.dump ?? ok(dumpXml('dev.nawi.sample', ['text="Welcome back" class="android.widget.TextView" bounds="[0,100][1080,200]"']))
       if (line.startsWith('settings put') || line.startsWith('cmd ')) return sim.setting?.(line) ?? ok(line.startsWith('cmd uimode') ? 'Night mode: no\n' : '')
       return failed(`unexpected shell ${line}`)
     },
@@ -168,11 +178,13 @@ describe('openApp on a connected device', () => {
       'R58M install -r -t /home/u/app.apk',
       "R58M shell pm grant 'dev.nawi.sample' 'android.permission.CAMERA'",
       "R58M shell am start -W -n 'dev.nawi.sample/dev.nawi.sample.MainActivity'",
-      "R58M shell pidof 'dev.nawi.sample'"
+      "R58M shell pidof 'dev.nawi.sample'",
+      expect.stringMatching(/^R58M shell uiautomator dump (\/data\/local\/tmp\/nawi-window-[0-9a-f]{12}\.xml) && cat \1; s=\$\?; rm -f \1; exit \$s$/)
     ])
     expect(r.permissions, 'READ_EXTERNAL_STORAGE has maxSdkVersion 32 < API 34, so it is not granted').toEqual({ granted: ['android.permission.CAMERA'], not_granted: [] })
     expect(r.launched).toEqual({ activity: 'dev.nawi.sample.MainActivity', total_time_ms: 412, pid: 4242 })
-    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'settings:skipped', 'launch:ok'])
+    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'settings:skipped', 'launch:ok', 'first_screen:ok'])
+    expect(r.first_screen, 'the app\'s own screen, nothing in front').toEqual({ package: 'dev.nawi.sample', blockers: [] })
     expect(spawned, 'nothing booted when a device is connected').toEqual([])
     expect(r.settings, 'a physical phone keeps its own settings by default').toEqual({ requested: KEEP_DEVICE_SETTINGS, applied: [], not_applied: [] })
   })
@@ -430,6 +442,71 @@ describe('openApp device settings (roadmap M2b)', () => {
     const r = openApp(req({ settings: ALL_SET, settingsOnPhone: true, signal: stop.signal, onStep: (id) => id === 'settings' && stop.abort(new Error('cancelled by test')) }), simHost({ devices: [{ serial: 'R58M', api: 34 }] }))
     await expect(r).rejects.toThrow('cancelled by test')
     expect(adbCalls().some((c) => c.includes('am start') || /shell (settings|cmd)/.test(c)), 'no setting or launch after the abort').toBe(false)
+  })
+})
+
+describe('openApp first screen (roadmap M2c)', () => {
+  const phone = (): Sim => ({ devices: [{ serial: 'R58M', api: 34 }] })
+
+  it('waits for the screen to settle, then names a permission prompt in front of the app with the button to tap', async () => {
+    const delays: number[] = []
+    const prompt = `<?xml version='1.0' ?><hierarchy rotation="0"><node package="com.google.android.permissioncontroller" bounds="[0,0][1080,2400]"><node resource-id="com.android.permissioncontroller:id/permission_message" text="Allow Sample to send you notifications?" package="com.google.android.permissioncontroller" bounds="[60,900][1020,1000]"/><node resource-id="com.android.permissioncontroller:id/permission_allow_button" text="Allow" class="android.widget.Button" clickable="true" enabled="true" package="com.google.android.permissioncontroller" bounds="[60,1100][1020,1200]"/></node></hierarchy>`
+    const r = await openApp(req(), simHost({ ...phone(), dump: ok(prompt) }, { delay: async (ms) => void delays.push(ms) }))
+    expect(r.ok, 'a blocker does not make the open fail').toBe(true)
+    expect(r.fix).toBeNull()
+    expect(delays, 'one settle delay before the dump').toEqual([FIRST_SCREEN_SETTLE_MS])
+    expect(r.first_screen?.blockers.map((b) => [b.kind, b.tap])).toEqual([['permission_dialog', { resource_id: 'com.android.permissioncontroller:id/permission_allow_button' }]])
+    expect(step(r, 'first_screen')).toEqual({
+      id: 'first_screen',
+      status: 'warn',
+      summary: 'Android asks: "Allow Sample to send you notifications?"',
+      fix: 'Tap "Allow" to go on, or grant that permission before launch (the profile\'s permissions.grant) so the prompt never shows.'
+    })
+  })
+
+  it('lists every blocker in the summary, front-most first, and gives the first one\'s fix', async () => {
+    const r = await openApp(
+      req(),
+      simHost({
+        ...phone(),
+        dump: ok(dumpXml('dev.nawi.sample', ['text="We use cookies"', 'text="Accept" clickable="true" bounds="[0,500][500,600]"', 'class="android.widget.EditText" password="true" bounds="[0,700][500,800]"']))
+      })
+    )
+    expect(step(r, 'first_screen')).toMatchObject({ status: 'warn', summary: 'a consent screen ("Accept" button); also a sign-in form (password field)', fix: 'Tap "Accept" to accept it for this test device.' })
+  })
+
+  it('warns when another app is in front of the one it launched', async () => {
+    const r = await openApp(req(), simHost({ ...phone(), dump: ok(dumpXml('com.google.android.apps.nexuslauncher')) }))
+    expect(step(r, 'first_screen')).toMatchObject({ status: 'warn', summary: 'the screen shows com.google.android.apps.nexuslauncher, not dev.nawi.sample' })
+    expect(r.ok, 'the launch itself succeeded').toBe(true)
+  })
+
+  it.each([
+    ['uiautomator printing its idle error', ok('ERROR: could not get idle state.\n'), 'could not read the screen: uiautomator printed no screen: ERROR: could not get idle state.'],
+    ['an image without uiautomator', failed('/system/bin/sh: uiautomator: inaccessible or not found'), 'could not read the screen: /system/bin/sh: uiautomator: inaccessible or not found'],
+    ['a hung dump', { code: null, stdout: '', stderr: '', error: 'timeout' } as ExecResult, 'could not read the screen: uiautomator did not answer'],
+    ['a dump cut at adb\'s output cap', { code: null, stdout: 'UI hierchary dumped to: x\n<hierarchy rotation="0"><node', stderr: '', error: 'timeout' } as ExecResult, 'could not read the screen: the dump is larger than 1 MB'],
+    ['a cut-off dump', ok('<hierarchy rotation="0"><node package="dev.nawi.sample">'), 'could not read the screen: the screen dump is cut off (no closing </hierarchy>)']
+  ])('skips the step on %s and still reports the app running', async (_what, dump, summary) => {
+    const r = await openApp(req(), simHost({ ...phone(), dump }))
+    expect(r.ok).toBe(true)
+    expect(r.first_screen).toBeNull()
+    expect(step(r, 'first_screen')).toEqual({ id: 'first_screen', status: 'skipped', summary, fix: null })
+  })
+
+  it('a cancel while the screen settles keeps the running app\'s result and reads nothing', async () => {
+    const stop = new AbortController()
+    const r = await openApp(req({ signal: stop.signal, onStep: (id) => id === 'first_screen' && stop.abort(new Error('cancelled by test')) }), simHost(phone()))
+    expect(r.ok).toBe(true)
+    expect(step(r, 'first_screen')).toEqual({ id: 'first_screen', status: 'skipped', summary: 'cancelled before the screen was read', fix: null })
+    expect(adbCalls().some((c) => c.includes('uiautomator')), 'no dump after the cancel').toBe(false)
+  })
+
+  it('reads nothing when the launch failed', async () => {
+    const r = await openApp(req(), simHost({ ...phone(), pidof: ok('') }))
+    expect(r.ok).toBe(false)
+    expect(step(r, 'first_screen')).toBeUndefined()
+    expect(adbCalls().some((c) => c.includes('uiautomator'))).toBe(false)
   })
 })
 

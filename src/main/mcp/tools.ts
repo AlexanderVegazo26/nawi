@@ -982,7 +982,10 @@ const mobileOpen = defineTool({
     'animations stay changed afterwards). ' +
     'Returns ok, fix (the one next step when not ok), target ({kind, name, serial, api, booted}), permissions ' +
     '({granted, not_granted}), settings ({requested, applied, not_applied}: keys of the profile\'s device section), launched ({activity, total_time_ms, ' +
-    'pid}) and per-step status (doctor/boot/install/grant/settings/launch: ok/warn/fail/skipped with its own fix). ' +
+    'pid}), first_screen ({package, blockers}: the screen read once with uiautomator after launch; each blocker has ' +
+    'kind permission_dialog/consent/intro/login_wall, summary, tap (a {resource_id|content_desc|text} locator for the ' +
+    'element that gets past it, null for a sign-in form) and fix; Nawi does not tap it) and per-step status ' +
+    '(doctor/boot/install/grant/settings/launch/first_screen: ok/warn/fail/skipped with its own fix). ' +
     'A device or setup problem is a ' +
     'normal result with ok: false, not an error. ' +
     'On success it saves the profile (app path + SHA-256, target, permissions, activity, screen: the UI framework ' +

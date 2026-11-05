@@ -166,12 +166,12 @@ export type MobileOpenReport = MobileOpenResult & { apk: string; sha256: string 
 export function renderOpenResult(r: MobileOpenReport): string {
   const where = r.target ? ` on ${r.target.kind === 'avd' ? `virtual device ${r.target.name}${r.target.serial ? ` (${r.target.serial})` : ''}` : `device ${r.target.name}`}` : ''
   const lines = [r.ok ? `${r.package} is running${where}.` : `${r.package} is not running${where}.`]
-  for (const s of r.steps) lines.push(`  ${STEP_MARK[s.status]}  ${s.id.padEnd(9)}${s.summary}`)
+  for (const s of r.steps) lines.push(`  ${STEP_MARK[s.status]}  ${s.id.padEnd(13)}${s.summary}`)
   if (r.apk_changed) lines.push('', `The .apk changed since the profile was saved (its SHA-256 differs)${r.profile ? '; the profile now records the new one' : ''}.`)
   if (r.profile) lines.push('', `Profile: ${r.profile}`)
   if (r.profile_error) lines.push('', `Profile not saved: ${r.profile_error}`)
-  const warn = r.steps.find((s) => s.status === 'warn' && s.fix)
+  const notes = r.steps.filter((s) => s.status === 'warn' && s.fix)
   if (r.fix) lines.push('', `Next: ${r.fix}`)
-  else if (warn) lines.push('', `Note: ${warn.fix}`)
+  else if (notes.length > 0) lines.push('', ...notes.map((s) => `Note: ${s.fix}`))
   return lines.join('\n')
 }

@@ -22,6 +22,7 @@ function outcome(over: Partial<OpenOutcome> = {}): OpenOutcome {
     permissions: { granted: ['android.permission.CAMERA'], not_granted: [] },
     settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }, applied: ['animations', 'dark_mode', 'font_scale', 'locale'], not_applied: [] },
     launched: { activity: 'com.example.demo.MainActivity', total_time_ms: 812, pid: 4242 },
+    first_screen: null,
     steps: [
       { id: 'doctor', status: 'ok', summary: 'virtual device loop-api36 (API 36)', fix: null },
       { id: 'boot', status: 'ok', summary: 'loop-api36 booted as emulator-5560', fix: null },

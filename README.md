@@ -522,11 +522,19 @@ alone.
   value; settings saved for a virtual device are never applied to a phone. A
   null or missing setting, or a profile saved before these settings existed,
   leaves that setting as it is; a setting the device refuses is a warning, not
-  a failure.
+  a failure. After launch it reads the screen once (`uiautomator dump`,
+  `src/main/mobile/hierarchy.ts`) and names any **first-run blocker** in front
+  of the app (`first_screen`, `src/main/mobile/blockers.ts`): Android's
+  permission prompt, a cookie/privacy consent screen, an intro screen (Skip, Get
+  started, Not now, or Next on a screen without text fields) or a sign-in form,
+  each with the element that gets past it as a locator (view id, content
+  description or text; none for a sign-in form, which needs a test account) and
+  a fix. It reports them as a warning and taps nothing; a screen it can't read
+  is a skipped step, never a failed open.
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
   `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
   **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
-  step (read, find a device, boot, install, grant, device settings, launch) as it happens, with
+  step (read, find a device, boot, install, grant, device settings, launch, first screen) as it happens, with
   Cancel, the one fix when a step fails, and Try again. Once the app runs, its
   live screen is shown next to the steps (`adb exec-out screencap`, one frame at
   a time, paused while the view is hidden; only for a device the window opened
@@ -634,8 +642,9 @@ CDP selectors and the MCP projection/revision model.
 - **Mobile: install, launch and watch, not yet drive.** An APK dropped on the
   window (or `mobile_open`) is installed and launched on a device or an existing
   virtual device and its screen is shown live, but there is no inspector or
-  input on that screen yet, and Nawi does not create a virtual device for you
-  (the doctor prints the commands). `.aab` bundles and zip64 APKs are refused
+  input on that screen yet, Nawi does not create a virtual device for you
+  (the doctor prints the commands), and first-run blockers are named with the
+  element to tap but not yet tapped for you (no saved onboarding sub-flow). `.aab` bundles and zip64 APKs are refused
   with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from

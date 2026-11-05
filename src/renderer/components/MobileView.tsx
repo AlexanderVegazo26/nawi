@@ -32,7 +32,8 @@ const STEP_LABEL: Record<MobileStepId, string> = {
   install: 'Install',
   grant: 'Grant permissions',
   settings: 'Device settings',
-  launch: 'Launch'
+  launch: 'Launch',
+  first_screen: 'First screen'
 }
 
 type RowStatus = MobileStepStatus | 'running' | 'done' | 'pending' | 'not-run' | 'cancelled'
