@@ -62,11 +62,29 @@ describe('mobile profile format', () => {
     ['a relative apk path', { app: { ...profile().app, apk: 'app.apk' } }, 'app.apk'],
     ['a bad hash', { app: { ...profile().app, sha256: 'XYZ' } }, 'app.sha256'],
     ['an unknown key', { extra: 1 } as Partial<MobileProfile>, '(root)'],
-    ['a permission listed twice', { permissions: { grant: ['android.permission.CAMERA', 'android.permission.CAMERA'] } }, 'permissions.grant']
+    ['a permission listed twice', { permissions: { grant: ['android.permission.CAMERA', 'android.permission.CAMERA'] } }, 'permissions.grant'],
+    ['an onboarding tap with an empty locator', { onboarding: [{ when: 'intro', tap: {} }] }, 'onboarding[0].tap'],
+    ['an onboarding tap past a sign-in form', { onboarding: [{ when: 'login_wall', tap: { text: 'Sign in' } }] } as unknown as Partial<MobileProfile>, 'onboarding[0].when'],
+    ['a locator with a newline', { onboarding: [{ when: 'intro', tap: { text: 'Skip\nreboot' } }] }, 'onboarding[0].tap.text'],
+    ['a locator field Nawi does not match on', { onboarding: [{ when: 'intro', tap: { class: 'Button' } }] } as unknown as Partial<MobileProfile>, 'onboarding[0].tap'],
+    ['more than 20 onboarding taps', { onboarding: Array.from({ length: 21 }, (_, i) => ({ when: 'intro' as const, tap: { text: `Next ${i}` } })) }, 'onboarding']
   ])('refuses %s, naming the field', (_what, over, path) => {
     const r = parseMobileProfile(stringifyMobileProfile({ ...profile(), ...over } as MobileProfile))
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.errors.map((e) => e.path), JSON.stringify(r.errors)).toContain(path)
+  })
+
+  it('round-trips the onboarding taps in order, and still loads a profile without them', () => {
+    const taps = profile({
+      onboarding: [
+        { when: 'intro', tap: { resource_id: 'com.android.camera2:id/confirm_button' } },
+        { when: 'permission_dialog', tap: { resource_id: 'com.android.permissioncontroller:id/permission_allow_foreground_only_button' } },
+        { when: 'consent', tap: { text: 'Accept "all" cookies', content_desc: 'Accept' } }
+      ]
+    })
+    expect(parseMobileProfile(stringifyMobileProfile(taps))).toEqual({ ok: true, profile: taps })
+    const r = parseMobileProfile(stringifyMobileProfile(profile()))
+    expect(r.ok && r.profile.onboarding, 'no onboarding section: nothing to replay').toBeUndefined()
   })
 
   it('refuses YAML aliases and duplicate keys', () => {

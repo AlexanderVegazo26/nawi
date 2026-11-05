@@ -243,6 +243,56 @@ describe('mobile_open', () => {
     })
   })
 
+  it('saves the taps learned with learn_onboarding, replays them from the profile, and appends new ones', async () => {
+    rmSync(savedProfile(), { force: true })
+    const intro = { when: 'intro', tap: { resource_id: 'dev.nawi.sample:id/skip' } }
+    const allow = { when: 'permission_dialog', tap: { resource_id: 'com.android.permissioncontroller:id/permission_allow_button' } }
+    openCalls.length = 0
+    openResult = running()
+    await open({ file: apkPath() })
+    expect(openCalls[0], 'learning is opt-in').toMatchObject({ learnOnboarding: false, onboarding: null })
+    let saved = parseMobileProfile(readFileSync(savedProfile(), 'utf8'))
+    expect(saved.ok && saved.profile.onboarding, 'nothing learned, no section').toBeUndefined()
+
+    rmSync(savedProfile())
+    openCalls.length = 0
+    openResult = running({ onboarding: { tapped: [{ ...intro, label: 'Skip', learned: true }] } })
+    await open({ file: apkPath(), learn_onboarding: true })
+    expect(openCalls[0]).toMatchObject({ learnOnboarding: true })
+    saved = parseMobileProfile(readFileSync(savedProfile(), 'utf8'))
+    expect(saved.ok && saved.profile.onboarding, 'learned tap saved without its label').toEqual([intro])
+
+    // From the profile: its taps go to openApp; a replayed tap is not saved twice, a newly learned one is appended.
+    openCalls.length = 0
+    openResult = running({ onboarding: { tapped: [{ ...intro, label: 'Skip', learned: false }, { ...allow, label: 'Allow', learned: true }] } })
+    const r = await open({ file: savedProfile(), learn_onboarding: true })
+    expect(openCalls[0], 'saved taps replayed').toMatchObject({ onboarding: [intro], learnOnboarding: true })
+    expect(r).toMatchObject({ ok: true, profile: savedProfile(), apk_changed: false })
+    saved = parseMobileProfile(readFileSync(savedProfile(), 'utf8'))
+    expect(saved.ok && saved.profile.onboarding).toEqual([intro, allow])
+
+    // Nothing new learned and the APK unchanged: the profile is left byte for byte.
+    const before = readFileSync(savedProfile(), 'utf8')
+    openResult = running({ onboarding: { tapped: [{ ...intro, label: 'Skip', learned: false }] } })
+    await open({ file: savedProfile() })
+    expect(readFileSync(savedProfile(), 'utf8')).toBe(before)
+  })
+
+  it('says so when a full onboarding section leaves a learned tap out', async () => {
+    rmSync(savedProfile(), { force: true })
+    openResult = running()
+    await open({ file: apkPath() })
+    const full = Array.from({ length: 20 }, (_, i) => ({ when: 'intro', tap: { text: `Page ${i}` } }))
+    const parsed = parseMobileProfile(readFileSync(savedProfile(), 'utf8'))
+    if (!parsed.ok) throw new Error('fixture profile')
+    writeFileSync(savedProfile(), stringifyMobileProfile({ ...parsed.profile, onboarding: full } as never))
+    const before = readFileSync(savedProfile(), 'utf8')
+    openResult = running({ onboarding: { tapped: [{ when: 'intro', tap: { text: 'Skip' }, label: 'Skip', learned: true }] } })
+    const r = await open({ file: savedProfile(), learn_onboarding: true })
+    expect(r).toMatchObject({ ok: true, profile: savedProfile(), profile_error: '1 learned onboarding tap was not saved: the profile already holds 20; remove the ones it no longer needs.' })
+    expect(readFileSync(savedProfile(), 'utf8'), 'profile untouched').toBe(before)
+  })
+
   it('an APK opened with grant: false still saves its runtime permissions for the next open', async () => {
     rmSync(savedProfile(), { force: true })
     openResult = running({ permissions: { granted: [], not_granted: [] } })

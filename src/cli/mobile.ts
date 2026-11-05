@@ -107,13 +107,17 @@ export function renderApkInfo(info: ApkInfo): string {
 }
 
 export const MOBILE_OPEN_USAGE = `nawi mobile-open <file.apk | profile.nawi.mobile.yaml> [--target <serial|avd>] [--headless]
-                 [--no-grant] [--profile <out.nawi.mobile.yaml> | --no-profile] [--boot-timeout-ms n] [--json]
+                 [--no-grant] [--learn-onboarding] [--profile <out.nawi.mobile.yaml> | --no-profile]
+                 [--boot-timeout-ms n] [--json]
 
   Installs an Android app on a device and starts it: picks a connected device or boots a virtual device (AVD)
   that can run it, installs the app, grants its runtime permissions, applies device settings (on a virtual
   device: en-US, light theme, font scale 1, animations off) and starts its launcher activity. On success
   it saves a mobile profile (next to the .apk as <package>.nawi.mobile.yaml unless --profile says where) that
-  repeats the same setup when passed instead of the .apk. Exit 0 when the app is running, 1 when not.`
+  repeats the same setup when passed instead of the .apk, including its onboarding taps (tapped past the
+  first-run screens after launch). --learn-onboarding also taps past the permission prompts, consent and
+  intro screens Nawi recognises (accepting them on that device) and saves those taps in the profile.
+  Exit 0 when the app is running, 1 when not.`
 
 export interface MobileOpenArgs {
   file: string
@@ -122,6 +126,7 @@ export interface MobileOpenArgs {
   headless?: true
   grant?: false
   save_profile?: false
+  learn_onboarding?: true
   profile?: string
   boot_timeout_ms?: number
 }
@@ -140,6 +145,7 @@ export function parseMobileOpenArgs(argv: string[], cwd: string): MobileOpenArgs
     else if (a === '--headless') out.headless = true
     else if (a === '--no-grant') out.grant = false
     else if (a === '--no-profile') out.save_profile = false
+    else if (a === '--learn-onboarding') out.learn_onboarding = true
     else if (a === '--target') out.target = value(a, argv[++i])
     else if (a === '--profile') out.profile = resolve(cwd, value(a, argv[++i]))
     else if (a === '--boot-timeout-ms') {
@@ -169,7 +175,7 @@ export function renderOpenResult(r: MobileOpenReport): string {
   for (const s of r.steps) lines.push(`  ${STEP_MARK[s.status]}  ${s.id.padEnd(13)}${s.summary}`)
   if (r.apk_changed) lines.push('', `The .apk changed since the profile was saved (its SHA-256 differs)${r.profile ? '; the profile now records the new one' : ''}.`)
   if (r.profile) lines.push('', `Profile: ${r.profile}`)
-  if (r.profile_error) lines.push('', `Profile not saved: ${r.profile_error}`)
+  if (r.profile_error) lines.push('', r.profile ? `Note: ${r.profile_error}` : `Profile not saved: ${r.profile_error}`)
   const notes = r.steps.filter((s) => s.status === 'warn' && s.fix)
   if (r.fix) lines.push('', `Next: ${r.fix}`)
   else if (notes.length > 0) lines.push('', ...notes.map((s) => `Note: ${s.fix}`))

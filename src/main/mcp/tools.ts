@@ -20,6 +20,7 @@ import { REVISION_RE } from '../sidecar/paths'
 import { inspectApkFile } from '../mobile/apk'
 import { ApkError } from '../mobile/errors'
 import { runMobileDoctor } from '../mobile/doctor'
+import { MAX_ONBOARDING_ENTRIES, mergeOnboarding } from '../mobile/onboarding'
 import { openApp, runtimePermissionsFor, type OpenStepId } from '../mobile/open'
 import {
   ProfileFileError,
@@ -884,6 +885,8 @@ export interface MobileOpenArgs {
   boot_timeout_ms?: number
   save_profile: boolean
   profile?: string
+  /** Also tap the first-run blockers Nawi names a tap for, and save those taps in the profile's onboarding. */
+  learn_onboarding?: boolean
 }
 
 /**
@@ -921,6 +924,8 @@ export async function openMobileFile(
     settings: fromProfile ? (fromProfile.device ?? null) : undefined,
     // Values in a profile pinned to a phone were written for a phone; any other profile's stay off physical devices.
     settingsOnPhone: fromProfile?.target?.kind === 'device',
+    onboarding: fromProfile?.onboarding ?? null,
+    learnOnboarding: args.learn_onboarding ?? false,
     headless: args.headless,
     bootTimeoutMs: args.boot_timeout_ms,
     signal: opts.signal,
@@ -933,12 +938,18 @@ export async function openMobileFile(
   if (result.ok && args.save_profile && result.target && sha256) {
     const app = { apk: apkFile, package: apk.package, version_code: apk.version_code, version_name: apk.version_name, sha256 }
     const screen = { framework: apk.framework.kind, read: apk.framework.read_strategy }
-    // From a profile, only the app facts are refreshed: the target, permissions, activity and device settings it
-    // pins (or leaves null for "best available" / "launcher" / "as it is") are the user's choice, and a one-off
-    // --target doesn't change them.
+    // Taps learned in this open (learn_onboarding) join the saved ones; the saved ones stay as the user left them.
+    const learned = (result.onboarding?.tapped ?? []).filter((t) => t.learned).map((t) => ({ when: t.when, tap: t.tap }))
+    const savedTaps = fromProfile?.onboarding ?? []
+    const { taps: onboarding, dropped } = mergeOnboarding(savedTaps, learned)
+    if (dropped > 0) profileError = `${dropped} learned onboarding tap${dropped === 1 ? ' was' : 's were'} not saved: the profile already holds ${MAX_ONBOARDING_ENTRIES}; remove the ones it no longer needs.`
+    const taps = onboarding.length > 0 ? { onboarding } : {}
+    // From a profile, only the app facts (and newly learned taps) are refreshed: the target, permissions, activity
+    // and device settings it pins (or leaves null for "best available" / "launcher" / "as it is") are the user's
+    // choice, and a one-off --target doesn't change them.
     const next: MobileProfile | null = fromProfile
-      ? apkChanged || args.profile !== undefined
-        ? { ...fromProfile, app, screen }
+      ? apkChanged || args.profile !== undefined || onboarding.length !== savedTaps.length
+        ? { ...fromProfile, app, screen, ...taps }
         : null
       : {
           version: 1,
@@ -948,7 +959,8 @@ export async function openMobileFile(
           launch: { activity: result.launched?.activity ?? null },
           screen,
           // What openApp chose for this device (its defaults, minus what its Android version lacks).
-          ...(result.settings.requested ? { device: result.settings.requested } : {})
+          ...(result.settings.requested ? { device: result.settings.requested } : {}),
+          ...taps
         }
     const out = args.profile ?? (fromProfile ? args.file : defaultProfilePath(apkFile, apk.package))
     if (next === null) profile = args.file
@@ -984,8 +996,15 @@ const mobileOpen = defineTool({
     '({granted, not_granted}), settings ({requested, applied, not_applied}: keys of the profile\'s device section), launched ({activity, total_time_ms, ' +
     'pid}), first_screen ({package, blockers}: the screen read once with uiautomator after launch; each blocker has ' +
     'kind permission_dialog/consent/intro/login_wall, summary, tap (a {resource_id|content_desc|text} locator for the ' +
-    'element that gets past it, null for a sign-in form) and fix; Nawi does not tap it) and per-step status ' +
-    '(doctor/boot/install/grant/settings/launch/first_screen: ok/warn/fail/skipped with its own fix). ' +
+    'element that gets past it, null for a sign-in form) and fix), onboarding ({tapped: [{when, tap, label, ' +
+    'learned}]} or null) and per-step status ' +
+    '(doctor/boot/install/grant/settings/launch/onboarding/first_screen: ok/warn/fail/skipped with its own fix). ' +
+    'Onboarding: a profile\'s onboarding taps are replayed after launch (while a saved element is on screen it is ' +
+    'tapped and the screen read again, at most 10 taps; a permission_dialog tap lands only on Android\'s prompt, ' +
+    'others only on the app); first_screen then shows what is left. learn_onboarding: true also taps the blockers ' +
+    'Nawi names a tap for (this accepts consent screens on that device) and saves them in the profile\'s ' +
+    'onboarding, so one open learns the sequence; without it Nawi taps only saved taps. A sign-in form is never ' +
+    'tapped past. ' +
     'A device or setup problem is a ' +
     'normal result with ok: false, not an error. ' +
     'On success it saves the profile (app path + SHA-256, target, permissions, activity, screen: the UI framework ' +
@@ -1005,6 +1024,7 @@ const mobileOpen = defineTool({
     headless: z.boolean().default(false).describe('Boot a virtual device without a window.'),
     boot_timeout_ms: z.number().int().min(10_000).max(900_000).optional().describe('How long to wait for a virtual device to boot (180000).'),
     save_profile: z.boolean().default(true),
+    learn_onboarding: z.boolean().default(false).describe('Tap past the first-run screens Nawi recognises and save those taps in the profile.'),
     profile: z.string().min(1).max(MAX_FLOW_PATH).optional().describe('Where to save the profile (absolute, *.nawi.mobile.yaml).')
   }),
   async run(args, ctx) {

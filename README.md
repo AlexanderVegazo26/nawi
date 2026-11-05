@@ -496,7 +496,7 @@ alone.
   shell running the CLI.
 - **Install and launch an Android app** (`mobile_open`, CLI
   `nawi mobile-open <file.apk|profile.nawi.mobile.yaml> [--target serial|avd]
-  [--headless] [--no-grant]`, `src/main/mobile/open.ts`): picks the device the
+  [--headless] [--no-grant] [--learn-onboarding]`, `src/main/mobile/open.ts`): picks the device the
   way `mobile_doctor` does (or the one `--target` names), boots a virtual device
   that is not running (on a free emulator port; it keeps running afterwards),
   installs the app (`adb install -r -t`: replaces an installed copy, keeps its
@@ -529,12 +529,20 @@ alone.
   started, Not now, or Next on a screen without text fields) or a sign-in form,
   each with the element that gets past it as a locator (view id, content
   description or text; none for a sign-in form, which needs a test account) and
-  a fix. It reports them as a warning and taps nothing; a screen it can't read
-  is a skipped step, never a failed open.
+  a fix. A screen it can't read is a skipped step, never a failed open.
+  **Onboarding taps** (`onboarding` in the profile, `src/main/mobile/onboarding.ts`):
+  with `--learn-onboarding` (MCP `learn_onboarding: true`) Nawi also taps past
+  the permission prompts, consent and intro screens it names a tap for, reading
+  the screen again after each tap, and saves those taps in the profile; opening
+  the profile later replays them (while a saved element is on screen it is
+  tapped, at most 10 taps; a permission-prompt tap only lands on Android's
+  prompt, any other only on the app, and a locator that matches two elements
+  is never pressed). Without the flag only saved taps are made, and a sign-in
+  form is never tapped past. `first_screen` then reports what is left.
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
   `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
   **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
-  step (read, find a device, boot, install, grant, device settings, launch, first screen) as it happens, with
+  step (read, find a device, boot, install, grant, device settings, launch, first-run screens, first screen) as it happens, with
   Cancel, the one fix when a step fails, and Try again. Once the app runs, its
   live screen is shown next to the steps (`adb exec-out screencap`, one frame at
   a time, paused while the view is hidden; only for a device the window opened
@@ -643,8 +651,9 @@ CDP selectors and the MCP projection/revision model.
   window (or `mobile_open`) is installed and launched on a device or an existing
   virtual device and its screen is shown live, but there is no inspector or
   input on that screen yet, Nawi does not create a virtual device for you
-  (the doctor prints the commands), and first-run blockers are named with the
-  element to tap but not yet tapped for you (no saved onboarding sub-flow). `.aab` bundles and zip64 APKs are refused
+  (the doctor prints the commands), first-run screens are tapped past only when
+  learned (`--learn-onboarding`) or saved in the profile, and a sign-in wall
+  still needs a person (no test-account secrets yet). `.aab` bundles and zip64 APKs are refused
   with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from

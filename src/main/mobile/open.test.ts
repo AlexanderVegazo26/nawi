@@ -81,6 +81,10 @@ interface Sim {
   setting?: (line: string) => ExecResult
   /** The `uiautomator dump` line after launch (M2c); default: the app's own screen with nothing in front. */
   dump?: ExecResult
+  /** Screens in order, one per dump (the last one repeats): the device after each onboarding tap (M2c part 2). */
+  dumps?: ExecResult[]
+  /** `input tap x y`; default: success. */
+  tap?: (line: string) => ExecResult
 }
 
 /** A uiautomator dump: one window of `pkg` with these nodes (attribute strings) inside it. */
@@ -122,6 +126,8 @@ function simHost(sim: Sim, over: Partial<OpenHost> = {}): OpenHost {
       if (line.startsWith('pm grant')) return sim.grant?.(line) ?? ok()
       if (line.startsWith('am start')) return sim.am ?? ok('Starting: Intent { cmp=x }\nStatus: ok\nLaunchState: COLD\nActivity: x\nTotalTime: 412\nWaitTime: 420\nComplete\n')
       if (line.startsWith('pidof')) return sim.pidof ?? ok('4242\n')
+      if (line.startsWith('uiautomator dump') && sim.dumps) return (sim.dumps.length > 1 ? sim.dumps.shift() : sim.dumps[0]) as ExecResult
+      if (line.startsWith('input tap')) return sim.tap?.(line) ?? ok()
       if (line.startsWith('uiautomator dump')) return sim.dump ?? ok(dumpXml('dev.nawi.sample', ['text="Welcome back" class="android.widget.TextView" bounds="[0,100][1080,200]"']))
       if (line.startsWith('settings put') || line.startsWith('cmd ')) return sim.setting?.(line) ?? ok(line.startsWith('cmd uimode') ? 'Night mode: no\n' : '')
       return failed(`unexpected shell ${line}`)
@@ -183,7 +189,7 @@ describe('openApp on a connected device', () => {
     ])
     expect(r.permissions, 'READ_EXTERNAL_STORAGE has maxSdkVersion 32 < API 34, so it is not granted').toEqual({ granted: ['android.permission.CAMERA'], not_granted: [] })
     expect(r.launched).toEqual({ activity: 'dev.nawi.sample.MainActivity', total_time_ms: 412, pid: 4242 })
-    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'settings:skipped', 'launch:ok', 'first_screen:ok'])
+    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'settings:skipped', 'launch:ok', 'onboarding:skipped', 'first_screen:ok'])
     expect(r.first_screen, 'the app\'s own screen, nothing in front').toEqual({ package: 'dev.nawi.sample', blockers: [] })
     expect(spawned, 'nothing booted when a device is connected').toEqual([])
     expect(r.settings, 'a physical phone keeps its own settings by default').toEqual({ requested: KEEP_DEVICE_SETTINGS, applied: [], not_applied: [] })
@@ -535,5 +541,104 @@ describe('open helpers', () => {
 
   it('installFix falls back to the command that prints the full message', () => {
     expect(installFix('INSTALL_FAILED_X', 'a.b', 'S', '/f.apk')).toBe('adb could not install the app (INSTALL_FAILED_X): run `adb -s S install -r -t /f.apk` in a terminal for the full message.')
+  })
+})
+
+describe('openApp onboarding taps (roadmap M2c part 2)', () => {
+  const phone = (): Partial<Sim> => ({ devices: [{ serial: 'R58M', api: 34 }] })
+  const PROMPT = 'com.google.android.permissioncontroller'
+  const intro = dumpXml('dev.nawi.sample', ['text="Welcome"', 'text="Skip" class="android.widget.Button" clickable="true" bounds="[800,2200][1000,2300]"'])
+  const prompt = `<hierarchy rotation="0"><node package="${PROMPT}" bounds="[0,0][1080,2400]"><node resource-id="com.android.permissioncontroller:id/permission_message" text="Allow Sample to take pictures?" package="${PROMPT}" enabled="true" bounds="[60,900][1020,1000]"/><node resource-id="com.android.permissioncontroller:id/permission_allow_foreground_only_button" text="While using the app" class="android.widget.Button" clickable="true" enabled="true" package="${PROMPT}" bounds="[60,1100][1020,1200]"/></node></hierarchy>`
+  const home = dumpXml('dev.nawi.sample', ['text="Your albums" class="android.widget.TextView" bounds="[0,100][1080,200]"'])
+  const skipTap = { when: 'intro' as const, tap: { text: 'Skip' } }
+  const allowTap = { when: 'permission_dialog' as const, tap: { resource_id: 'com.android.permissioncontroller:id/permission_allow_foreground_only_button' } }
+  const taps = () => adbCalls().filter((c) => c.includes('input tap'))
+  const order = (r: MobileOpenResult) => r.steps.map((s) => `${s.id}:${s.status}`).slice(-3)
+
+  it('replays the saved taps in the order the screens come, re-reading the screen after each, and reports a clear screen', async () => {
+    const announced: string[] = []
+    const r = await openApp(req({ onboarding: [allowTap, skipTap], onStep: (id) => announced.push(id) }), simHost({ ...phone(), dumps: [ok(intro), ok(prompt), ok(home)] } as Sim))
+    expect(taps(), 'Skip at its center, then the prompt\'s allow button at its center').toEqual(['R58M shell input tap 900 2250', 'R58M shell input tap 540 1150'])
+    expect(r.onboarding?.tapped).toEqual([
+      { ...skipTap, label: 'Skip', learned: false },
+      { ...allowTap, label: 'While using the app', learned: false }
+    ])
+    expect(step(r, 'onboarding')).toEqual({ id: 'onboarding', status: 'ok', summary: 'tapped 2: intro "Skip", permission dialog "While using the app"', fix: null })
+    expect(r.first_screen, 'what is left after the taps: the app itself').toEqual({ package: 'dev.nawi.sample', blockers: [] })
+    expect(order(r)).toEqual(['launch:ok', 'onboarding:ok', 'first_screen:ok'])
+    expect(announced.slice(-2), 'steps announced in the order they are reported').toEqual(['onboarding', 'first_screen'])
+    expect(adbCalls().filter((c) => c.includes('uiautomator')), 'one read per screen').toHaveLength(3)
+  })
+
+  it('without learn mode taps only saved taps and leaves the rest to first_screen', async () => {
+    const r = await openApp(req({ onboarding: [skipTap] }), simHost({ ...phone(), dumps: [ok(prompt)] } as Sim))
+    expect(taps()).toEqual([])
+    expect(step(r, 'onboarding')).toMatchObject({ status: 'skipped', summary: 'none of the saved taps is on the screen' })
+    expect(r.first_screen?.blockers.map((b) => b.kind), 'the prompt is still reported').toEqual(['permission_dialog'])
+    expect(step(r, 'first_screen')?.status).toBe('warn')
+  })
+
+  it('learn mode taps what it recognises and marks those taps learned, so the caller can save them', async () => {
+    const r = await openApp(req({ learnOnboarding: true }), simHost({ ...phone(), dumps: [ok(intro), ok(prompt), ok(home)] } as Sim))
+    expect(r.onboarding?.tapped.map((t) => [t.when, t.tap, t.learned])).toEqual([
+      ['intro', { text: 'Skip' }, true],
+      ['permission_dialog', allowTap.tap, true]
+    ])
+    expect(step(r, 'onboarding')?.summary).toBe('tapped 2: intro "Skip" (learned), permission dialog "While using the app" (learned)')
+  })
+
+  it('stops with a warning when a tap changes nothing, without tapping it again', async () => {
+    const r = await openApp(req({ onboarding: [skipTap] }), simHost({ ...phone(), dumps: [ok(intro)] } as Sim))
+    expect(taps(), 'one tap, not a loop').toHaveLength(1)
+    expect(step(r, 'onboarding')).toMatchObject({ status: 'warn', summary: 'tapped 1: intro "Skip"; the screen did not change after tapping "Skip"' })
+    expect(r.ok).toBe(true)
+  })
+
+  it('does not report a learned tap that changed nothing, so it is never saved', async () => {
+    const r = await openApp(req({ learnOnboarding: true }), simHost({ ...phone(), dumps: [ok(intro)] } as Sim))
+    expect(taps()).toHaveLength(1)
+    expect(r.onboarding?.tapped).toEqual([])
+    expect(step(r, 'onboarding')).toMatchObject({ status: 'warn', summary: 'the screen did not change after tapping "Skip" (not saved)' })
+  })
+
+  it('gives up after 10 taps on a screen that keeps coming back', async () => {
+    let n = 0
+    const pages = () => ok(dumpXml('dev.nawi.sample', [`text="Page ${++n}"`, 'text="Skip" class="android.widget.Button" clickable="true" bounds="[0,0][100,100]"']))
+    const host = simHost({ ...phone(), dumps: Array.from({ length: 20 }, pages) } as Sim)
+    const r = await openApp(req({ onboarding: [skipTap] }), host)
+    expect(taps()).toHaveLength(10)
+    expect(step(r, 'onboarding')).toMatchObject({ status: 'warn' })
+    expect(step(r, 'onboarding')?.summary).toMatch(/stopped after 10 taps$/)
+  })
+
+  it('a failed tap is a warning with a fix, and nothing else is tapped', async () => {
+    const r = await openApp(req({ onboarding: [skipTap, allowTap] }), simHost({ ...phone(), dumps: [ok(intro), ok(prompt)], tap: () => failed('java.lang.SecurityException: Injecting input events requires the caller to have INJECT_EVENTS') } as Sim))
+    expect(taps()).toHaveLength(1)
+    expect(step(r, 'onboarding')).toMatchObject({ status: 'warn', fix: 'Tap "Skip" on the device by hand.' })
+    expect(r.onboarding?.tapped).toEqual([])
+  })
+
+  it('makes no tap when the screen can\'t be read', async () => {
+    const r = await openApp(req({ onboarding: [skipTap] }), simHost({ ...phone(), dumps: [failed('/system/bin/sh: uiautomator: inaccessible or not found')] } as Sim))
+    expect(taps()).toEqual([])
+    expect(step(r, 'onboarding')).toMatchObject({ status: 'skipped', summary: 'no tap made: could not read the screen: /system/bin/sh: uiautomator: inaccessible or not found' })
+    expect(step(r, 'first_screen')?.status).toBe('skipped')
+  })
+
+  it('a cancel after a tap keeps the running app\'s result and taps nothing more', async () => {
+    const stop = new AbortController()
+    const host = simHost({ ...phone(), dumps: [ok(intro), ok(prompt), ok(home)], tap: () => (stop.abort(new Error('cancelled by test')), ok()) } as Sim)
+    const r = await openApp(req({ onboarding: [skipTap, allowTap], signal: stop.signal }), host)
+    expect(r.ok).toBe(true)
+    expect(taps()).toHaveLength(1)
+    expect(step(r, 'onboarding')).toMatchObject({ status: 'ok', summary: 'tapped 1: intro "Skip"; cancelled' })
+    expect(step(r, 'first_screen'), 'no stale pre-tap screen').toEqual({ id: 'first_screen', status: 'skipped', summary: 'cancelled before the screen was read again', fix: null })
+  })
+
+  it('reports the step as skipped when there is nothing to replay', async () => {
+    const r = await openApp(req(), simHost({ ...phone() } as Sim))
+    expect(step(r, 'onboarding')).toEqual({ id: 'onboarding', status: 'skipped', summary: 'no onboarding taps to replay (none saved in a profile)', fix: null })
+    expect(r.onboarding).toBeNull()
+    expect(taps()).toEqual([])
   })
 })

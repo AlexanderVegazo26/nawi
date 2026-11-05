@@ -155,6 +155,7 @@ describe('parseMobileOpenArgs', () => {
       boot_timeout_ms: 60000
     })
     expect(parseMobileOpenArgs(['--no-profile', '--file', '/a/app.apk'], '/home/u')).toEqual({ file: '/a/app.apk', json: false, save_profile: false })
+    expect(parseMobileOpenArgs(['/a/app.apk', '--learn-onboarding'], '/home/u'), '--learn-onboarding -> learn_onboarding').toEqual({ file: '/a/app.apk', json: false, learn_onboarding: true })
   })
 
   it.each([
@@ -181,6 +182,7 @@ describe('renderOpenResult', () => {
     settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }, applied: ['animations'], not_applied: [] },
     launched: { activity: 'com.example.Main', total_time_ms: 300, pid: 7 },
     first_screen: null,
+    onboarding: null,
     steps: [
       { id: 'doctor', status: 'ok', summary: 'virtual device pixel-36 (API 36)', fix: null },
       { id: 'boot', status: 'ok', summary: 'pixel-36 booted as emulator-5554', fix: null },

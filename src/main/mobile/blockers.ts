@@ -83,14 +83,14 @@ const INTRO_LABELS = ['skip', 'skip intro', 'get started', 'not now', 'maybe lat
 const INTRO_NEXT = ['next']
 const SIGN_IN_LABELS = /^(sign in|log in|login|sign up|create (an )?account|continue with .{1,40})$/
 
-const norm = (s: string): string =>
+export const norm = (s: string): string =>
   s
     .trim()
     .replace(/\s+/g, ' ')
     .replace(/[.!…:]+$/, '')
     .toLowerCase()
 
-const labelOf = (n: UiNode): string => (n.text.trim() || n.content_desc.trim()).replace(/\s+/g, ' ')
+export const labelOf = (n: UiNode): string => (n.text.trim() || n.content_desc.trim()).replace(/\s+/g, ' ')
 
 /** The node or one of its three nearest ancestors is clickable (a label inside a button layout). */
 function tappable(nodes: UiNode[], n: UiNode): boolean {

@@ -7,13 +7,15 @@ import { z } from 'zod'
 import { within } from '../confine'
 import { formatPath } from '../../shared/flow/yaml'
 import { APP_FRAMEWORKS, READ_STRATEGIES } from './framework'
+import { LOCATOR_FIELD_RE, MAX_LOCATOR_FIELD, MAX_ONBOARDING_ENTRIES, ONBOARDING_KINDS } from './onboarding'
 
 /**
  * Roadmap M1 (third slice, M1c): the mobile profile, `*.nawi.mobile.yaml`. `mobile_open` writes one after it has
  * installed and launched an app; passing the profile instead of the .apk next time reuses the same app, device,
  * permission list and launch activity, so a person (or a reviewed diff) can pin them. Versioned like flow files.
  * M2b adds two optional sections, so version 1 files from before still load: `screen` (the app's UI framework and how
- * its screen is read) and `device` (locale, dark mode, font scale and animations, set before every launch).
+ * its screen is read) and `device` (locale, dark mode, font scale and animations, set before every launch); M2c adds
+ * `onboarding` (the taps that get past the first-run screens, replayed after every launch).
  *
  * Every name in it is later sent to the device inside an `adb shell` command line, so the schema only accepts the
  * characters Android itself allows in package, class and permission names; nothing here is ever shell syntax.
@@ -69,6 +71,30 @@ export function defaultDeviceSettings(kind: 'device' | 'avd', api: number | null
   return { locale: has(33) ? 'en-US' : null, dark_mode: has(29) ? false : null, font_scale: 1, animations: false }
 }
 
+/** One field of an element locator: the exact value from the screen dump (one line, no control characters). */
+const locatorField = z
+  .string()
+  .min(1)
+  .max(MAX_LOCATOR_FIELD)
+  .regex(LOCATOR_FIELD_RE, 'must be one line without control characters')
+
+const OnboardingTapShape = z
+  .object({
+    when: z.enum(ONBOARDING_KINDS).describe('The first-run screen this tap gets past.'),
+    tap: z
+      .object({
+        resource_id: locatorField.optional(),
+        content_desc: locatorField.optional(),
+        text: locatorField.optional()
+      })
+      .strict()
+      .refine((t) => t.resource_id !== undefined || t.content_desc !== undefined || t.text !== undefined, 'needs resource_id, content_desc or text')
+      // The refine above, for editors validating with the published JSON Schema.
+      .meta({ minProperties: 1 })
+      .describe('The element to tap: every field given must match it exactly, and exactly one element on screen must match.')
+  })
+  .strict()
+
 const ProfileShape = z
   .object({
     version: z.literal(1),
@@ -112,7 +138,14 @@ const ProfileShape = z
       .describe('The UI framework found in the .apk and how Nawi reads its screen (refreshed with the app facts).'),
     device: DeviceShape.optional().describe(
       'Device settings applied before launch. Missing (profiles saved before these settings existed): the device is left as it is.'
-    )
+    ),
+    onboarding: z
+      .array(OnboardingTapShape)
+      .max(MAX_ONBOARDING_ENTRIES)
+      .optional()
+      .describe(
+        'Taps that get past the first-run screens, replayed after every launch: while one of these elements is on screen it is tapped (a permission_dialog tap only on Android\'s permission prompt, any other only on the app). Saved by mobile_open with learn_onboarding.'
+      )
   })
   .strict()
 

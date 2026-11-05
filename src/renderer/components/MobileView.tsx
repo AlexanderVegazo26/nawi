@@ -33,6 +33,7 @@ const STEP_LABEL: Record<MobileStepId, string> = {
   grant: 'Grant permissions',
   settings: 'Device settings',
   launch: 'Launch',
+  onboarding: 'Get past first-run screens',
   first_screen: 'First screen'
 }
 

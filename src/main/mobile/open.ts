@@ -3,7 +3,8 @@ import { randomBytes } from 'node:crypto'
 import type { ApkInfo } from './apk'
 import { findFirstRunBlockers, type FirstScreen } from './blockers'
 import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult, type MobileDoctorReport } from './doctor'
-import { DumpError, dumpLine, parseUiDump } from './hierarchy'
+import { DumpError, dumpLine, parseUiDump, type UiScreen } from './hierarchy'
+import { MAX_ONBOARDING_TAPS, nextOnboardingTap, screenKey, type OnboardingTap } from './onboarding'
 import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
 import { androidVersionFor, settingCommands, type DeviceSettingName } from './settings'
 import { shQuote } from './shell'
@@ -16,7 +17,9 @@ export { shQuote }
  * runtime permissions (`pm grant`, so no dialog blocks a run), applies the profile's device settings (M2b: locale,
  * dark mode, font scale, animations) and starts its launcher activity (`am start -W`). Then (M2c) it reads the screen
  * once (`uiautomator dump`) and names any first-run blocker in front of the app (a permission prompt, a consent or
- * intro screen, a sign-in form) with the element to tap past it; it doesn't tap anything itself.
+ * intro screen, a sign-in form) with the element to tap past it. With the profile's onboarding taps (M2c part 2) it
+ * taps past those screens itself, one saved tap at a time, re-reading the screen after each; with `learnOnboarding`
+ * it also taps the ones it named, so the caller can save them.
  * Every failure is a normal result with the step that failed and one fix. Electron-free; adb, the emulator and the
  * clock are injectable so tests never touch a real device.
  *
@@ -25,7 +28,7 @@ export { shQuote }
  * stay changed); starts the app.
  */
 
-export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'first_screen'
+export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'onboarding' | 'first_screen'
 export type OpenStepStatus = 'ok' | 'warn' | 'fail' | 'skipped'
 
 export interface OpenStep {
@@ -66,9 +69,20 @@ export interface MobileOpenResult {
    * to tap past it (or null). Null when the app did not start or the screen could not be read (see the step).
    */
   first_screen: FirstScreen | null
+  /**
+   * The onboarding taps made after launch (M2c part 2), in order; `learned`: proposed by Nawi, not in the profile yet.
+   * Null when there was nothing to replay or learn.
+   */
+  onboarding: { tapped: OnboardingTapped[] } | null
   steps: OpenStep[]
   /** The doctor's report, when no target could be chosen (it explains why). */
   doctor: MobileDoctorReport | null
+}
+
+export interface OnboardingTapped extends OnboardingTap {
+  /** The visible label of the element tapped. */
+  label: string
+  learned: boolean
 }
 
 export interface OpenRequest {
@@ -90,6 +104,10 @@ export interface OpenRequest {
    * it on, since any value in it was written for that phone.
    */
   settingsOnPhone?: boolean
+  /** Taps that get past the first-run screens (the profile's onboarding), replayed after launch. */
+  onboarding?: readonly OnboardingTap[] | null
+  /** Also tap the first-run blockers Nawi names a tap for (the user agreed), so they can be saved. */
+  learnOnboarding?: boolean
   /** Activity to start; default: the launcher activity. */
   activity?: string | null
   /** Start a booted emulator without a window (servers, CI). */
@@ -260,6 +278,7 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
     settings: { requested: null, applied: [], not_applied: [] },
     launched: null,
     first_screen: null,
+    onboarding: null,
     steps: [],
     doctor: null
   }
@@ -451,15 +470,28 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
     steps.push({ id: 'launch', status: 'ok', summary: `${act} started${startedOk.totalTimeMs !== null ? ` in ${startedOk.totalTimeMs} ms` : ''}${pid !== null ? ` (pid ${pid})` : ''}`, fix: null })
     result.ok = true
 
-    // 7. The first screen: anything in front of the app a test would trip over. Never fails the open, and a cancel
-    // here keeps the result (the app is already running).
-    req.onStep?.('first_screen', 'reading the first screen')
+    // 7. The first screen: anything in front of the app a test would trip over, after the onboarding taps got past
+    // what they could. Never fails the open, and a cancel here keeps the result (the app is already running).
+    const saved = req.onboarding ?? []
+    const replaying = saved.length > 0 || !!req.learnOnboarding
+    // Steps are announced in the order they are reported: the onboarding step reads the first screen when it runs.
+    req.onStep?.(replaying ? 'onboarding' : 'first_screen', replaying ? `reading the first screen to tap past it${req.learnOnboarding ? ' (learning new taps)' : ''}` : 'reading the first screen')
     await host.delay(FIRST_SCREEN_SETTLE_MS, req.signal)
-    const read = req.signal?.aborted ? { skipped: 'cancelled before the screen was read' } : await readFirstScreen(host, adbPath, serial, pkg)
+    let read: ScreenRead = req.signal?.aborted ? { skipped: 'cancelled before the screen was read' } : await readScreen(host, adbPath, serial)
+    if (replaying) {
+      const replay = await replayOnboarding(host, adbPath, serial, pkg, saved, !!req.learnOnboarding, read, req.signal)
+      read = replay.read
+      result.onboarding = { tapped: replay.tapped }
+      steps.push(replay.step)
+      req.onStep?.('first_screen', 'checking what is left in front of the app')
+    } else {
+      steps.push({ id: 'onboarding', status: 'skipped', summary: 'no onboarding taps to replay (none saved in a profile)', fix: null })
+    }
     if ('skipped' in read) steps.push({ id: 'first_screen', status: 'skipped', summary: read.skipped, fix: null })
     else {
-      result.first_screen = read
-      steps.push(firstScreenStep(read, pkg))
+      const first = findFirstRunBlockers(read, pkg)
+      result.first_screen = first
+      steps.push(firstScreenStep(first, pkg))
     }
     return result
   } catch (err) {
@@ -469,17 +501,81 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
 }
 
 /** Dump and read the screen; a device that can't dump (old image, a screen that never goes idle) is a skip. */
-async function readFirstScreen(host: OpenHost, adb: string, serial: string, pkg: string): Promise<FirstScreen | { skipped: string }> {
+async function readScreen(host: OpenHost, adb: string, serial: string): Promise<UiScreen | { skipped: string }> {
   const r = await host.exec(adb, ['-s', serial, 'shell', dumpLine(randomBytes(6).toString('hex'))], DUMP_TIMEOUT_MS)
   if (r.error === 'timeout') {
     // The dump is printed only once it is complete, so output with a kill means adb's output cap cut it, not a hang.
     return { skipped: r.stdout.includes('<hierarchy') ? 'could not read the screen: the dump is larger than 1 MB' : 'could not read the screen: uiautomator did not answer' }
   }
   try {
-    return findFirstRunBlockers(parseUiDump(r.stdout), pkg)
+    return parseUiDump(r.stdout)
   } catch (err) {
     if (!(err instanceof DumpError)) throw err
     return { skipped: `could not read the screen: ${r.code !== 0 && !r.stdout.trim() ? said(r) : err.message}` }
+  }
+}
+
+type ScreenRead = UiScreen | { skipped: string }
+
+/**
+ * Tap past the first-run screens: on each screen, the first saved tap that is on it (or, learning, the first blocker
+ * Nawi names a tap for), then wait and read the screen again. Stops when nothing is left to tap, a tap changed
+ * nothing, the screen can't be read, the call is cancelled, or after MAX_ONBOARDING_TAPS. Never fails the open.
+ */
+async function replayOnboarding(
+  host: OpenHost,
+  adb: string,
+  serial: string,
+  pkg: string,
+  saved: readonly OnboardingTap[],
+  learn: boolean,
+  first: ScreenRead,
+  signal: AbortSignal | undefined
+): Promise<{ read: ScreenRead; tapped: OnboardingTapped[]; step: OpenStep }> {
+  const tapped: OnboardingTapped[] = []
+  const what = (t: OnboardingTapped): string => `${t.when.replace('_', ' ')} "${t.label}"${t.learned ? ' (learned)' : ''}`
+  const done = (status: OpenStepStatus, summary: string, fix: string | null, read: ScreenRead) => ({
+    read,
+    tapped,
+    step: { id: 'onboarding' as const, status, summary: tapped.length > 0 ? `tapped ${tapped.length}: ${tapped.map(what).join(', ')}${summary ? `; ${summary}` : ''}` : summary, fix }
+  })
+  let read = first
+  if ('skipped' in read) return done('skipped', `no tap made: ${read.skipped}`, null, read)
+  for (;;) {
+    if (signal?.aborted) return done(tapped.length > 0 ? 'ok' : 'skipped', 'cancelled', null, read)
+    const screen: UiScreen = read
+    const next = nextOnboardingTap(screen, pkg, saved, learn)
+    if (next === null) {
+      if (tapped.length > 0) return done('ok', '', null, read)
+      return done('skipped', saved.length > 0 ? 'none of the saved taps is on the screen' : 'nothing on the screen to tap past', null, read)
+    }
+    if (tapped.length >= MAX_ONBOARDING_TAPS) {
+      return done('warn', `stopped after ${MAX_ONBOARDING_TAPS} taps`, `Something keeps coming back after a tap: look at the device, and remove the tap that repeats from the profile's onboarding section.`, read)
+    }
+    // Only numbers reach the shell: the coordinates come from the dump's bounds, parsed as integers.
+    const r = await host.exec(adb, ['-s', serial, 'shell', `input tap ${next.x} ${next.y}`], SHELL_TIMEOUT_MS)
+    if (r.code !== 0 || r.error || /Exception|Error/.test(`${r.stdout}\n${r.stderr}`)) {
+      return done('warn', `could not tap "${next.label}" (${r.error === 'timeout' ? 'the device did not answer' : said(r)})`, `Tap "${next.label}" on the device by hand.`, read)
+    }
+    const t: OnboardingTapped = { when: next.entry.when, tap: { ...next.entry.tap }, label: next.label, learned: next.learned }
+    // A learned tap is reported (and so saved) only once the next screen shows it worked.
+    if (!t.learned) tapped.push(t)
+    const unverified = t.learned ? ` (tapped "${t.label}", not saved: its effect could not be checked)` : ''
+    await host.delay(FIRST_SCREEN_SETTLE_MS, signal)
+    // The screen read before the tap is out of date now: report nothing rather than a screen that is gone.
+    if (signal?.aborted) return done('ok', `cancelled${unverified}`, null, { skipped: 'cancelled before the screen was read again' })
+    const again = await readScreen(host, adb, serial)
+    if ('skipped' in again) return done('warn', `${again.skipped.replace(/^could not/, 'then could not')}${unverified}`, 'The first-run screens may not all be past: look at the device.', again)
+    if (screenKey(again) === screenKey(screen)) {
+      return done(
+        'warn',
+        `the screen did not change after tapping "${t.label}"${t.learned ? ' (not saved)' : ''}`,
+        t.learned ? `Get past this screen on the device by hand.` : `Tap "${t.label}" on the device by hand; if it is not the right element, remove it from the profile's onboarding section.`,
+        again
+      )
+    }
+    if (t.learned) tapped.push(t)
+    read = again
   }
 }
 

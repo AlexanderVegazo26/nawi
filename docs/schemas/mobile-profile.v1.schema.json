@@ -208,6 +208,56 @@
         }
       },
       "additionalProperties": false
+    },
+    "onboarding": {
+      "description": "Taps that get past the first-run screens, replayed after every launch: while one of these elements is on screen it is tapped (a permission_dialog tap only on Android's permission prompt, any other only on the app). Saved by mobile_open with learn_onboarding.",
+      "maxItems": 20,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "when": {
+            "type": "string",
+            "enum": [
+              "permission_dialog",
+              "consent",
+              "intro"
+            ],
+            "description": "The first-run screen this tap gets past."
+          },
+          "tap": {
+            "type": "object",
+            "properties": {
+              "resource_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+              },
+              "content_desc": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+              }
+            },
+            "additionalProperties": false,
+            "minProperties": 1,
+            "description": "The element to tap: every field given must match it exactly, and exactly one element on screen must match."
+          }
+        },
+        "required": [
+          "when",
+          "tap"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
