@@ -37,6 +37,10 @@ export interface UiNode {
   enabled: boolean
   /** A password field (its text is never the password: Android hides it). */
   password: boolean
+  /** A ticked checkbox, switch or radio button (an "I agree" box changes only this when tapped). */
+  checked: boolean
+  /** A selected tab, page indicator dot or list item. */
+  selected: boolean
   /** Null when the dump had no parseable bounds. */
   bounds: UiBounds | null
 }
@@ -145,6 +149,8 @@ export function parseUiDump(text: string): UiScreen {
       // uiautomator always writes it; a node without it is treated as enabled, like Android's default.
       enabled: attrs.get('enabled') !== 'false',
       password: flag('password'),
+      checked: flag('checked'),
+      selected: flag('selected'),
       bounds: parseBounds(attrs.get('bounds') ?? '')
     }
     nodes.push(node)

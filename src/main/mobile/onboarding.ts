@@ -126,10 +126,13 @@ export function nextOnboardingTap(screen: UiScreen, pkg: string, saved: readonly
   return null
 }
 
-/** A cheap fingerprint of what is on screen, to notice a tap that changed nothing. */
+/**
+ * A cheap fingerprint of what is on screen, to notice a tap that changed nothing. It includes the checked and
+ * selected state: ticking an "I agree" box or swiping to the next intro page may change nothing else.
+ */
 export function screenKey(screen: UiScreen): string {
   return screen.nodes
-    .map((n) => `${n.package}|${n.class}|${n.resource_id}|${n.text}|${n.content_desc}|${n.enabled ? 1 : 0}|${n.bounds ? `${n.bounds.left},${n.bounds.top},${n.bounds.right},${n.bounds.bottom}` : ''}`)
+    .map((n) => `${n.package}|${n.class}|${n.resource_id}|${n.text}|${n.content_desc}|${n.enabled ? 1 : 0}${n.checked ? 1 : 0}${n.selected ? 1 : 0}|${n.bounds ? `${n.bounds.left},${n.bounds.top},${n.bounds.right},${n.bounds.bottom}` : ''}`)
     .join('\n')
 }
 

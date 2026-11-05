@@ -110,10 +110,10 @@ describe('nextOnboardingTap', () => {
 })
 
 describe('screenKey and mergeOnboarding', () => {
-  it('a moved, renamed or disabled element changes the key; the same dump does not', () => {
+  it('a moved, renamed, disabled, ticked or selected element changes the key; the same dump does not', () => {
     const base = screen(PKG, node({ text: 'Skip', bounds: '[0,0][10,10]' }))
     expect(screenKey(base)).toBe(screenKey(screen(PKG, node({ text: 'Skip', bounds: '[0,0][10,10]' }))))
-    for (const changed of [{ bounds: '[0,1][10,10]' }, { text: 'Next' }, { enabled: false }] as Record<string, string | boolean>[]) {
+    for (const changed of [{ bounds: '[0,1][10,10]' }, { text: 'Next' }, { enabled: false }, { checked: true }, { selected: true }] as Record<string, string | boolean>[]) {
       expect(screenKey(screen(PKG, node({ text: 'Skip', bounds: '[0,0][10,10]', ...changed }))), JSON.stringify(changed)).not.toBe(screenKey(base))
     }
   })
