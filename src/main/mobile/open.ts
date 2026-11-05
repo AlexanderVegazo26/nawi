@@ -6,7 +6,7 @@ import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult, type Mo
 import { DumpError, dumpLine, parseUiDump, type UiScreen } from './hierarchy'
 import { MAX_ONBOARDING_TAPS, nextOnboardingTap, screenKey, type OnboardingTap } from './onboarding'
 import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
-import { androidVersionFor, isNetworkSerial, settingCommands, type DeviceSettingName } from './settings'
+import { androidVersionFor, DEFAULT_NETWORK_LINE, isNetworkSerial, parseDefaultNetwork, settingCommands, type DeviceSettingName } from './settings'
 import { shQuote } from './shell'
 
 export { shQuote }
@@ -138,6 +138,9 @@ const SHELL_TIMEOUT_MS = 30_000
 const LAUNCH_TIMEOUT_MS = 60_000
 /** After `am start -W` returns, how long a prompt or consent dialog the app opens in onCreate takes to show. */
 export const FIRST_SCREEN_SETTLE_MS = 1_500
+/** How long, after airplane mode is switched, openApp waits for the default network to come back (or to go) before launch. */
+export const NETWORK_SETTLE_TIMEOUT_MS = 20_000
+export const NETWORK_POLL_MS = 500
 /** uiautomator waits up to ~10 s for the screen to go idle before it gives up. */
 const DUMP_TIMEOUT_MS = 15_000
 /** Emulator console ports adb scans (5554..5584 by default; the emulator accepts up to 5682). */
@@ -425,16 +428,40 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
           missed.push(`${c.label} (${reason})`)
         }
       }
+      // Airplane mode returns before the radios have reconnected (or dropped): wait, so the first screen does not
+      // depend on how fast Wi-Fi came back.
+      let unsettled: { summary: string; fix: string } | null = null
+      if (result.settings.applied.includes('network') && typeof wanted?.network === 'boolean') {
+        const want = wanted.network ? 'up' : 'down'
+        req.onStep?.('settings', want === 'up' ? 'waiting for the network to come back' : 'waiting for the network to go')
+        const got = await waitForNetwork(host, adbPath, serial, want, req.signal)
+        checkAbort()
+        if (got === 'timeout') {
+          const secs = NETWORK_SETTLE_TIMEOUT_MS / 1000
+          unsettled =
+            want === 'up'
+              ? {
+                  summary: `airplane mode is off, but ${serial} had no network after ${secs} s`,
+                  fix: `Turn on Wi-Fi or mobile data on ${serial} (airplane mode off does not turn on a Wi-Fi switched off on its own), or set network to null in the profile's device section if the app should run without one.`
+                }
+              : {
+                  summary: `airplane mode is on, but ${serial} still had a network after ${secs} s`,
+                  fix: `Check \`adb -s ${serial} shell dumpsys connectivity\` for the network that stayed up (Wi-Fi allowed in airplane mode stays on); the app may not see itself offline.`
+                }
+        }
+      }
       const keys = result.settings.not_applied.map((m) => m.name).join(', ')
       steps.push(
-        missed.length === 0
+        missed.length === 0 && !unsettled
           ? { id: 'settings', status: 'ok', summary: done.join(', '), fix: null }
-          : {
-              id: 'settings',
-              status: 'warn',
-              summary: `applied ${done.length} of ${commands.length}; not applied: ${missed.join('; ')}`,
-              fix: `The app runs with the device's own value for those; set ${keys} to null in the profile's device section to stop asking, or use a newer device.`
-            }
+          : missed.length === 0 && unsettled
+            ? { id: 'settings', status: 'warn', summary: `${done.join(', ')}; ${unsettled.summary}`, fix: unsettled.fix }
+            : {
+                id: 'settings',
+                status: 'warn',
+                summary: `applied ${done.length} of ${commands.length}; not applied: ${missed.join('; ')}${unsettled ? `; ${unsettled.summary}` : ''}`,
+                fix: `The app runs with the device's own value for those; set ${keys} to null in the profile's device section to stop asking, or use a newer device.${unsettled ? ` ${unsettled.fix}` : ''}`
+              }
       )
     }
 
@@ -656,6 +683,26 @@ async function chooseTarget(req: OpenRequest, doctor: MobileDoctorReport, host: 
   }
   if (!doctor.recommended) return { summary: 'no device or virtual device can run the app', fix: doctor.fix ?? 'Run `nawi mobile-doctor <file.apk>` for what is missing.' }
   return doctor.recommended.kind === 'device' ? asDevice(doctor.recommended.name) : asAvd(doctor.recommended.name)
+}
+
+/**
+ * Poll the device's default network until it is `want`, or the deadline passes. 'unreadable' when three reads in a row
+ * print no network state (an Android whose dumpsys says something else): waiting longer would not tell us more.
+ */
+async function waitForNetwork(host: OpenHost, adb: string, serial: string, want: 'up' | 'down', signal?: AbortSignal): Promise<'ok' | 'timeout' | 'unreadable'> {
+  const deadline = host.now() + NETWORK_SETTLE_TIMEOUT_MS
+  let unread = 0
+  for (;;) {
+    if (signal?.aborted) return 'timeout'
+    const left = deadline - host.now()
+    if (left <= 0) return 'timeout'
+    const r = await host.exec(adb, ['-s', serial, 'shell', DEFAULT_NETWORK_LINE], Math.max(1_000, Math.min(SHELL_TIMEOUT_MS, left)))
+    const state = parseDefaultNetwork(`${r.stdout}\n${r.stderr}`)
+    if (state === want) return 'ok'
+    unread = state === null ? unread + 1 : 0
+    if (unread >= 3) return 'unreadable'
+    await host.delay(Math.min(NETWORK_POLL_MS, Math.max(0, deadline - host.now())), signal)
+  }
 }
 
 /** Poll `sys.boot_completed` until it is 1, the emulator exits, or the deadline (wall time, adb calls included) passes. */

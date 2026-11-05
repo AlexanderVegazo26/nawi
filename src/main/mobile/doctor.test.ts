@@ -7,6 +7,7 @@ import { detectFramework } from './framework'
 import {
   abisForImage,
   compatibility,
+  defaultHost,
   parseAdbDevices,
   parseIni,
   runMobileDoctor,
@@ -363,5 +364,12 @@ describe('doctor parsers', () => {
     expect(compatibility({ min_sdk: 21, abis: [] }, 21, ['x86_64'])).toEqual({ ok: true, reason: null })
     expect(compatibility({ min_sdk: 21, abis: ['armeabi-v7a'] }, 30, abisForImage('arm64-v8a'))).toEqual({ ok: true, reason: null })
     expect(compatibility({ min_sdk: 21, abis: [] }, null, [])).toEqual({ ok: false, reason: 'its API level is unknown' })
+  })
+})
+
+describe('defaultHost().exec', () => {
+  it('accepts a fractional timeout (a deadline on performance.now()) instead of throwing a RangeError', async () => {
+    const r = await defaultHost().exec(process.execPath, ['-e', 'process.stdout.write("ok")'], 19_999.998)
+    expect(r, 'node -e with a 19999.998 ms timeout').toEqual({ code: 0, stdout: 'ok', stderr: '' })
   })
 })

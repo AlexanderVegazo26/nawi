@@ -14,6 +14,7 @@ import { shQuote } from './shell'
  *   profile that asks for the network brings back a device an earlier offline run left in airplane mode, and a
  *   profile can run the app offline on purpose. Only airplane mode: Wi-Fi or mobile data switched off on their own
  *   stay off. Airplane mode is never turned on over a network adb connection (`isNetworkSerial`): it would cut adb.
+ *   The command returns before the radios follow, so openApp polls `DEFAULT_NETWORK_LINE` before launch.
  *
  * Every value is checked against the profile schema's rules again here and the package and locale are quoted (they
  * end up in a shell command line); numbers are printed by us, never copied from a string.
@@ -82,6 +83,20 @@ export function settingCommands(pkg: string, settings: DeviceSettings): SettingC
  */
 export function isNetworkSerial(serial: string): boolean {
   return serial.includes(':') || /\._adb-tls-connect\._tcp\.?$/.test(serial)
+}
+
+/**
+ * The `adb shell` line that prints the device's default network (`Active default network: 100`, or `: none` when it has
+ * none). Airplane mode returns at once, but the radios take seconds to drop or to reconnect (about 3 s and 4 s on an
+ * API 36 emulator), so openApp polls this before it starts the app.
+ */
+export const DEFAULT_NETWORK_LINE = "dumpsys connectivity | grep -m 1 'Active default network'"
+
+/** `up` (a default network), `down` (none) or null when the output says neither (service restarting, other Android). */
+export function parseDefaultNetwork(text: string): 'up' | 'down' | null {
+  const m = /Active default network:\s*(none|\d+)\b/.exec(text)
+  if (!m) return null
+  return m[1] === 'none' ? 'down' : 'up'
 }
 
 /** The Android version that brought an API level's command, for "needs Android 13" messages. */

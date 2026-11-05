@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultDeviceSettings, KEEP_DEVICE_SETTINGS, parseMobileProfile, type DeviceSettings } from './profile'
-import { androidVersionFor, formatScale, isNetworkSerial, settingCommands } from './settings'
+import { androidVersionFor, formatScale, isNetworkSerial, parseDefaultNetwork, settingCommands } from './settings'
 
 /**
  * Device settings (roadmap M2b): the exact `adb shell` lines a profile's device section turns into, and that no value
@@ -84,6 +84,20 @@ describe('defaults and helpers', () => {
 
   it('androidVersionFor names the release of an API level, or the level itself', () => {
     expect([29, 30, 33, 36, 40].map(androidVersionFor)).toEqual(['10', '11', '13', '16', 'API 40'])
+  })
+})
+
+describe('parseDefaultNetwork', () => {
+  it.each([
+    ['Active default network: 100\n', 'up'],
+    ['Active default network: none\n', 'down'],
+    ['NetworkProviders for:\n  1: X\n\nActive default network: 101\n\nCurrent network preferences:', 'up'],
+    ["Can't find service: connectivity\n", null],
+    ['Error with service \'connectivity\' while dumping: DEAD_OBJECT\n', null],
+    ['Active default network: nonexistent\n', null],
+    ['', null]
+  ] as const)('reads %j as %s', (text, want) => {
+    expect(parseDefaultNetwork(text), `parseDefaultNetwork(${JSON.stringify(text)})`).toBe(want)
   })
 })
 

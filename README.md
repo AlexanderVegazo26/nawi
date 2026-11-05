@@ -518,7 +518,8 @@ alone.
   default to the app's own language `en-US` (per-app locale, Android 13+), light
   theme (Android 10+), font scale 1, animations off and network on (airplane
   mode off, Android 11+; `network: false` runs the app offline, never over a
-  wireless adb connection, which airplane mode would cut), so every run sees the
+  wireless adb connection, which airplane mode would cut; the app starts once the
+  network is back, or gone, with a warning after 20 s), so every run sees the
   same screen (settings an older Android lacks are left out). A physical phone
   is left as it is unless the profile was saved for that phone and asks for a
   value; settings saved for a virtual device are never applied to a phone. A

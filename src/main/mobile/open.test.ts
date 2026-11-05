@@ -10,6 +10,8 @@ import {
   BOOT_POLL_MS,
   FIRST_SCREEN_SETTLE_MS,
   freeEmulatorPort,
+  NETWORK_POLL_MS,
+  NETWORK_SETTLE_TIMEOUT_MS,
   installFix,
   openApp,
   parseAmStart,
@@ -85,6 +87,11 @@ interface Sim {
   dumps?: ExecResult[]
   /** `input tap x y`; default: success. */
   tap?: (line: string) => ExecResult
+  /**
+   * `dumpsys connectivity` reads in order (the last one repeats); default: a default network unless the last airplane
+   * mode command turned it on.
+   */
+  network?: ExecResult[]
 }
 
 /** A uiautomator dump: one window of `pkg` with these nodes (attribute strings) inside it. */
@@ -103,6 +110,7 @@ function simHost(sim: Sim, over: Partial<OpenHost> = {}): OpenHost {
   let polls = 0
   let exited = false
   let clock = 0
+  let airplane = false
   const host: OpenHost = {
     env: { ANDROID_HOME: sdkDir },
     platform: 'linux',
@@ -129,6 +137,11 @@ function simHost(sim: Sim, over: Partial<OpenHost> = {}): OpenHost {
       if (line.startsWith('uiautomator dump') && sim.dumps) return (sim.dumps.length > 1 ? sim.dumps.shift() : sim.dumps[0]) as ExecResult
       if (line.startsWith('input tap')) return sim.tap?.(line) ?? ok()
       if (line.startsWith('uiautomator dump')) return sim.dump ?? ok(dumpXml('dev.nawi.sample', ['text="Welcome back" class="android.widget.TextView" bounds="[0,100][1080,200]"']))
+      if (line.startsWith('dumpsys connectivity')) {
+        if (sim.network) return (sim.network.length > 1 ? sim.network.shift() : sim.network[0]) as ExecResult
+        return ok(`Active default network: ${airplane ? 'none' : '100'}\n`)
+      }
+      if (line.startsWith('cmd connectivity airplane-mode ')) airplane = line.endsWith(' enable')
       if (line.startsWith('settings put') || line.startsWith('cmd ')) return sim.setting?.(line) ?? ok(line.startsWith('cmd uimode') ? 'Night mode: no\n' : '')
       return failed(`unexpected shell ${line}`)
     },
@@ -425,6 +438,79 @@ describe('openApp device settings (roadmap M2b)', () => {
     const on = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, network: true }, settingsOnPhone: true }), simHost({ devices: [{ serial, api: 34 }] }))
     expect(adbCalls().filter((c) => /shell (settings|cmd)/.test(c)), 'turning airplane mode off is safe over the network').toEqual([`${serial} shell cmd connectivity airplane-mode disable`])
     expect(on.settings.applied).toEqual(['network'])
+  })
+
+  const NONE = ok('Active default network: none\n')
+  const UP = ok('Active default network: 101\n')
+  const READ = 'emulator-5554 shell dumpsys connectivity | grep -m 1 \'Active default network\''
+  const AIRPLANE_AND_AFTER = (c: string) => /airplane-mode|dumpsys connectivity|am start/.test(c)
+
+  it('waits after airplane mode off until the device has a network again, then launches (Wi-Fi takes seconds to reconnect)', async () => {
+    avd('Pixel_API_36', 36)
+    const host = simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }], network: [NONE, NONE, NONE, UP] })
+    const progress: string[] = []
+    const r = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, network: true }, onStep: (id, summary) => progress.push(`${id}: ${summary}`) }), host)
+    expect(r.ok, JSON.stringify(r.steps)).toBe(true)
+    expect(adbCalls().filter(AIRPLANE_AND_AFTER), 'the app starts only after a read shows a default network').toEqual([
+      'emulator-5554 shell cmd connectivity airplane-mode disable',
+      READ,
+      READ,
+      READ,
+      READ,
+      "emulator-5554 shell am start -W -n 'dev.nawi.sample/dev.nawi.sample.MainActivity'"
+    ])
+    expect(host.now(), 'three polls apart, no fixed sleep').toBeGreaterThanOrEqual(3 * NETWORK_POLL_MS)
+    expect(step(r, 'settings')).toEqual({ id: 'settings', status: 'ok', summary: 'airplane mode off', fix: null })
+    expect(progress, 'the settings step says what it is waiting for').toContain('settings: waiting for the network to come back')
+  })
+
+  it('waits after airplane mode on until the network is gone, so an offline run starts offline', async () => {
+    avd('Pixel_API_36', 36)
+    const r = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, network: false } }), simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }], network: [UP, UP, NONE] }))
+    expect(adbCalls().filter(AIRPLANE_AND_AFTER)).toEqual([
+      'emulator-5554 shell cmd connectivity airplane-mode enable',
+      READ,
+      READ,
+      READ,
+      "emulator-5554 shell am start -W -n 'dev.nawi.sample/dev.nawi.sample.MainActivity'"
+    ])
+    expect(step(r, 'settings')).toEqual({ id: 'settings', status: 'ok', summary: 'airplane mode on (offline)', fix: null })
+  })
+
+  it('gives up waiting for the network after the cap with a warning and a fix, and still launches', async () => {
+    avd('Pixel_API_36', 36)
+    const host = simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }], network: [NONE] })
+    const r = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, font_scale: 1, network: true } }), host)
+    expect(r.ok, 'no network is a warning, not a failed open').toBe(true)
+    expect(r.launched?.activity).toBe('dev.nawi.sample.MainActivity')
+    const reads = adbCalls().filter((c) => c === READ).length
+    expect(reads, `polled every ${NETWORK_POLL_MS} ms for ${NETWORK_SETTLE_TIMEOUT_MS} ms`).toBe(NETWORK_SETTLE_TIMEOUT_MS / NETWORK_POLL_MS)
+    expect(r.settings.applied, 'airplane mode itself was switched').toEqual(['font_scale', 'network'])
+    expect(step(r, 'settings')).toEqual({
+      id: 'settings',
+      status: 'warn',
+      summary: `font scale 1, airplane mode off; airplane mode is off, but emulator-5554 had no network after ${NETWORK_SETTLE_TIMEOUT_MS / 1000} s`,
+      fix: "Turn on Wi-Fi or mobile data on emulator-5554 (airplane mode off does not turn on a Wi-Fi switched off on its own), or set network to null in the profile's device section if the app should run without one."
+    })
+  })
+
+  it('stops waiting after three reads that show no network state (another Android\'s dumpsys), without a warning', async () => {
+    avd('Pixel_API_36', 36)
+    const r = await openApp(
+      req({ settings: { ...KEEP_DEVICE_SETTINGS, network: true } }),
+      simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }], network: [ok("Can't find service: connectivity\n")] })
+    )
+    expect(adbCalls().filter((c) => c === READ).length, 'three tries, not the whole cap').toBe(3)
+    expect(step(r, 'settings')).toEqual({ id: 'settings', status: 'ok', summary: 'airplane mode off', fix: null })
+  })
+
+  it('reads the network only when airplane mode was switched (not when network is null or refused)', async () => {
+    avd('Pixel_API_36', 36)
+    await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, dark_mode: true } }), simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }] }))
+    expect(adbCalls().filter((c) => c === READ), 'network: null').toEqual([])
+    calls = []
+    await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, network: false }, settingsOnPhone: true }), simHost({ devices: [{ serial: '192.168.1.20:5555', api: 34 }] }))
+    expect(adbCalls().filter((c) => c.includes('dumpsys connectivity')), 'airplane mode refused over wireless adb').toEqual([])
   })
 
   it('skips a setting the device\'s Android version lacks with the version it needs, as a warning, and still launches', async () => {

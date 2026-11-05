@@ -108,7 +108,8 @@ const ACCEL_TIMEOUT_MS = 20_000
 
 const execDefault: Exec = (file, args, timeoutMs) =>
   new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
+    // execFile throws on a fractional timeout, and deadlines on performance.now() leave fractions (19999.998 ms).
+    execFile(file, args, { timeout: Math.max(1, Math.ceil(timeoutMs)), windowsHide: true, maxBuffer: 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
       if (!err) return resolve({ code: 0, stdout, stderr })
       const e = err as NodeJS.ErrnoException & { killed?: boolean; code?: number | string; signal?: string | null }
       if (e.code === 'ENOENT' || e.code === 'EACCES') return resolve({ code: null, stdout, stderr, error: 'not_found' })
