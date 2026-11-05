@@ -87,6 +87,7 @@ it declares (`errors` in `src/main/mcp/tools.ts`). `tools/list` publishes the fu
 | `inspect_apk` | `NOT_FOUND`, `NOT_IMPLEMENTED` |
 | `mobile_doctor` | `NOT_FOUND`, `NOT_IMPLEMENTED` |
 | `mobile_open` | `NOT_FOUND`, `NOT_IMPLEMENTED` |
+| `mobile_study` | (none) |
 <!-- /generated -->
 
 ## Adding a tool or a code

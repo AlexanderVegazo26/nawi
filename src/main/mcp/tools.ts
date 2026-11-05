@@ -15,7 +15,7 @@ import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
 import { MAX_FLOW_PATH, runFlowFile } from '../flow-run'
-import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, readRunRecord } from '../run-record'
+import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, newRunId, pruneRuns, readRunRecord } from '../run-record'
 import { REVISION_RE } from '../sidecar/paths'
 import { inspectApkFile } from '../mobile/apk'
 import { ApkError } from '../mobile/errors'
@@ -23,6 +23,7 @@ import { runMobileDoctor } from '../mobile/doctor'
 import { MAX_ONBOARDING_ENTRIES, mergeOnboarding } from '../mobile/onboarding'
 import { openApp, runtimePermissionsFor, type OpenStepId } from '../mobile/open'
 import {
+  PACKAGE_RE,
   ProfileFileError,
   TARGET_RE,
   defaultProfilePath,
@@ -33,6 +34,7 @@ import {
   type MobileProfile
 } from '../mobile/profile'
 import { realpath } from 'node:fs/promises'
+import { DEFAULT_KEEP_STUDIES, studyLiveScreen, writeStudy } from '../mobile/study-live'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -1057,6 +1059,87 @@ const mobileOpen = defineTool({
   }
 })
 
+/** Where saved screen studies live: one folder per study (study.json + screen.png). */
+export const studiesDir = (): string => join(app.getPath('userData'), 'studies')
+
+/**
+ * How many elements and findings a mobile_study answer carries (a dump may hold 10,000 nodes); study.json in the
+ * study folder always has them all.
+ */
+export const MAX_STUDY_ELEMENTS = 150
+export const MAX_STUDY_FINDINGS = 100
+
+/**
+ * Roadmap M3 (second slice, M3b): study the screen a connected device shows now, with a screenshot.
+ */
+const mobileStudy = defineTool({
+  name: 'mobile_study',
+  description:
+    'Study the screen a connected Android device shows right now: what a test or a person can act on, how to find ' +
+    'each element again, and what to fix for testability and accessibility. Reads the screen with uiautomator and ' +
+    '`wm density` and takes a screenshot; installs, launches, taps and boots nothing (start the app with mobile_open ' +
+    'first). `target` is an adb serial or the AVD name of a running emulator; without it the only connected device ' +
+    'is used (several connected: ok false, fix says to pick one). `package` is the app whose views are judged ' +
+    '(default: the first app window on screen; Android\'s own permission prompt and notification shade are never judged). ' +
+    'Returns ok, error and fix (the one next step when not ok), target ({kind, name, serial, api}), study_id, ' +
+    'screen_id (s-<12 hex>: the same screen gets the same id across runs while its content changes), package, ' +
+    'rotation, density_dpi, elements (each with i, class, resource_id, content_desc, text (empty for password fields), ' +
+    'hint, label (what a screen reader says), bounds, clickable/long_clickable/checkable/focusable/scrollable/enabled, ' +
+    'locator: the shortest {resource_id|content_desc|text} that finds only it, null when none does, ' +
+    'locator_basis resource_id/content_desc/text/index, in_collection), findings ({kind missing_label / ' +
+    'small_touch_target (under 48 dp) / duplicate_resource_id / missing_resource_id / fragile_locator, severity, ' +
+    'element, summary, fix}), notes (what could not be checked), and screenshot: the PNG\'s path, or null with ' +
+    `screenshot_error saying why. At most ${MAX_STUDY_ELEMENTS} elements and ${MAX_STUDY_FINDINGS} findings are returned ` +
+    '(elements_total / findings_total say how many there are; study.json in study_dir has them all; save_error when it ' +
+    'could not be saved). The study is saved under Nawi\'s studies folder (study.json + screen.png; the ' +
+    `newest ${DEFAULT_KEEP_STUDIES} are kept). \`secrets\`: values typed into the app (a sign-in); they are replaced by ` +
+    '${secret.name} in everything returned and saved, and when one is on the screen no screenshot is taken. ' +
+    'A device problem is a normal result with ok: false, not an error.',
+  idempotent: false,
+  errors: [],
+  schema: z.object({
+    target: z.string().regex(TARGET_RE, 'an adb serial (see mobile_doctor devices) or an AVD name').optional().describe('Device serial or AVD name of a running emulator; default: the only connected device.'),
+    package: z.string().regex(PACKAGE_RE, 'an Android package name').optional().describe('The app whose views are judged; default: the app in front.'),
+    secrets: inputMap('secrets').describe('Values typed into the app, scrubbed from the result. Never stored or reported.')
+  }),
+  async run(args) {
+    const takenAt = Date.now()
+    const live = await studyLiveScreen({ target: args.target ?? null, package: args.package ?? null, secrets: args.secrets })
+    if (!live.ok || !live.study) {
+      return { ok: false, error: live.error, fix: live.fix, target: live.target, study_id: null, study_dir: null, screenshot: null, screenshot_error: null }
+    }
+    const id = newRunId(takenAt)
+    let saved: { dir: string; screenshot: string | null } | null = null
+    let saveError: string | null = null
+    try {
+      saved = await writeStudy(studiesDir(), id, { study: live.study, target: live.target, taken_at: new Date(takenAt).toISOString() }, live.screenshot?.png ?? null)
+      await pruneRuns(studiesDir(), DEFAULT_KEEP_STUDIES).catch(() => [])
+    } catch (err) {
+      // The study itself is the answer; only the saved copy (and the screenshot, which lives in it) is lost.
+      saveError = `the study could not be saved: ${err instanceof Error ? err.message : String(err)}`
+    }
+    const { elements, findings, ...facts } = live.study
+    return {
+      ok: true,
+      error: null,
+      fix: null,
+      target: live.target,
+      study_id: saved ? id : null,
+      study_dir: saved?.dir ?? null,
+      save_error: saveError,
+      ...facts,
+      elements: elements.slice(0, MAX_STUDY_ELEMENTS),
+      elements_total: elements.length,
+      findings: findings.slice(0, MAX_STUDY_FINDINGS),
+      findings_total: findings.length,
+      screenshot: saved?.screenshot ?? null,
+      screenshot_size: saved?.screenshot && live.screenshot ? { width: live.screenshot.width, height: live.screenshot.height } : null,
+      // Why there is no screenshot: withheld or failed on the device, else lost with the study folder (save_error).
+      screenshot_error: saved?.screenshot ? null : (live.screenshot_error ?? (live.screenshot ? 'not saved: see save_error' : null))
+    }
+  }
+})
+
 /** The FR-AGT.1 surface, in the order the requirement lists them. */
 export const TOOLS: ToolDefinition[] = [
   captureScreen,
@@ -1077,7 +1160,8 @@ export const TOOLS: ToolDefinition[] = [
   getRun,
   inspectApk,
   mobileDoctor,
-  mobileOpen
+  mobileOpen,
+  mobileStudy
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)

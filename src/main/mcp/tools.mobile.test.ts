@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -36,6 +36,17 @@ vi.mock('../mobile/open', async (importOriginal) => ({
   openApp: async (req: Record<string, unknown>) => {
     openCalls.push(req)
     return openResult
+  }
+}))
+
+// The live study (adb) is tested against a simulated device in mobile/study-live.test.ts; here it returns a result.
+const studyCalls: Record<string, unknown>[] = []
+let studyResult: Record<string, unknown> = {}
+vi.mock('../mobile/study-live', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../mobile/study-live')>()),
+  studyLiveScreen: async (req: Record<string, unknown>) => {
+    studyCalls.push(req)
+    return studyResult
   }
 }))
 
@@ -371,5 +382,77 @@ describe('mobile_open', () => {
 
   it('refuses a target that is not a serial or AVD name at the schema', async () => {
     await expect(open({ file: apkPath(), target: '-s x' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' })
+  })
+})
+
+describe('mobile_study', () => {
+  const studyTool = (args: Record<string, unknown>) =>
+    dispatch(
+      { token: TOKEN, tools: TOOLS, isPaused: async () => false },
+      { name: 'mobile_study', args, authorization: `Bearer ${TOKEN}`, origin: null, callId: `c4-${Math.random()}` }
+    ) as Promise<Record<string, unknown>>
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+  const study = { screen_id: 's-0123456789ab', package: 'dev.nawi.sample', rotation: 0, density_dpi: 420, elements: [], findings: [], notes: [] }
+  const target = { kind: 'device', name: 'A1', serial: 'A1', api: 34 }
+
+  it('passes target, package and secrets through, saves study.json + screen.png, and returns their paths with the study', async () => {
+    studyCalls.length = 0
+    studyResult = { ok: true, fix: null, error: null, target, study, screenshot: { png: PNG, width: 1080, height: 2400 }, screenshot_error: null }
+    const r = await studyTool({ target: 'A1', package: 'dev.nawi.sample', secrets: { pw: 'x' } })
+    expect(studyCalls[0], 'request handed to studyLiveScreen').toEqual({ target: 'A1', package: 'dev.nawi.sample', secrets: { pw: 'x' } })
+    expect(r, 'result: ok, the study fields at the top level, where it was saved').toMatchObject({ ok: true, target, screen_id: 's-0123456789ab', density_dpi: 420, screenshot_size: { width: 1080, height: 2400 }, screenshot_error: null })
+    expect(r.study_dir).toBe(join(home, 'studies', r.study_id as string))
+    expect(readFileSync(r.screenshot as string), 'screen.png holds the PNG bytes').toEqual(Buffer.from(PNG))
+    const saved = JSON.parse(readFileSync(join(r.study_dir as string, 'study.json'), 'utf8'))
+    expect(saved, 'study.json').toMatchObject({ study_id: r.study_id, target, study, screenshot: 'screen.png' })
+  })
+
+  it('returns a device problem as ok: false with the fix, and saves nothing', async () => {
+    studyResult = { ok: false, fix: 'Connect a phone.', error: 'no device is connected', target: null, study: null, screenshot: null, screenshot_error: null }
+    const before = existsSync(join(home, 'studies')) ? readdirSync(join(home, 'studies')).length : 0
+    const r = await studyTool({})
+    expect(r).toEqual({ ok: false, error: 'no device is connected', fix: 'Connect a phone.', target: null, study_id: null, study_dir: null, screenshot: null, screenshot_error: null })
+    expect(existsSync(join(home, 'studies')) ? readdirSync(join(home, 'studies')).length : 0, 'no study folder written').toBe(before)
+  })
+
+  it('saves a study without a screenshot and says why there is none', async () => {
+    studyResult = { ok: true, fix: null, error: null, target, study, screenshot: null, screenshot_error: 'not taken: a secret value typed into the app is on the screen' }
+    const r = await studyTool({})
+    expect(r).toMatchObject({ ok: true, screenshot: null, screenshot_size: null, screenshot_error: 'not taken: a secret value typed into the app is on the screen' })
+    expect(readdirSync(r.study_dir as string)).toEqual(['study.json'])
+  })
+
+  it('returns at most MAX_STUDY_ELEMENTS elements with the total, and saves them all', async () => {
+    const many = Array.from({ length: 400 }, (_, i) => ({ i, locator_basis: 'index' }))
+    studyResult = { ok: true, fix: null, error: null, target, study: { ...study, elements: many }, screenshot: null, screenshot_error: 'x' }
+    const r = await studyTool({})
+    expect((r.elements as unknown[]).length).toBe(150)
+    expect(r.elements_total).toBe(400)
+    const saved = JSON.parse(readFileSync(join(r.study_dir as string, 'study.json'), 'utf8'))
+    expect(saved.study.elements.length, 'study.json keeps every element').toBe(400)
+  })
+
+  it('still answers when the study cannot be saved, keeping why the screenshot was withheld', async () => {
+    rmSync(join(home, 'studies'), { recursive: true, force: true })
+    writeFileSync(join(home, 'studies'), 'not a folder')
+    try {
+      studyResult = { ok: true, fix: null, error: null, target, study, screenshot: null, screenshot_error: 'not taken: a secret value typed into the app is on the screen' }
+      const r = await studyTool({})
+      expect(r).toMatchObject({ ok: true, study_id: null, study_dir: null, screen_id: 's-0123456789ab', screenshot: null, screenshot_error: 'not taken: a secret value typed into the app is on the screen' })
+      expect(r.save_error).toMatch(/the study could not be saved/)
+      studyResult = { ...studyResult, screenshot: { png: PNG, width: 1, height: 1 }, screenshot_error: null }
+      expect(await studyTool({}), 'a captured screenshot lost with the folder').toMatchObject({ screenshot: null, screenshot_error: 'not saved: see save_error' })
+    } finally {
+      rmSync(join(home, 'studies'), { force: true })
+    }
+  })
+
+  it.each([
+    ['a target with shell characters', { target: 'a;reboot' }],
+    ['a package that is not a package name', { package: '../etc' }]
+  ])('refuses %s at the schema without reading the device', async (_why, args) => {
+    studyCalls.length = 0
+    await expect(studyTool(args)).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' })
+    expect(studyCalls).toEqual([])
   })
 })

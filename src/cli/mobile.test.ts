@@ -2,7 +2,20 @@ import { describe, expect, it } from 'vitest'
 import type { ApkInfo } from '../main/mobile/apk'
 import { detectFramework } from '../main/mobile/framework'
 import type { MobileDoctorReport } from '../main/mobile/doctor'
-import { MobileUsageError, parseMobileDoctorArgs, parseMobileInspectArgs, parseMobileOpenArgs, readProfileText, renderApkInfo, renderDoctorReport, renderOpenResult, type MobileOpenReport } from './mobile'
+import {
+  MobileUsageError,
+  parseMobileDoctorArgs,
+  parseMobileInspectArgs,
+  parseMobileOpenArgs,
+  parseMobileStudyArgs,
+  readProfileText,
+  renderApkInfo,
+  renderDoctorReport,
+  renderOpenResult,
+  renderStudyResult,
+  type MobileOpenReport,
+  type MobileStudyReport
+} from './mobile'
 
 describe('parseMobileInspectArgs', () => {
   it('resolves a positional or --file path against the shell folder, and takes --json', () => {
@@ -246,5 +259,72 @@ describe('renderOpenResult', () => {
     expect(out.split('\n')[0]).toBe('com.example is not running on device R58M.')
     expect(out.split('\n').at(-1)).toBe('Next: Reconnect R58M.')
     expect(out, 'no profile was written, so it must not claim one was updated').toContain('(its SHA-256 differs).')
+  })
+})
+
+describe('parseMobileStudyArgs', () => {
+  it('takes --target, --package, repeated --secret names (deduped) and --json', () => {
+    expect(parseMobileStudyArgs([])).toEqual({ json: false, secret: [] })
+    expect(parseMobileStudyArgs(['--target', 'Pixel_8', '--package', 'com.a.b', '--secret', 'pw', '--secret', 'pw', '--secret', 'EMAIL', '--json'])).toEqual({
+      json: true,
+      target: 'Pixel_8',
+      package: 'com.a.b',
+      secret: ['pw', 'EMAIL']
+    })
+  })
+
+  it.each([
+    [['app.apk'], /takes no file/],
+    [['--target'], /--target needs a value/],
+    [['--package', '--json'], /--package needs a value/],
+    [['--secret', 'a-b'], /--secret takes a name/],
+    [['--headless'], /Unknown flag --headless/]
+  ])('refuses %j with a usage error (%s)', (argv, message) => {
+    expect(() => parseMobileStudyArgs(argv)).toThrow(MobileUsageError)
+    expect(() => parseMobileStudyArgs(argv)).toThrow(message)
+  })
+})
+
+describe('renderStudyResult', () => {
+  const base: MobileStudyReport = {
+    ok: true,
+    error: null,
+    fix: null,
+    target: { kind: 'avd', name: 'Pixel_8', serial: 'emulator-5554', api: 36 },
+    study_id: '20261105T210000000Z-abc123',
+    screen_id: 's-0123456789ab',
+    package: 'com.example.shop',
+    density_dpi: 420,
+    elements: [{ locator_basis: 'resource_id' }, { locator_basis: 'resource_id' }, { locator_basis: 'index' }],
+    findings: [{ kind: 'missing_label', severity: 'error', summary: 'The ImageButton at [0,100][96,196] has no label.', fix: 'Set a contentDescription.' }],
+    notes: [],
+    screenshot: '/home/u/.config/nawi/studies/20261105T210000000Z-abc123/screen.png',
+    screenshot_error: null
+  }
+
+  it('summarises the screen, the locator mix, each finding with its fix, and where the screenshot is', () => {
+    expect(renderStudyResult(base)).toBe(
+      [
+        'Screen s-0123456789ab of com.example.shop on virtual device Pixel_8 (emulator-5554), 420 dpi.',
+        '  elements   3 (2 by resource_id, 1 by position only)',
+        '  findings   1',
+        '    FAIL  The ImageButton at [0,100][96,196] has no label.',
+        '          Fix: Set a contentDescription.',
+        '',
+        'Screenshot: /home/u/.config/nawi/studies/20261105T210000000Z-abc123/screen.png'
+      ].join('\n')
+    )
+  })
+
+  it('says why there is no screenshot, and prints the error and fix when the screen was not studied', () => {
+    expect(renderStudyResult({ ...base, findings: [], notes: ['No view ids at all.'], screenshot: null, screenshot_error: 'not taken: a secret is on the screen' })).toContain(
+      '  findings   none\n  note       No view ids at all.\n\nNo screenshot: not taken: a secret is on the screen.'
+    )
+    expect(renderStudyResult({ ...base, elements_total: 400, save_error: 'the study could not be saved: ENOSPC.', screenshot: null, screenshot_error: 'not saved: see save_error' })).toContain(
+      '  (3 of 400 elements shown; the saved study.json has them all)\n\nNot saved: the study could not be saved: ENOSPC.\n\nNo screenshot: not saved: see save_error.'
+    )
+    expect(renderStudyResult({ ok: false, error: 'no device is connected', fix: 'Connect a phone.', target: null, study_id: null, screenshot: null, screenshot_error: null })).toBe(
+      'Could not study the screen: no device is connected.\n\nNext: Connect a phone.'
+    )
   })
 })

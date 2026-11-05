@@ -211,18 +211,19 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes eighteen tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes twenty tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
 `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`) and
 `inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`), `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
-exit 1 when no device can run it) and `mobile_open` (CLI: `nawi mobile-open <file.apk|profile.nawi.mobile.yaml>`,
-exit 1 when the app is not running). Every tool has a CLI command (a test keeps the
+exit 1 when no device can run it), `mobile_open` (CLI: `nawi mobile-open <file.apk|profile.nawi.mobile.yaml>`,
+exit 1 when the app is not running) and `mobile_study` (CLI: `nawi mobile-study [--target serial|avd]`, exit 1 when
+the screen could not be read). Every tool has a CLI command (a test keeps the
 two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
 `nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
-Exit codes: 0 success, 1 the app reported an error, a flow step failed, `mobile-doctor` found no device or `mobile-open` did not get the app running, 2 usage, 3 Nawi not running.
+Exit codes: 0 success, 1 the app reported an error, a flow step failed, `mobile-doctor` found no device, `mobile-open` did not get the app running or `mobile-study` could not read the screen, 2 usage, 3 Nawi not running.
 A refused tool call is JSON-RPC -32000 with a typed code in `error.data.code` (`NOT_FOUND`, `INVALID_ARGUMENTS` with
 `data.issues`, `AGENT_ACCESS_PAUSED`, ...); each `tools/list` entry names the codes that tool can return under
 `_meta["nawi/errors"]`, and [docs/MCP-ERRORS.md](docs/MCP-ERRORS.md) documents the shape and every code (a contract
@@ -562,6 +563,25 @@ alone.
   signed in, never the values; secret values are scrubbed from the whole
   result. It never types under Android's permission prompt, and hides the
   on-screen keyboard (Back, only while it is shown) before it looks for submit. Values reach the device as adb arguments: use a test account.
+- **Study the screen a device shows** (`mobile_study`, CLI `nawi mobile-study
+  [--target serial|avd] [--package name] [--secret name]...`, `src/main/mobile/study-live.ts` +
+  `src/main/mobile/study.ts`): reads the current screen of a connected device
+  (`uiautomator dump`), its density (`wm density`) and a screenshot (`screencap`),
+  and returns every element a test or a person can act on with the shortest
+  locator that finds only it (view id, content description or text, else its
+  position) and a stable screen id (`s-<12 hex>`: the same screen keeps its id
+  while its content changes), plus findings with one fix each: unlabeled
+  controls, touch targets under 48 dp, a view id shared by unrelated views,
+  controls without a view id, and locators that rest only on text or position.
+  Only the app's own views are judged (the first app window on screen, never
+  Android's permission prompt or status bar; or `--package`).
+  Nothing is installed, tapped or booted: start the app with `mobile_open`
+  first; with several devices connected, `--target` picks one. Each study is
+  saved as `study.json` + `screen.png` in Nawi's `studies` folder (newest 100
+  kept; a call returns at most 150 elements and 100 findings, study.json has all). Secret values typed into the app (`--secret name` reads
+  `NAWI_SECRET_<name>`; MCP `secrets`) are replaced by `${secret.name}` in the
+  result, and no screenshot is kept while one is on the screen (the screen is
+  read again after the screenshot to check).
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
   `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
   **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
@@ -672,7 +692,8 @@ CDP selectors and the MCP projection/revision model.
 
 - **Mobile: install, launch and watch, not yet drive.** An APK dropped on the
   window (or `mobile_open`) is installed and launched on a device or an existing
-  virtual device and its screen is shown live, but there is no inspector or
+  virtual device and its screen is shown live and can be studied (`mobile_study`:
+  one screen at a time; no contrast check or exploration of other screens yet), but there is no inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is

@@ -4,8 +4,9 @@ import type { UiBounds, UiNode, UiScreen } from './hierarchy'
 
 /**
  * Roadmap M3 (first slice, M3a): study one screen of an Android app from its `uiautomator dump`
- * (src/main/mobile/hierarchy.ts). Offline and pure, so fixture dumps pin every rule; reading a live device, the
- * screenshot, contrast and the safe exploration that builds a screen graph are later M3 slices that call this.
+ * (src/main/mobile/hierarchy.ts). Offline and pure, so fixture dumps pin every rule. Reading a live device with a
+ * screenshot is study-live.ts (M3b, mobile_study); contrast and the safe exploration that builds a screen graph are
+ * later M3 slices that call this.
  *
  * - Inventory: every element a test or a person can act on or read (clickable, long-clickable, checkable,
  *   focusable, scrollable, or carrying text / a content description / a hint), with the shortest locator that finds

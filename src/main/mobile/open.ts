@@ -589,7 +589,7 @@ function shellFailed(r: ExecResult): boolean {
 }
 
 /** Dump and read the screen; a device that can't dump (old image, a screen that never goes idle) is a skip. */
-async function readScreen(host: OpenHost, adb: string, serial: string): Promise<UiScreen | { skipped: string }> {
+export async function readScreen(host: Pick<OpenHost, 'exec'>, adb: string, serial: string): Promise<UiScreen | { skipped: string }> {
   const r = await host.exec(adb, ['-s', serial, 'shell', dumpLine(randomBytes(6).toString('hex'))], DUMP_TIMEOUT_MS)
   if (r.error === 'timeout') {
     // The dump is printed only once it is complete, so output with a kill means adb's output cap cut it, not a hang.
@@ -821,16 +821,18 @@ export function firstScreenStep(screen: FirstScreen, pkg: string): OpenStep {
   return { id: 'first_screen', status: 'ok', summary: 'no permission prompt, consent, intro or sign-in screen in front of the app', fix: null }
 }
 
+/** The AVD a running emulator was started from (`adb emu avd name` prints it, then "OK"); null for a phone. */
+export async function runningAvdName(host: Pick<OpenHost, 'exec'>, adb: string, serial: string): Promise<string | null> {
+  const r = await host.exec(adb, ['-s', serial, 'emu', 'avd', 'name'], SHELL_TIMEOUT_MS)
+  const name = r.code === 0 ? firstLine(r.stdout) : ''
+  return name && name !== 'OK' && TARGET_RE.test(name) ? name : null
+}
+
 type Chosen = OpenTarget | { summary: string; fix: string }
 
 async function chooseTarget(req: OpenRequest, doctor: MobileDoctorReport, host: OpenHost, adb: string): Promise<Chosen> {
   const wanted = req.target ?? null
-  // A running emulator answers `adb emu avd name` with its AVD name, then "OK".
-  const avdNameOf = async (serial: string): Promise<string | null> => {
-    const r = await host.exec(adb, ['-s', serial, 'emu', 'avd', 'name'], SHELL_TIMEOUT_MS)
-    const name = r.code === 0 ? firstLine(r.stdout) : ''
-    return name && name !== 'OK' && TARGET_RE.test(name) ? name : null
-  }
+  const avdNameOf = (serial: string): Promise<string | null> => runningAvdName(host, adb, serial)
   const runningAvds = async (): Promise<Map<string, string>> => {
     const out = new Map<string, string>()
     for (const d of doctor.devices.filter((x) => x.emulator && x.state === 'device')) {

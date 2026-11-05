@@ -194,3 +194,87 @@ export function renderOpenResult(r: MobileOpenReport): string {
   else if (notes.length > 0) lines.push('', ...notes.map((s) => `Note: ${s.fix}`))
   return lines.join('\n')
 }
+
+export const MOBILE_STUDY_USAGE = `nawi mobile-study [--target <serial|avd>] [--package <name>] [--secret <name>]... [--json]
+
+  Studies the screen a connected Android device shows now (start the app with mobile-open first): every element a
+  test or a person can act on, the locator that finds it again, and what to fix (unlabeled controls, touch targets
+  under 48 dp, shared or missing view ids, locators that rest only on text or position). Saves the study and a
+  screenshot in Nawi's studies folder. Nothing is installed, tapped or booted. --target picks the device when
+  several are connected; --package names the app to judge (default: the app in front). --secret <name> scrubs the
+  value of NAWI_SECRET_<name> (typed into the app, e.g. to sign in) from the result, and skips the screenshot if
+  it is on the screen. Exit 0 when the screen was studied, 1 when not.`
+
+export interface MobileStudyArgs {
+  json: boolean
+  target?: string
+  package?: string
+  /** Names whose NAWI_SECRET_<name> values the CLI sends to be scrubbed. */
+  secret: string[]
+}
+
+const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/
+
+export function parseMobileStudyArgs(argv: string[]): MobileStudyArgs {
+  const out: MobileStudyArgs = { json: false, secret: [] }
+  const value = (flag: string, v: string | undefined): string => {
+    if (v === undefined || v.startsWith('--')) throw new MobileUsageError(`${flag} needs a value.`)
+    return v
+  }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--json') out.json = true
+    else if (a === '--target') out.target = value(a, argv[++i])
+    else if (a === '--package') out.package = value(a, argv[++i])
+    else if (a === '--secret') {
+      const name = value(a, argv[++i])
+      if (!SECRET_NAME_RE.test(name)) throw new MobileUsageError(`--secret takes a name (letters, digits, _), not "${name.slice(0, 40)}".`)
+      if (!out.secret.includes(name)) out.secret.push(name)
+    } else if (a.startsWith('--')) throw new MobileUsageError(`Unknown flag ${a}.`)
+    else throw new MobileUsageError(`mobile-study takes no file: it studies the device's current screen (got "${a.slice(0, 80)}").`)
+  }
+  return out
+}
+
+/** What `nawi mobile-study` prints; mobile_study's structured result. */
+export interface MobileStudyReport {
+  ok: boolean
+  error: string | null
+  fix: string | null
+  target: { kind: 'device' | 'avd'; name: string; serial: string; api: number | null } | null
+  study_id: string | null
+  screen_id?: string
+  package?: string | null
+  density_dpi?: number | null
+  elements?: Array<{ locator_basis: string }>
+  elements_total?: number
+  save_error?: string | null
+  findings?: Array<{ kind: string; severity: string; summary: string; fix: string }>
+  notes?: string[]
+  screenshot: string | null
+  screenshot_error: string | null
+}
+
+const SEVERITY_MARK: Record<string, string> = { error: 'FAIL', warning: 'warn', info: 'info' }
+
+/** A terminal summary of a mobile_study result; `--json` prints the object itself. */
+export function renderStudyResult(r: MobileStudyReport): string {
+  const where = r.target ? (r.target.kind === 'avd' ? `virtual device ${r.target.name} (${r.target.serial})` : `device ${r.target.name}`) : null
+  if (!r.ok) return [`Could not study the screen${where ? ` of ${where}` : ''}: ${r.error ?? 'unknown error'}.`, ...(r.fix ? ['', `Next: ${r.fix}`] : [])].join('\n')
+  const elements = r.elements ?? []
+  const byBasis = new Map<string, number>()
+  for (const e of elements) byBasis.set(e.locator_basis, (byBasis.get(e.locator_basis) ?? 0) + 1)
+  const basis = ['resource_id', 'content_desc', 'text', 'index'].filter((b) => byBasis.has(b)).map((b) => `${byBasis.get(b)} by ${b === 'index' ? 'position only' : b}`)
+  const findings = r.findings ?? []
+  const lines = [
+    `Screen ${r.screen_id}${r.package ? ` of ${r.package}` : ''} on ${where}${r.density_dpi ? `, ${r.density_dpi} dpi` : ''}.`,
+    `  elements   ${elements.length}${basis.length ? ` (${basis.join(', ')})` : ''}`,
+    `  findings   ${findings.length === 0 ? 'none' : findings.length}`
+  ]
+  for (const f of findings) lines.push(`    ${SEVERITY_MARK[f.severity] ?? f.severity}  ${f.summary}`, `          Fix: ${f.fix}`)
+  for (const n of r.notes ?? []) lines.push(`  note       ${n}`)
+  if ((r.elements_total ?? elements.length) > elements.length) lines.push(`  (${elements.length} of ${r.elements_total} elements shown; the saved study.json has them all)`)
+  if (r.save_error) lines.push('', `Not saved: ${r.save_error.replace(/\.$/, '')}.`)
+  lines.push('', r.screenshot ? `Screenshot: ${r.screenshot}` : `No screenshot: ${(r.screenshot_error ?? 'none taken').replace(/\.$/, '')}.`)
+  return lines.join('\n')
+}
