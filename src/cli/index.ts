@@ -34,6 +34,7 @@ import {
   parseMobileDoctorArgs,
   parseMobileInspectArgs,
   parseMobileOpenArgs,
+  readProfileText,
   renderApkInfo,
   renderDoctorReport,
   renderOpenResult,
@@ -375,7 +376,10 @@ async function mobileOpenCommand(argv: string[]): Promise<void> {
     throw err
   }
   const { json, ...args } = parsed
-  const result = (await callTool('mobile_open', args)) as { structuredContent?: MobileOpenReport }
+  // A profile's sign_in values: only the names it mentions, from this shell (like `nawi run`).
+  const text = readProfileText(args.file, { statSync, readFileSync })
+  const inputs = text === null ? {} : inputsFor(flowReferences(text), process.env)
+  const result = (await callTool('mobile_open', { ...args, ...inputs })) as { structuredContent?: MobileOpenReport }
   const report = result?.structuredContent
   if (!report || typeof report.ok !== 'boolean' || !Array.isArray(report.steps)) {
     fail(`Nawi returned an unexpected mobile_open result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)

@@ -137,17 +137,20 @@ export function createInterpolator(
       return v
     })
 
-  // Longest first, so a secret that contains another is scrubbed whole.
-  const scrubOrder = (): Array<[string, string]> =>
-    [...secrets.entries()].filter(([, v]) => v.length > 0).sort((a, b) => b[1].length - a[1].length)
-
-  const redact = (text: string): string => {
-    let out = text
-    for (const [name, value] of scrubOrder()) out = out.replace(secretPattern(value), () => `\${secret.${name}}`)
-    return out
-  }
+  const redact = (text: string): string => redactSecrets(text, secrets)
 
   return { interpolate, redact }
+}
+
+/**
+ * Replace each secret value (in any of the forms secretPattern matches) in `text` with its `${secret.name}`
+ * placeholder. Longest first, so a secret that contains another is scrubbed whole.
+ */
+export function redactSecrets(text: string, secrets: Iterable<readonly [name: string, value: string]>): string {
+  let out = text
+  const order = [...secrets].filter(([, v]) => v.length > 0).sort((a, b) => b[1].length - a[1].length)
+  for (const [name, value] of order) out = out.replace(secretPattern(value), () => `\${secret.${name}}`)
+  return out
 }
 
 const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

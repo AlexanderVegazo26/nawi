@@ -134,14 +134,20 @@ export function flowReferences(text: string, varValues: string[] = []): { env: s
  * `*.nawi.yaml` file within the size limit is read; anything else is left for
  * the app to refuse with the real reason (`/dev/zero` must not hang the CLI).
  */
-export function readFlowText(
-  file: string,
-  fs: { statSync(p: string): { isFile(): boolean; size: number }; readFileSync(p: string, e: 'utf8'): string }
-): string | null {
-  if (!file.endsWith(FLOW_FILE_SUFFIX)) return null
+export function readFlowText(file: string, fs: TextFs): string | null {
+  return file.endsWith(FLOW_FILE_SUFFIX) ? readBoundedText(file, MAX_FLOW_FILE_BYTES, fs) : null
+}
+
+export interface TextFs {
+  statSync(p: string): { isFile(): boolean; size: number }
+  readFileSync(p: string, e: 'utf8'): string
+}
+
+/** A regular file of at most `maxBytes`, as text; null for anything else (or unreadable). */
+export function readBoundedText(file: string, maxBytes: number, fs: TextFs): string | null {
   try {
     const stat = fs.statSync(file)
-    if (!stat.isFile() || stat.size > MAX_FLOW_FILE_BYTES) return null
+    if (!stat.isFile() || stat.size > maxBytes) return null
     return fs.readFileSync(file, 'utf8')
   } catch {
     return null

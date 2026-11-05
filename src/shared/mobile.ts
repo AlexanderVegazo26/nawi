@@ -4,8 +4,13 @@
  */
 
 /** `read` is reading the .apk; the rest are mobile_open's steps, in order. */
-export type MobileStepId = 'read' | 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'onboarding' | 'first_screen'
-export const MOBILE_STEPS: readonly MobileStepId[] = ['read', 'doctor', 'boot', 'install', 'grant', 'settings', 'launch', 'onboarding', 'first_screen']
+export type MobileStepId = 'read' | 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'onboarding' | 'sign_in' | 'first_screen'
+export const MOBILE_STEPS: readonly MobileStepId[] = ['read', 'doctor', 'boot', 'install', 'grant', 'settings', 'launch', 'onboarding', 'sign_in', 'first_screen']
+
+/** A mobile profile's file name ends with this (src/main/mobile/profile.ts). */
+export const MOBILE_PROFILE_SUFFIX = '.nawi.mobile.yaml'
+/** A profile is a few hundred bytes; anything this large is not one. */
+export const MAX_MOBILE_PROFILE_BYTES = 64 * 1024
 
 export type MobileStepStatus = 'ok' | 'warn' | 'fail' | 'skipped'
 

@@ -1,13 +1,15 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import type { ApkInfo } from './apk'
-import { findFirstRunBlockers, type FirstScreen } from './blockers'
+import { findFirstRunBlockers, labelOf, type FirstScreen } from './blockers'
 import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult, type MobileDoctorReport } from './doctor'
 import { DumpError, dumpLine, parseUiDump, type UiScreen } from './hierarchy'
 import { MAX_ONBOARDING_TAPS, nextOnboardingTap, screenKey, type OnboardingTap } from './onboarding'
 import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
 import { androidVersionFor, DEFAULT_NETWORK_LINE, isNetworkSerial, parseDefaultNetwork, settingCommands, type DeviceSettingName } from './settings'
 import { shQuote } from './shell'
+import { redactSecrets } from '../../shared/flow/interpolate'
+import { clearLine, locateOnApp, promptInFront, resolveSignIn, typeLines, type SignInInputs, type SignInSpec } from './sign-in'
 
 export { shQuote }
 
@@ -19,7 +21,8 @@ export { shQuote }
  * once (`uiautomator dump`) and names any first-run blocker in front of the app (a permission prompt, a consent or
  * intro screen, a sign-in form) with the element to tap past it. With the profile's onboarding taps (M2c part 2) it
  * taps past those screens itself, one saved tap at a time, re-reading the screen after each; with `learnOnboarding`
- * it also taps the ones it named, so the caller can save them.
+ * it also taps the ones it named, so the caller can save them. With the profile's sign_in (M2, last slice) and a sign-in
+ * form still in front of the app, it fills the form from the call's secrets/env and submits it.
  * Every failure is a normal result with the step that failed and one fix. Electron-free; adb, the emulator and the
  * clock are injectable so tests never touch a real device.
  *
@@ -28,7 +31,7 @@ export { shQuote }
  * airplane mode stay changed); starts the app.
  */
 
-export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'onboarding' | 'first_screen'
+export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'onboarding' | 'sign_in' | 'first_screen'
 export type OpenStepStatus = 'ok' | 'warn' | 'fail' | 'skipped'
 
 export interface OpenStep {
@@ -74,6 +77,11 @@ export interface MobileOpenResult {
    * Null when there was nothing to replay or learn.
    */
   onboarding: { tapped: OnboardingTapped[] } | null
+  /**
+   * The sign-in made with the profile's sign_in section: how many fields were typed into and whether the form was
+   * submitted and gone afterwards. Null when there was no sign-in form to fill (or no sign_in section). Never the values.
+   */
+  sign_in: { fields: number; submitted: boolean; signed_in: boolean } | null
   steps: OpenStep[]
   /** The doctor's report, when no target could be chosen (it explains why). */
   doctor: MobileDoctorReport | null
@@ -108,6 +116,10 @@ export interface OpenRequest {
   onboarding?: readonly OnboardingTap[] | null
   /** Also tap the first-run blockers Nawi names a tap for (the user agreed), so they can be saved. */
   learnOnboarding?: boolean
+  /** The profile's sign_in section: filled in when a sign-in form is in front of the app after the onboarding taps. */
+  signIn?: SignInSpec | null
+  /** Values for its `${secret.*}` / `${env.*}` references. Never stored or reported. */
+  inputs?: SignInInputs
   /** Activity to start; default: the launcher activity. */
   activity?: string | null
   /** Start a booted emulator without a window (servers, CI). */
@@ -141,6 +153,12 @@ export const FIRST_SCREEN_SETTLE_MS = 1_500
 /** How long, after airplane mode is switched, openApp waits for the default network to come back (or to go) before launch. */
 export const NETWORK_SETTLE_TIMEOUT_MS = 20_000
 export const NETWORK_POLL_MS = 500
+/** After a sign-in is submitted, how long Nawi waits for the form to go (a network round trip, then a new screen). */
+export const SIGN_IN_TIMEOUT_MS = 20_000
+/** Prints `mInputShown=true` while the on-screen keyboard is up (checked on API 36: false again right after Back). */
+export const KEYBOARD_SHOWN_LINE = 'dumpsys input_method | grep -m 1 mInputShown'
+/** After Back hides the keyboard, how long the app takes to lay its screen out again. */
+export const KEYBOARD_SETTLE_MS = 500
 /** uiautomator waits up to ~10 s for the screen to go idle before it gives up. */
 const DUMP_TIMEOUT_MS = 15_000
 /** Emulator console ports adb scans (5554..5584 by default; the emulator accepts up to 5682). */
@@ -282,6 +300,7 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
     launched: null,
     first_screen: null,
     onboarding: null,
+    sign_in: null,
     steps: [],
     doctor: null
   }
@@ -507,8 +526,12 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
     // what they could. Never fails the open, and a cancel here keeps the result (the app is already running).
     const saved = req.onboarding ?? []
     const replaying = saved.length > 0 || !!req.learnOnboarding
-    // Steps are announced in the order they are reported: the onboarding step reads the first screen when it runs.
-    req.onStep?.(replaying ? 'onboarding' : 'first_screen', replaying ? `reading the first screen to tap past it${req.learnOnboarding ? ' (learning new taps)' : ''}` : 'reading the first screen')
+    // Steps are announced in the order they are reported: the first of onboarding / sign_in / first_screen that runs
+    // reads the first screen.
+    req.onStep?.(
+      replaying ? 'onboarding' : req.signIn ? 'sign_in' : 'first_screen',
+      replaying ? `reading the first screen to tap past it${req.learnOnboarding ? ' (learning new taps)' : ''}` : req.signIn ? 'reading the first screen for a sign-in form' : 'reading the first screen'
+    )
     await host.delay(FIRST_SCREEN_SETTLE_MS, req.signal)
     let read: ScreenRead = req.signal?.aborted ? { skipped: 'cancelled before the screen was read' } : await readScreen(host, adbPath, serial)
     if (replaying) {
@@ -516,21 +539,53 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
       read = replay.read
       result.onboarding = { tapped: replay.tapped }
       steps.push(replay.step)
-      req.onStep?.('first_screen', 'checking what is left in front of the app')
     } else {
       steps.push({ id: 'onboarding', status: 'skipped', summary: 'no onboarding taps to replay (none saved in a profile)', fix: null })
     }
+    let typedSecrets: Array<[string, string]> = []
+    if (req.signIn) {
+      const signed = await signIn(host, adbPath, serial, pkg, req.signIn, req.inputs ?? {}, read, req.signal, req.onStep)
+      read = signed.read
+      result.sign_in = signed.done
+      typedSecrets = signed.secrets
+      steps.push(signed.step)
+    } else {
+      steps.push({ id: 'sign_in', status: 'skipped', summary: 'no sign_in section in a profile', fix: null })
+    }
+    if (replaying || req.signIn) req.onStep?.('first_screen', 'checking what is left in front of the app')
     if ('skipped' in read) steps.push({ id: 'first_screen', status: 'skipped', summary: read.skipped, fix: null })
     else {
+      // The screen after a sign-in may show what was typed (a code in a plain text field, an echoed name): the text
+      // read from it never carries a secret that was typed.
       const first = findFirstRunBlockers(read, pkg)
-      result.first_screen = first
-      steps.push(firstScreenStep(first, pkg))
+      result.first_screen = typedSecrets.length > 0 ? scrubScreen(first, typedSecrets) : first
+      steps.push(firstScreenStep(result.first_screen, pkg))
     }
     return result
   } catch (err) {
     if (err instanceof Stop) return result
     throw err
   }
+}
+
+/** A first screen with every secret that was typed replaced by its placeholder in the text read from the screen. */
+export function scrubScreen(screen: FirstScreen, secrets: ReadonlyArray<readonly [string, string]>): FirstScreen {
+  const r = (t: string): string => redactSecrets(t, secrets)
+  return {
+    package: screen.package,
+    blockers: screen.blockers.map((b) => ({
+      ...b,
+      summary: r(b.summary),
+      fix: r(b.fix),
+      tap_label: b.tap_label === null ? null : r(b.tap_label),
+      tap: b.tap === null ? null : Object.fromEntries(Object.entries(b.tap).map(([k, v]) => [k, r(v)]))
+    }))
+  }
+}
+
+/** adb's answer counts as failed: an exit code, a timeout, or an exception printed with exit code 0 (old Androids). */
+function shellFailed(r: ExecResult): boolean {
+  return r.code !== 0 || !!r.error || /Exception|Error/.test(`${r.stdout}\n${r.stderr}`)
 }
 
 /** Dump and read the screen; a device that can't dump (old image, a screen that never goes idle) is a skip. */
@@ -587,7 +642,7 @@ async function replayOnboarding(
     }
     // Only numbers reach the shell: the coordinates come from the dump's bounds, parsed as integers.
     const r = await host.exec(adb, ['-s', serial, 'shell', `input tap ${next.x} ${next.y}`], SHELL_TIMEOUT_MS)
-    if (r.code !== 0 || r.error || /Exception|Error/.test(`${r.stdout}\n${r.stderr}`)) {
+    if (shellFailed(r)) {
       return done('warn', `could not tap "${next.label}" (${r.error === 'timeout' ? 'the device did not answer' : said(r)})`, `Tap "${next.label}" on the device by hand.`, read)
     }
     const t: OnboardingTapped = { when: next.entry.when, tap: { ...next.entry.tap }, label: next.label, learned: next.learned }
@@ -610,6 +665,143 @@ async function replayOnboarding(
     if (t.learned) tapped.push(t)
     read = again
   }
+}
+
+/**
+ * Fill and submit the app's sign-in form with the profile's sign_in section, when a sign-in form is in front of the
+ * app: per field, find it on the latest screen, tap it, clear it and type its value; then tap submit and wait (up to
+ * SIGN_IN_TIMEOUT_MS) for the form to go. Never fails the open, and never reports a value, not even in an adb error.
+ */
+async function signIn(
+  host: OpenHost,
+  adb: string,
+  serial: string,
+  pkg: string,
+  spec: SignInSpec,
+  inputs: SignInInputs,
+  first: ScreenRead,
+  signal: AbortSignal | undefined,
+  onStep: OpenRequest['onStep']
+): Promise<{ read: ScreenRead; done: MobileOpenResult['sign_in']; step: OpenStep; secrets: Array<[string, string]> }> {
+  let secrets: Array<[string, string]> = []
+  const end = (status: OpenStepStatus, summary: string, fix: string | null, read: ScreenRead, done: MobileOpenResult['sign_in'] = null) => ({
+    read,
+    done,
+    secrets,
+    step: { id: 'sign_in' as const, status, summary, fix }
+  })
+  const wall = (screen: UiScreen): boolean => findFirstRunBlockers(screen, pkg).blockers.some((b) => b.kind === 'login_wall')
+  if ('skipped' in first) return end('skipped', `not signed in: ${first.skipped}`, null, first)
+  if (!wall(first)) return end('skipped', 'no sign-in form in front of the app', null, first)
+  if (promptInFront(first)) {
+    return end('warn', 'not signed in: a permission prompt is in front of the sign-in form', 'Grant that permission before launch (the profile\'s permissions.grant) or save a permission_dialog onboarding tap for it.', first)
+  }
+  const resolved = resolveSignIn(spec, inputs)
+  if (!resolved.ok) {
+    const names = resolved.missing.map((m) => (m.startsWith('secret.') ? `NAWI_SECRET_${m.slice(7)}` : m.slice(4)))
+    return resolved.missing.length > 0
+      ? end(
+          'warn',
+          `not signed in: the sign-in form needs ${resolved.missing.map((m) => `\${${m}}`).join(', ')}, which this open was not given`,
+          `Set ${names.join(', ')} in the shell that runs \`nawi mobile-open\` (or pass mobile_open's secrets/env), then open the app again.`,
+          first
+        )
+      : end('warn', `not signed in: ${resolved.bad.join('; ')}`, 'Fix those values (a test account with a plain ASCII user name and password), then open the app again.', first)
+  }
+  secrets = resolved.secrets
+  onStep?.('sign_in', `signing in (${spec.fields.length} field${spec.fields.length === 1 ? '' : 's'})`)
+  const shell = (line: string) => host.exec(adb, ['-s', serial, 'shell', line], SHELL_TIMEOUT_MS)
+  // The reason without the device's own words: an error line from `input text` could echo what was typed.
+  const why = (r: ExecResult): string => (r.error === 'timeout' ? 'the device did not answer' : r.error === 'not_found' ? 'adb could not be started' : 'the device refused the input')
+  const checkFix = 'Compare the profile\'s sign_in locators with the screen (`adb shell uiautomator dump`), or sign in on the device by hand.'
+  const n = spec.fields.length
+  const progress = (fields: number, submitted = false) => ({ fields, submitted, signed_in: false })
+  const cancelled = (fields: number, read: ScreenRead) => end('skipped', `cancelled after typing into ${fields} of ${n} sign-in field${n === 1 ? '' : 's'}`, null, read, progress(fields))
+  /**
+   * The on-screen keyboard is not in the dump, so an element under it can't be seen: hide it before the next tap.
+   * Back only while Android says the keyboard is shown (then Back closes the keyboard, not the screen), and the screen
+   * is read again, since the app lays itself out anew. A string: why it could not be done.
+   */
+  const hideKeyboard = async (screen: UiScreen): Promise<{ screen: ScreenRead } | string> => {
+    const ime = await shell(KEYBOARD_SHOWN_LINE)
+    if (shellFailed(ime) || !/mInputShown=true/.test(ime.stdout)) return { screen }
+    const back = await shell('input keyevent KEYCODE_BACK')
+    if (shellFailed(back)) return `could not hide the on-screen keyboard (${why(back)})`
+    await host.delay(KEYBOARD_SETTLE_MS, signal)
+    if (signal?.aborted) return { screen }
+    return { screen: await readScreen(host, adb, serial) }
+  }
+  let screen: UiScreen = first
+  for (const [i, f] of spec.fields.entries()) {
+    if (signal?.aborted) return cancelled(i, screen)
+    const what = `sign-in field ${i + 1}`
+    if (i > 0) {
+      const hidden = await hideKeyboard(screen)
+      if (typeof hidden === 'string') return end('warn', `not signed in: before ${what}, ${hidden}`, 'Finish signing in on the device by hand.', screen, progress(i))
+      if ('skipped' in hidden.screen) return end('warn', `not signed in: before ${what}, ${hidden.screen.skipped}`, 'Finish signing in on the device by hand.', hidden.screen, progress(i))
+      screen = hidden.screen
+      if (signal?.aborted) return cancelled(i, screen)
+    }
+    const at = locateOnApp(screen, pkg, f.field, what, true)
+    if (!at.ok) return end('warn', `not signed in: ${at.why}`, checkFix, screen, progress(i))
+    // Only numbers reach the shell for taps; typed values go through shQuote in typeLines.
+    let r = await shell(`input tap ${at.at.x} ${at.at.y}`)
+    const clear = clearLine(at.node.text.length)
+    if (!shellFailed(r) && clear) r = await shell(clear)
+    for (const line of shellFailed(r) ? [] : typeLines(resolved.values[i])) {
+      r = await shell(line)
+      if (shellFailed(r)) break
+    }
+    if (shellFailed(r)) return end('warn', `not signed in: could not type into ${what} (${why(r)})`, 'Sign in on the device by hand, then open the app again.', screen, progress(i))
+    // The keyboard may have come up and moved things: find the next element on a fresh screen.
+    const again = await readScreen(host, adb, serial)
+    if ('skipped' in again) return end('warn', `not signed in: after ${what}, ${again.skipped}`, 'Finish signing in on the device by hand.', again, progress(i + 1))
+    screen = again
+  }
+  const typed = `typed into ${n} field${n === 1 ? '' : 's'}`
+  if (signal?.aborted) return cancelled(n, screen)
+  const hidden = await hideKeyboard(screen)
+  if (typeof hidden === 'string') return end('warn', `${typed}, not submitted: ${hidden}`, 'Tap the sign-in button on the device by hand.', screen, progress(n))
+  if ('skipped' in hidden.screen) return end('warn', `${typed}, not submitted: after hiding the keyboard, ${hidden.screen.skipped}`, 'Tap the sign-in button on the device by hand.', hidden.screen, progress(n))
+  screen = hidden.screen
+  // A cancel must never be followed by a submit.
+  if (signal?.aborted) return cancelled(n, screen)
+  const button = locateOnApp(screen, pkg, spec.submit, 'sign-in button')
+  if (!button.ok) {
+    return end(
+      'warn',
+      `${typed}, not submitted: ${button.why}`,
+      /covered by/.test(button.why) ? 'Another window is over the sign-in button: close it on the device, or tap the button by hand.' : checkFix,
+      screen,
+      progress(n)
+    )
+  }
+  const label = labelOf(button.node) || button.node.resource_id.replace(/^.*:id\//, '') || 'submit'
+  const tapped = await shell(`input tap ${button.at.x} ${button.at.y}`)
+  if (shellFailed(tapped)) return end('warn', `${typed}, could not tap "${label}" (${why(tapped)})`, `Tap "${label}" on the device by hand.`, screen, progress(n))
+  const deadline = host.now() + SIGN_IN_TIMEOUT_MS
+  let read: ScreenRead = screen
+  // The form counts as gone after two reads in a row without it: a "Signing in…" dialog in front of it for a moment
+  // is not a sign-in.
+  let gone = 0
+  for (;;) {
+    await host.delay(FIRST_SCREEN_SETTLE_MS, signal)
+    if (signal?.aborted) return end('ok', `${typed}, tapped "${label}"; cancelled before the result was read`, null, { skipped: 'cancelled before the screen was read again' }, progress(n, true))
+    read = await readScreen(host, adb, serial)
+    if ('skipped' in read) return end('warn', `${typed}, tapped "${label}"; then ${read.skipped}`, 'Check on the device whether the sign-in worked.', read, progress(n, true))
+    gone = wall(read) ? 0 : gone + 1
+    if (gone >= 2) return end('ok', `signed in: ${typed}, tapped "${label}"`, null, read, { fields: n, submitted: true, signed_in: true })
+    if (host.now() >= deadline) break
+  }
+  return end(
+    'warn',
+    gone > 0
+      ? `${typed}, tapped "${label}"; the sign-in form went only at the last read, after ${SIGN_IN_TIMEOUT_MS / 1000} s`
+      : `${typed}, tapped "${label}", but the sign-in form was still on screen after ${SIGN_IN_TIMEOUT_MS / 1000} s`,
+    gone > 0 ? 'Check on the device whether the sign-in worked.' : 'Check the test account on the device: a wrong password, a second factor or a captcha keeps the form up.',
+    read,
+    progress(n, true)
+  )
 }
 
 export function firstScreenStep(screen: FirstScreen, pkg: string): OpenStep {

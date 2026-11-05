@@ -9,6 +9,8 @@ import { defaultDeviceSettings, KEEP_DEVICE_SETTINGS, type DeviceSettings } from
 import {
   BOOT_POLL_MS,
   FIRST_SCREEN_SETTLE_MS,
+  SIGN_IN_TIMEOUT_MS,
+  scrubScreen,
   freeEmulatorPort,
   NETWORK_POLL_MS,
   NETWORK_SETTLE_TIMEOUT_MS,
@@ -87,6 +89,10 @@ interface Sim {
   dumps?: ExecResult[]
   /** `input tap x y`; default: success. */
   tap?: (line: string) => ExecResult
+  /** `input text ...` / `input keyevent ...` (sign-in, M2); default: success. */
+  input?: (line: string) => ExecResult
+  /** Reads of `dumpsys input_method` in order (the last one repeats); default: the keyboard is not shown. */
+  ime?: ExecResult[]
   /**
    * `dumpsys connectivity` reads in order (the last one repeats); default: a default network unless the last airplane
    * mode command turned it on.
@@ -136,7 +142,9 @@ function simHost(sim: Sim, over: Partial<OpenHost> = {}): OpenHost {
       if (line.startsWith('pidof')) return sim.pidof ?? ok('4242\n')
       if (line.startsWith('uiautomator dump') && sim.dumps) return (sim.dumps.length > 1 ? sim.dumps.shift() : sim.dumps[0]) as ExecResult
       if (line.startsWith('input tap')) return sim.tap?.(line) ?? ok()
+      if (line.startsWith('input text ') || line.startsWith('input keyevent ')) return sim.input?.(line) ?? ok()
       if (line.startsWith('uiautomator dump')) return sim.dump ?? ok(dumpXml('dev.nawi.sample', ['text="Welcome back" class="android.widget.TextView" bounds="[0,100][1080,200]"']))
+      if (line.startsWith('dumpsys input_method')) return (sim.ime ? (sim.ime.length > 1 ? sim.ime.shift() : sim.ime[0]) : ok('    mInputShown=false\n')) as ExecResult
       if (line.startsWith('dumpsys connectivity')) {
         if (sim.network) return (sim.network.length > 1 ? sim.network.shift() : sim.network[0]) as ExecResult
         return ok(`Active default network: ${airplane ? 'none' : '100'}\n`)
@@ -202,7 +210,7 @@ describe('openApp on a connected device', () => {
     ])
     expect(r.permissions, 'READ_EXTERNAL_STORAGE has maxSdkVersion 32 < API 34, so it is not granted').toEqual({ granted: ['android.permission.CAMERA'], not_granted: [] })
     expect(r.launched).toEqual({ activity: 'dev.nawi.sample.MainActivity', total_time_ms: 412, pid: 4242 })
-    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'settings:skipped', 'launch:ok', 'onboarding:skipped', 'first_screen:ok'])
+    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'settings:skipped', 'launch:ok', 'onboarding:skipped', 'sign_in:skipped', 'first_screen:ok'])
     expect(r.first_screen, 'the app\'s own screen, nothing in front').toEqual({ package: 'dev.nawi.sample', blockers: [] })
     expect(spawned, 'nothing booted when a device is connected').toEqual([])
     expect(r.settings, 'a physical phone keeps its own settings by default').toEqual({ requested: KEEP_DEVICE_SETTINGS, applied: [], not_applied: [] })
@@ -668,7 +676,7 @@ describe('openApp onboarding taps (roadmap M2c part 2)', () => {
     ])
     expect(step(r, 'onboarding')).toEqual({ id: 'onboarding', status: 'ok', summary: 'tapped 2: intro "Skip", permission dialog "While using the app"', fix: null })
     expect(r.first_screen, 'what is left after the taps: the app itself').toEqual({ package: 'dev.nawi.sample', blockers: [] })
-    expect(order(r)).toEqual(['launch:ok', 'onboarding:ok', 'first_screen:ok'])
+    expect(order(r)).toEqual(['onboarding:ok', 'sign_in:skipped', 'first_screen:ok'])
     expect(announced.slice(-2), 'steps announced in the order they are reported').toEqual(['onboarding', 'first_screen'])
     expect(adbCalls().filter((c) => c.includes('uiautomator')), 'one read per screen').toHaveLength(3)
   })
@@ -743,5 +751,162 @@ describe('openApp onboarding taps (roadmap M2c part 2)', () => {
     expect(step(r, 'onboarding')).toEqual({ id: 'onboarding', status: 'skipped', summary: 'no onboarding taps to replay (none saved in a profile)', fix: null })
     expect(r.onboarding).toBeNull()
     expect(taps()).toEqual([])
+  })
+})
+
+describe('openApp sign-in with a test account (roadmap M2, last slice)', () => {
+  const PKG = 'dev.nawi.sample'
+  const phone = (): Partial<Sim> => ({ devices: [{ serial: 'R58M', api: 34 }] })
+  const field = (id: string, text: string, top: number, password = false) =>
+    `resource-id="${PKG}:id/${id}" class="android.widget.EditText" text="${text}" password="${password}" bounds="[100,${top}][980,${top + 100}]"`
+  const signInButton = 'text="Sign in" class="android.widget.Button" clickable="true" bounds="[100,1300][980,1400]"'
+  const form = (email = 'Email') => dumpXml(PKG, [field('email', email, 500), field('password', '', 700, true), signInButton])
+  const home = dumpXml(PKG, ['text="Your albums" class="android.widget.TextView" bounds="[0,100][1080,200]"'])
+  const spec = {
+    fields: [
+      { field: { resource_id: `${PKG}:id/email` }, value: '${env.TEST_EMAIL}' },
+      { field: { resource_id: `${PKG}:id/password` }, value: '${secret.app_pw}' }
+    ],
+    submit: { text: 'Sign in' }
+  }
+  const inputs = { env: { TEST_EMAIL: 'qa@example.test' }, secrets: { app_pw: 'hunter2%s' } }
+  const inputLines = () => adbCalls().filter((c) => / shell input /.test(c)).map((c) => c.replace('R58M shell ', ''))
+
+  it('taps, clears and types into each field, taps submit, and waits for the form to go', async () => {
+    const announced: string[] = []
+    const r = await openApp(req({ signIn: spec, inputs, onStep: (id) => announced.push(id) }), simHost({ ...phone(), dumps: [ok(form()), ok(form('qa@example.test')), ok(form('qa@example.test')), ok(form('qa@example.test')), ok(home)] } as Sim))
+    expect(inputLines(), 'the exact input sent to the device, in order').toEqual([
+      'input tap 540 550',
+      'input keyevent KEYCODE_MOVE_END KEYCODE_DEL KEYCODE_DEL KEYCODE_DEL KEYCODE_DEL KEYCODE_DEL',
+      "input text 'qa@example.test'",
+      'input tap 540 750',
+      "input text 'hunter2%'",
+      "input text 's'",
+      'input tap 540 1350'
+    ])
+    expect(r.sign_in).toEqual({ fields: 2, submitted: true, signed_in: true })
+    expect(step(r, 'sign_in')).toEqual({ id: 'sign_in', status: 'ok', summary: 'signed in: typed into 2 fields, tapped "Sign in"', fix: null })
+    expect(r.first_screen, 'the screen after the sign-in').toEqual({ package: PKG, blockers: [] })
+    expect(r.steps.map((s) => s.id).slice(-3)).toEqual(['onboarding', 'sign_in', 'first_screen'])
+    expect(announced).toContain('sign_in')
+  })
+
+  it('never puts a secret value in the result, even when the screen shows it afterwards', async () => {
+    const echoed = dumpXml(PKG, ['text="Sign in" class="android.widget.Button" clickable="true" bounds="[100,1300][980,1400]"', field('code', 'hunter2%s', 500), 'text="Wrong code hunter2%s" class="android.widget.TextView" bounds="[0,100][1080,200]"'])
+    const r = await openApp(
+      req({ signIn: { fields: [{ field: { resource_id: `${PKG}:id/code` }, value: '${secret.app_pw}' }], submit: { text: 'Sign in' } }, inputs }),
+      simHost({ ...phone(), dumps: [ok(echoed)] } as Sim)
+    )
+    expect(JSON.stringify(r).includes('hunter2'), JSON.stringify(r)).toBe(false)
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'warn', summary: `typed into 1 field, tapped "Sign in", but the sign-in form was still on screen after ${SIGN_IN_TIMEOUT_MS / 1000} s` })
+    expect(r.sign_in).toEqual({ fields: 1, submitted: true, signed_in: false })
+  })
+
+  it('without the values it types nothing and says which variables to set', async () => {
+    const r = await openApp(req({ signIn: spec, inputs: { env: {}, secrets: {} } }), simHost({ ...phone(), dumps: [ok(form())] } as Sim))
+    expect(inputLines()).toEqual([])
+    expect(step(r, 'sign_in')).toEqual({
+      id: 'sign_in',
+      status: 'warn',
+      summary: 'not signed in: the sign-in form needs ${env.TEST_EMAIL}, ${secret.app_pw}, which this open was not given',
+      fix: "Set TEST_EMAIL, NAWI_SECRET_app_pw in the shell that runs `nawi mobile-open` (or pass mobile_open's secrets/env), then open the app again."
+    })
+    expect(r.ok, 'the app still runs').toBe(true)
+  })
+
+  it('does nothing when no sign-in form is in front of the app (already signed in)', async () => {
+    const r = await openApp(req({ signIn: spec, inputs }), simHost({ ...phone(), dumps: [ok(home)] } as Sim))
+    expect(inputLines()).toEqual([])
+    expect(step(r, 'sign_in')).toEqual({ id: 'sign_in', status: 'skipped', summary: 'no sign-in form in front of the app', fix: null })
+    expect(r.sign_in).toBeNull()
+  })
+
+  it('stops before typing anything when a field locator does not match, with the field it could not find', async () => {
+    const r = await openApp(req({ signIn: { ...spec, fields: [{ field: { resource_id: `${PKG}:id/user` }, value: '${env.TEST_EMAIL}' }] }, inputs }), simHost({ ...phone(), dumps: [ok(form())] } as Sim))
+    expect(inputLines()).toEqual([])
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'warn', summary: 'not signed in: no sign-in field 1 matching resource_id "dev.nawi.sample:id/user" on the screen' })
+    expect(r.sign_in).toEqual({ fields: 0, submitted: false, signed_in: false })
+  })
+
+  it('hides the on-screen keyboard (Back, only while Android says it is shown) and finds submit on a fresh screen', async () => {
+    // The keyboard pushed the app up: submit is at another place than before, and the dump never shows the keyboard.
+    const raised = form('qa@example.test').replace('[100,1300][980,1400]', '[100,900][980,1000]')
+    const r = await openApp(
+      req({ signIn: spec, inputs }),
+      simHost({ ...phone(), dumps: [ok(form()), ok(form('qa@example.test')), ok(raised), ok(form('qa@example.test')), ok(home)], ime: [ok('    mInputShown=false\n'), ok('    mInputShown=true\n'), ok('    mInputShown=false\n')] } as Sim)
+    )
+    expect(inputLines().slice(-2), 'Back, then submit where it is once the keyboard is gone').toEqual(['input keyevent KEYCODE_BACK', 'input tap 540 1350'])
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'ok', summary: 'signed in: typed into 2 fields, tapped "Sign in"' })
+  })
+
+  it('never presses Back when the keyboard is not shown (Back would leave the sign-in screen)', async () => {
+    await openApp(req({ signIn: spec, inputs }), simHost({ ...phone(), dumps: [ok(form()), ok(form('x')), ok(form('x')), ok(home)], ime: [ok('    mInputShown=false\n')] } as Sim))
+    expect(inputLines().filter((l) => l.includes('KEYCODE_BACK'))).toEqual([])
+  })
+
+  it('does not tap a submit button another window is drawn over', async () => {
+    const overlay = form('qa@example.test').replace('</hierarchy>', '<node package="com.example.chathead" bounds="[0,1200][1080,2400]"/></hierarchy>')
+    const r = await openApp(req({ signIn: spec, inputs }), simHost({ ...phone(), dumps: [ok(form()), ok(overlay)] } as Sim))
+    expect(inputLines().filter((l) => l === 'input tap 540 1350'), 'no tap on the other window').toEqual([])
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'warn', summary: 'typed into 2 fields, not submitted: the sign-in button (text "Sign in") is covered by com.example.chathead' })
+  })
+
+  it('a device that refuses the typing is reported without its own words (they could echo the value)', async () => {
+    const r = await openApp(req({ signIn: spec, inputs }), simHost({ ...phone(), dumps: [ok(form())], input: (l) => (l.startsWith('input text') ? failed(`Error: cannot type ${l}`) : ok()) } as Sim))
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'warn', summary: 'not signed in: could not type into sign-in field 1 (the device refused the input)' })
+    expect(JSON.stringify(r).includes('qa@example.test') || JSON.stringify(r).includes('hunter2'), 'no typed value').toBe(false)
+  })
+
+  it('leaves a sign-in form alone while Android\'s permission prompt is in front of it', async () => {
+    const PROMPT = 'com.google.android.permissioncontroller'
+    const both = form().replace('</hierarchy>', `<node package="${PROMPT}" bounds="[0,800][1080,1600]"><node text="Allow" class="android.widget.Button" package="${PROMPT}" clickable="true" enabled="true" bounds="[100,1000][980,1100]"/></node></hierarchy>`)
+    const r = await openApp(req({ signIn: spec, inputs }), simHost({ ...phone(), dumps: [ok(both)] } as Sim))
+    expect(inputLines()).toEqual([])
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'warn', summary: 'not signed in: a permission prompt is in front of the sign-in form' })
+  })
+
+  it('scrubScreen replaces typed secrets (longest first) in the text read from the screen only', () => {
+    const screen = { package: PKG, blockers: [{ kind: 'consent' as const, summary: 'a consent screen ("ok abc123")', tap: { text: 'ok abc123' }, tap_label: 'abc', fix: 'Tap "abc".' }] }
+    expect(scrubScreen(screen, [['short', 'abc'], ['long', 'abc123']])).toEqual({
+      package: PKG,
+      blockers: [{ kind: 'consent', summary: 'a consent screen ("ok ${secret.long}")', tap: { text: 'ok ${secret.long}' }, tap_label: '${secret.short}', fix: 'Tap "${secret.short}".' }]
+    })
+  })
+
+  it('a common secret value never rewrites the rest of the result (status, serial, package)', async () => {
+    const r = await openApp(req({ signIn: spec, inputs: { env: { TEST_EMAIL: 'qa@example.test' }, secrets: { app_pw: 'ok' } } }), simHost({ ...phone(), dumps: [ok(form()), ok(form('x')), ok(form('x')), ok(home)] } as Sim))
+    expect(r.target?.serial).toBe('R58M')
+    expect(r.package).toBe(PKG)
+    expect(r.steps.every((s) => ['ok', 'warn', 'fail', 'skipped'].includes(s.status)), JSON.stringify(r.steps)).toBe(true)
+  })
+
+  it('reports a sign-in only once the form stayed gone for two reads (a "Signing in…" dialog is not one)', async () => {
+    const dialog = `<hierarchy rotation="0"><node package="${PKG}" class="android.widget.FrameLayout" bounds="[200,1000][880,1300]"><node text="Signing in…" class="android.widget.TextView" package="${PKG}" enabled="true" bounds="[220,1100][860,1200]"/></node></hierarchy>`
+    const wrong = form('qa@example.test').replace('</node></hierarchy>', '<node text="Wrong password" class="android.widget.TextView" package="dev.nawi.sample" enabled="true" bounds="[100,1450][980,1500]"/></node></hierarchy>')
+    const r = await openApp(req({ signIn: spec, inputs }), simHost({ ...phone(), dumps: [ok(form()), ok(form('x')), ok(form('x')), ok(dialog), ok(wrong)] } as Sim))
+    expect(r.sign_in).toEqual({ fields: 2, submitted: true, signed_in: false })
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'warn', summary: `typed into 2 fields, tapped "Sign in", but the sign-in form was still on screen after ${SIGN_IN_TIMEOUT_MS / 1000} s` })
+  })
+
+  it('a cancel after the last field never submits the form, and says how many fields were typed into', async () => {
+    const stop = new AbortController()
+    const host = simHost({ ...phone(), dumps: [ok(form()), ok(form('x')), ok(form('x')), ok(home)], input: (l) => (l === "input text 's'" ? (stop.abort(new Error('cancelled by test')), ok()) : ok()) } as Sim)
+    const r = await openApp(req({ signIn: spec, inputs, signal: stop.signal }), host)
+    expect(inputLines().filter((l) => l === 'input tap 540 1350'), 'no submit after the cancel').toEqual([])
+    expect(r.sign_in).toEqual({ fields: 2, submitted: false, signed_in: false })
+    expect(step(r, 'sign_in')).toMatchObject({ status: 'skipped', summary: 'cancelled after typing into 2 of 2 sign-in fields' })
+    expect(r.ok, 'the app still runs').toBe(true)
+  })
+
+  it('hides the keyboard before the next field too, so its tap never lands on a key', async () => {
+    await openApp(req({ signIn: spec, inputs }), simHost({ ...phone(), dumps: [ok(form()), ok(form('x')), ok(form('x')), ok(form('x')), ok(home)], ime: [ok('    mInputShown=true\n'), ok('    mInputShown=false\n')] } as Sim))
+    const lines = inputLines()
+    expect(lines.indexOf('input keyevent KEYCODE_BACK'), lines.join('\n')).toBe(lines.indexOf('input tap 540 750') - 1)
+  })
+
+  it('announces sign_in, then first_screen, in the order the steps are reported', async () => {
+    const announced: string[] = []
+    await openApp(req({ signIn: spec, inputs, onStep: (id) => announced.push(id) }), simHost({ ...phone(), dumps: [ok(home)] } as Sim))
+    expect(announced.slice(-2)).toEqual(['sign_in', 'first_screen'])
   })
 })

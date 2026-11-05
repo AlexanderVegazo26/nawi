@@ -280,6 +280,28 @@ describe('mobile_open', () => {
     expect(readFileSync(savedProfile(), 'utf8')).toBe(before)
   })
 
+  it('passes a profile\'s sign_in and the call\'s env/secrets to openApp, and keeps the section when it saves', async () => {
+    rmSync(savedProfile(), { force: true })
+    openResult = running()
+    await open({ file: apkPath() })
+    const parsed = parseMobileProfile(readFileSync(savedProfile(), 'utf8'))
+    if (!parsed.ok) throw new Error('fixture profile')
+    const signIn = { fields: [{ field: { resource_id: 'dev.nawi.sample:id/password' }, value: '${secret.app_pw}' }], submit: { text: 'Sign in' } }
+    writeFileSync(savedProfile(), stringifyMobileProfile({ ...parsed.profile, sign_in: signIn }))
+    openCalls.length = 0
+    openResult = running({ onboarding: { tapped: [{ when: 'intro', tap: { text: 'Skip' }, label: 'Skip', learned: true }] } })
+    await open({ file: savedProfile(), learn_onboarding: true, env: { TEST_EMAIL: 'qa@example.test' }, secrets: { app_pw: 'pw' } })
+    expect(openCalls[0]).toMatchObject({ signIn, inputs: { env: { TEST_EMAIL: 'qa@example.test' }, secrets: { app_pw: 'pw' } } })
+    const text = readFileSync(savedProfile(), 'utf8')
+    const again = parseMobileProfile(text)
+    expect(again.ok && again.profile.sign_in, 'rewritten with the learned tap, sign_in kept').toEqual(signIn)
+    expect(text.includes('qa@example.test') || /: pw$/m.test(text), 'no value saved').toBe(false)
+
+    openCalls.length = 0
+    await open({ file: apkPath() })
+    expect(openCalls[0], 'an .apk has no sign-in').toMatchObject({ signIn: null })
+  })
+
   it('says so when a full onboarding section leaves a learned tap out', async () => {
     rmSync(savedProfile(), { force: true })
     openResult = running()

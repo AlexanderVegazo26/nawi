@@ -24,6 +24,7 @@ function outcome(over: Partial<OpenOutcome> = {}): OpenOutcome {
     launched: { activity: 'com.example.demo.MainActivity', total_time_ms: 812, pid: 4242 },
     first_screen: null,
     onboarding: null,
+    sign_in: null,
     steps: [
       { id: 'doctor', status: 'ok', summary: 'virtual device loop-api36 (API 36)', fix: null },
       { id: 'boot', status: 'ok', summary: 'loop-api36 booted as emulator-5560', fix: null },

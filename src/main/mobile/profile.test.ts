@@ -67,7 +67,13 @@ describe('mobile profile format', () => {
     ['an onboarding tap past a sign-in form', { onboarding: [{ when: 'login_wall', tap: { text: 'Sign in' } }] } as unknown as Partial<MobileProfile>, 'onboarding[0].when'],
     ['a locator with a newline', { onboarding: [{ when: 'intro', tap: { text: 'Skip\nreboot' } }] }, 'onboarding[0].tap.text'],
     ['a locator field Nawi does not match on', { onboarding: [{ when: 'intro', tap: { class: 'Button' } }] } as unknown as Partial<MobileProfile>, 'onboarding[0].tap'],
-    ['more than 20 onboarding taps', { onboarding: Array.from({ length: 21 }, (_, i) => ({ when: 'intro' as const, tap: { text: `Next ${i}` } })) }, 'onboarding']
+    ['more than 20 onboarding taps', { onboarding: Array.from({ length: 21 }, (_, i) => ({ when: 'intro' as const, tap: { text: `Next ${i}` } })) }, 'onboarding'],
+    ['a password written into the profile', { sign_in: { fields: [{ field: { text: 'Password' }, value: 'hunter2' }], submit: { text: 'Sign in' } } }, 'sign_in.fields[0].value'],
+    ['a value with text around the reference', { sign_in: { fields: [{ field: { text: 'Email' }, value: 'qa+${env.RUN}@example.test' }], submit: { text: 'Sign in' } } }, 'sign_in.fields[0].value'],
+    ['a vars reference (profiles have no vars)', { sign_in: { fields: [{ field: { text: 'Email' }, value: '${vars.email}' }], submit: { text: 'Sign in' } } }, 'sign_in.fields[0].value'],
+    ['a sign-in without fields', { sign_in: { fields: [], submit: { text: 'Sign in' } } }, 'sign_in.fields'],
+    ['a sign-in without a submit button', { sign_in: { fields: [{ field: { text: 'Email' }, value: '${env.E}' }] } } as unknown as Partial<MobileProfile>, 'sign_in.submit'],
+    ['an empty submit locator', { sign_in: { fields: [{ field: { text: 'Email' }, value: '${env.E}' }], submit: {} } }, 'sign_in.submit']
   ])('refuses %s, naming the field', (_what, over, path) => {
     const r = parseMobileProfile(stringifyMobileProfile({ ...profile(), ...over } as MobileProfile))
     expect(r.ok).toBe(false)
@@ -85,6 +91,22 @@ describe('mobile profile format', () => {
     expect(parseMobileProfile(stringifyMobileProfile(taps))).toEqual({ ok: true, profile: taps })
     const r = parseMobileProfile(stringifyMobileProfile(profile()))
     expect(r.ok && r.profile.onboarding, 'no onboarding section: nothing to replay').toBeUndefined()
+  })
+
+  it('round-trips a sign_in section of references, and still loads a profile without one', () => {
+    const signIn = profile({
+      sign_in: {
+        fields: [
+          { field: { resource_id: 'dev.nawi.sample:id/email' }, value: '${env.TEST_EMAIL}' },
+          { field: { resource_id: 'dev.nawi.sample:id/password' }, value: '${secret.app_pw}' }
+        ],
+        submit: { text: 'Sign in' }
+      }
+    })
+    const text = stringifyMobileProfile(signIn)
+    expect(parseMobileProfile(text)).toEqual({ ok: true, profile: signIn })
+    const r = parseMobileProfile(stringifyMobileProfile(profile()))
+    expect(r.ok && r.profile.sign_in, 'no sign_in section: no sign-in').toBeUndefined()
   })
 
   it('refuses YAML aliases and duplicate keys', () => {

@@ -1,4 +1,6 @@
 import { resolve } from 'node:path'
+import { MAX_MOBILE_PROFILE_BYTES, MOBILE_PROFILE_SUFFIX } from '../shared/mobile'
+import { readBoundedText, type TextFs } from './run'
 import type { ApkInfo } from '../main/mobile/apk'
 import type { CheckStatus, MobileDoctorReport } from '../main/mobile/doctor'
 import type { FrameworkInfo } from '../main/mobile/framework'
@@ -117,6 +119,9 @@ export const MOBILE_OPEN_USAGE = `nawi mobile-open <file.apk | profile.nawi.mobi
   repeats the same setup when passed instead of the .apk, including its onboarding taps (tapped past the
   first-run screens after launch). --learn-onboarding also taps past the permission prompts, consent and
   intro screens Nawi recognises (accepting them on that device) and saves those taps in the profile.
+  A profile's sign_in section fills in a sign-in form still in front of the app: its \${secret.name} values
+  come from NAWI_SECRET_<name> (or NAWI_SECRET_<NAME>), \${env.NAME} from this shell; only the names the
+  profile mentions are sent, and never saved.
   Exit 0 when the app is running, 1 when not.`
 
 export interface MobileOpenArgs {
@@ -162,6 +167,14 @@ export function parseMobileOpenArgs(argv: string[], cwd: string): MobileOpenArgs
   if (file === undefined) throw new MobileUsageError('Which app? nawi mobile-open <file.apk | profile.nawi.mobile.yaml>')
   if (out.profile !== undefined && out.save_profile === false) throw new MobileUsageError('--profile and --no-profile contradict each other.')
   return { file: resolve(cwd, file), ...out }
+}
+
+/**
+ * The profile text the CLI may read to find its sign_in references, or null: only a regular *.nawi.mobile.yaml
+ * within the app's size limit; anything else is left for the app to refuse with the real reason.
+ */
+export function readProfileText(file: string, fs: TextFs): string | null {
+  return file.toLowerCase().endsWith(MOBILE_PROFILE_SUFFIX) ? readBoundedText(file, MAX_MOBILE_PROFILE_BYTES, fs) : null
 }
 
 const STEP_MARK: Record<OpenStepStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL', skipped: '-   ' }

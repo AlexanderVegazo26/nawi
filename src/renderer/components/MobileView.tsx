@@ -34,6 +34,7 @@ const STEP_LABEL: Record<MobileStepId, string> = {
   settings: 'Device settings',
   launch: 'Launch',
   onboarding: 'Get past first-run screens',
+  sign_in: 'Sign in',
   first_screen: 'First screen'
 }
 

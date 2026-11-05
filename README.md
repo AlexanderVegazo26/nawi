@@ -541,11 +541,31 @@ alone.
   tapped, at most 10 taps; a permission-prompt tap only lands on Android's
   prompt, any other only on the app, and a locator that matches two elements
   is never pressed). Without the flag only saved taps are made, and a sign-in
-  form is never tapped past. `first_screen` then reports what is left.
+  form is never tapped past by a tap. `first_screen` then reports what is left.
+  **Sign-in with a test account** (`sign_in` in the profile, `src/main/mobile/sign-in.ts`):
+  write the form's fields and submit button into the profile, each value a single
+  `${secret.name}` or `${env.NAME}` reference (anything else is refused, so no
+  account data is stored):
+  ```yaml
+  sign_in:
+    fields:
+      - { field: { resource_id: com.example:id/email }, value: "${env.TEST_EMAIL}" }
+      - { field: { resource_id: com.example:id/password }, value: "${secret.app_password}" }
+    submit: { text: Sign in }
+  ```
+  When a sign-in form is still in front of the app after the onboarding taps,
+  Nawi taps each field, clears it, types its value (`input text`, printable
+  ASCII only) and taps submit, then waits up to 20 s for the form to go. The
+  CLI takes `${secret.name}` from `NAWI_SECRET_<name>` and `${env.NAME}` from the
+  shell (only the names the profile mentions are sent); MCP callers pass
+  `secrets`/`env`. The `sign_in` step reports fields typed, submitted and
+  signed in, never the values; secret values are scrubbed from the whole
+  result. It never types under Android's permission prompt, and hides the
+  on-screen keyboard (Back, only while it is shown) before it looks for submit. Values reach the device as adb arguments: use a test account.
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
   `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
   **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
-  step (read, find a device, boot, install, grant, device settings, launch, first-run screens, first screen) as it happens, with
+  step (read, find a device, boot, install, grant, device settings, launch, first-run screens, sign in, first screen) as it happens, with
   Cancel, the one fix when a step fails, and Try again. Once the app runs, its
   live screen is shown next to the steps (`adb exec-out screencap`, one frame at
   a time, paused while the view is hidden; only for a device the window opened
@@ -655,8 +675,9 @@ CDP selectors and the MCP projection/revision model.
   virtual device and its screen is shown live, but there is no inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
-  learned (`--learn-onboarding`) or saved in the profile, and a sign-in wall
-  still needs a person (no test-account secrets yet). `.aab` bundles and zip64 APKs are refused
+  learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is
+  filled in only from a hand-written `sign_in` section (Nawi does not propose
+  its locators yet; values from `NAWI_SECRET_*`/env only, no OS keychain). `.aab` bundles and zip64 APKs are refused
   with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from

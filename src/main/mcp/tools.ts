@@ -887,6 +887,9 @@ export interface MobileOpenArgs {
   profile?: string
   /** Also tap the first-run blockers Nawi names a tap for, and save those taps in the profile's onboarding. */
   learn_onboarding?: boolean
+  /** Values for the profile's sign_in `${env.NAME}` / `${secret.name}` references. Never stored or reported. */
+  env?: Record<string, string>
+  secrets?: Record<string, string>
 }
 
 /**
@@ -926,6 +929,8 @@ export async function openMobileFile(
     settingsOnPhone: fromProfile?.target?.kind === 'device',
     onboarding: fromProfile?.onboarding ?? null,
     learnOnboarding: args.learn_onboarding ?? false,
+    signIn: fromProfile?.sign_in ?? null,
+    inputs: { env: args.env, secrets: args.secrets },
     headless: args.headless,
     bootTimeoutMs: args.boot_timeout_ms,
     signal: opts.signal,
@@ -997,14 +1002,18 @@ const mobileOpen = defineTool({
     'pid}), first_screen ({package, blockers}: the screen read once with uiautomator after launch; each blocker has ' +
     'kind permission_dialog/consent/intro/login_wall, summary, tap (a {resource_id|content_desc|text} locator for the ' +
     'element that gets past it, null for a sign-in form) and fix), onboarding ({tapped: [{when, tap, label, ' +
-    'learned}]} or null) and per-step status ' +
-    '(doctor/boot/install/grant/settings/launch/onboarding/first_screen: ok/warn/fail/skipped with its own fix). ' +
+    'learned}]} or null), sign_in ({fields, submitted, signed_in} or null) and per-step status ' +
+    '(doctor/boot/install/grant/settings/launch/onboarding/sign_in/first_screen: ok/warn/fail/skipped with its own fix). ' +
     'Onboarding: a profile\'s onboarding taps are replayed after launch (while a saved element is on screen it is ' +
     'tapped and the screen read again, at most 10 taps; a permission_dialog tap lands only on Android\'s prompt, ' +
     'others only on the app); first_screen then shows what is left. learn_onboarding: true also taps the blockers ' +
     'Nawi names a tap for (this accepts consent screens on that device) and saves them in the profile\'s ' +
     'onboarding, so one open learns the sequence; without it Nawi taps only saved taps. A sign-in form is never ' +
-    'tapped past. ' +
+    'tapped past: with a profile whose sign_in section names the form\'s fields and submit button, a sign-in form ' +
+    'still in front of the app is filled in (each field tapped, cleared and typed into with the value of its ' +
+    '${secret.name} / ${env.NAME} reference from this call\'s secrets / env, then submit tapped, then up to 20 s for ' +
+    'the form to go); sign_in reports {fields, submitted, signed_in}, never the values, and secret values are ' +
+    'scrubbed from everything returned. ' +
     'A device or setup problem is a ' +
     'normal result with ok: false, not an error. ' +
     'On success it saves the profile (app path + SHA-256, target, permissions, activity, screen: the UI framework ' +
@@ -1025,6 +1034,8 @@ const mobileOpen = defineTool({
     boot_timeout_ms: z.number().int().min(10_000).max(900_000).optional().describe('How long to wait for a virtual device to boot (180000).'),
     save_profile: z.boolean().default(true),
     learn_onboarding: z.boolean().default(false).describe('Tap past the first-run screens Nawi recognises and save those taps in the profile.'),
+    env: inputMap('env values').describe('Values for the profile sign_in ${env.NAME} references.'),
+    secrets: inputMap('secrets').describe('Values for the profile sign_in ${secret.name} references. Never stored or reported.'),
     profile: z.string().min(1).max(MAX_FLOW_PATH).optional().describe('Where to save the profile (absolute, *.nawi.mobile.yaml).')
   }),
   async run(args, ctx) {

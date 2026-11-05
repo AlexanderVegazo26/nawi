@@ -6,8 +6,10 @@ import { Document, parseDocument } from 'yaml'
 import { z } from 'zod'
 import { within } from '../confine'
 import { formatPath } from '../../shared/flow/yaml'
+import { MAX_MOBILE_PROFILE_BYTES, MOBILE_PROFILE_SUFFIX } from '../../shared/mobile'
 import { APP_FRAMEWORKS, READ_STRATEGIES } from './framework'
 import { LOCATOR_FIELD_RE, MAX_LOCATOR_FIELD, MAX_ONBOARDING_ENTRIES, ONBOARDING_KINDS } from './onboarding'
+import { MAX_SIGN_IN_FIELDS, signInReference } from './sign-in'
 
 /**
  * Roadmap M1 (third slice, M1c): the mobile profile, `*.nawi.mobile.yaml`. `mobile_open` writes one after it has
@@ -15,15 +17,15 @@ import { LOCATOR_FIELD_RE, MAX_LOCATOR_FIELD, MAX_ONBOARDING_ENTRIES, ONBOARDING
  * permission list and launch activity, so a person (or a reviewed diff) can pin them. Versioned like flow files.
  * M2b adds two optional sections, so version 1 files from before still load: `screen` (the app's UI framework and how
  * its screen is read) and `device` (locale, dark mode, font scale, animations and network, set before every launch); M2c adds
- * `onboarding` (the taps that get past the first-run screens, replayed after every launch).
+ * `onboarding` (the taps that get past the first-run screens, replayed after every launch) and `sign_in` (the fields of
+ * a sign-in form, filled from `${secret.*}` / `${env.*}` references, so no account data is ever stored here).
  *
  * Every name in it is later sent to the device inside an `adb shell` command line, so the schema only accepts the
  * characters Android itself allows in package, class and permission names; nothing here is ever shell syntax.
  */
 
-export const PROFILE_SUFFIX = '.nawi.mobile.yaml'
-/** A profile is a few hundred bytes; anything this large is not one. */
-export const MAX_PROFILE_BYTES = 64 * 1024
+export const PROFILE_SUFFIX = MOBILE_PROFILE_SUFFIX
+export const MAX_PROFILE_BYTES = MAX_MOBILE_PROFILE_BYTES
 
 /** Android package name: dot-separated segments that start with a letter (the manifest rule). */
 export const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/
@@ -83,20 +85,45 @@ const locatorField = z
   .max(MAX_LOCATOR_FIELD)
   .regex(LOCATOR_FIELD_RE, 'must be one line without control characters')
 
+/** Finds one element on screen: every field given must match it exactly. */
+const LocatorShape = z
+  .object({
+    resource_id: locatorField.optional(),
+    content_desc: locatorField.optional(),
+    text: locatorField.optional()
+  })
+  .strict()
+  .refine((t) => t.resource_id !== undefined || t.content_desc !== undefined || t.text !== undefined, 'needs resource_id, content_desc or text')
+  // The refine above, for editors validating with the published JSON Schema.
+  .meta({ minProperties: 1 })
+
 const OnboardingTapShape = z
   .object({
     when: z.enum(ONBOARDING_KINDS).describe('The first-run screen this tap gets past.'),
-    tap: z
-      .object({
-        resource_id: locatorField.optional(),
-        content_desc: locatorField.optional(),
-        text: locatorField.optional()
-      })
-      .strict()
-      .refine((t) => t.resource_id !== undefined || t.content_desc !== undefined || t.text !== undefined, 'needs resource_id, content_desc or text')
-      // The refine above, for editors validating with the published JSON Schema.
-      .meta({ minProperties: 1 })
-      .describe('The element to tap: every field given must match it exactly, and exactly one element on screen must match.')
+    tap: LocatorShape.describe('The element to tap: every field given must match it exactly, and exactly one element on screen must match.')
+  })
+  .strict()
+
+const SignInShape = z
+  .object({
+    fields: z
+      .array(
+        z
+          .object({
+            field: LocatorShape.describe('The text field (an EditText of the app): every field given must match it exactly, and exactly one element on screen must match.'),
+            value: z
+              .string()
+              .max(200)
+              .refine((v) => signInReference(v) !== null, 'must be a single ${secret.name} or ${env.NAME} reference: account data never goes into a profile')
+              // The refine above, for editors validating with the published JSON Schema.
+              .meta({ pattern: '^\\$\\{\\s*(env|secret)\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\}$' })
+              .describe('What to type: ${secret.name} (CLI: NAWI_SECRET_<name>) or ${env.NAME}, given with each open.')
+          })
+          .strict()
+      )
+      .min(1)
+      .max(MAX_SIGN_IN_FIELDS),
+    submit: LocatorShape.describe('The button that sends the form.')
   })
   .strict()
 
@@ -150,7 +177,10 @@ const ProfileShape = z
       .optional()
       .describe(
         'Taps that get past the first-run screens, replayed after every launch: while one of these elements is on screen it is tapped (a permission_dialog tap only on Android\'s permission prompt, any other only on the app). Saved by mobile_open with learn_onboarding.'
-      )
+      ),
+    sign_in: SignInShape.optional().describe(
+      'A test account for a sign-in form in front of the app after the onboarding taps: each field is tapped, cleared and typed into, then submit is tapped. Values are only ${secret.name} / ${env.NAME} references, filled from each open\'s secrets and env (written by hand; mobile_open keeps it).'
+    )
   })
   .strict()
 

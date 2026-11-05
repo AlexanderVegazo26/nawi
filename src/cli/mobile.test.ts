@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ApkInfo } from '../main/mobile/apk'
 import { detectFramework } from '../main/mobile/framework'
 import type { MobileDoctorReport } from '../main/mobile/doctor'
-import { MobileUsageError, parseMobileDoctorArgs, parseMobileInspectArgs, parseMobileOpenArgs, renderApkInfo, renderDoctorReport, renderOpenResult, type MobileOpenReport } from './mobile'
+import { MobileUsageError, parseMobileDoctorArgs, parseMobileInspectArgs, parseMobileOpenArgs, readProfileText, renderApkInfo, renderDoctorReport, renderOpenResult, type MobileOpenReport } from './mobile'
 
 describe('parseMobileInspectArgs', () => {
   it('resolves a positional or --file path against the shell folder, and takes --json', () => {
@@ -172,6 +172,23 @@ describe('parseMobileOpenArgs', () => {
   })
 })
 
+describe('readProfileText (the CLI reads a profile only to find its sign_in references)', () => {
+  const fs = (size: number, isFile = true) => ({ statSync: () => ({ isFile: () => isFile, size }), readFileSync: () => 'sign_in: ...' })
+
+  it('reads a profile file within the size limit', () => {
+    expect(readProfileText('/home/u/app.nawi.mobile.yaml', fs(100))).toBe('sign_in: ...')
+  })
+
+  it.each([
+    ['an .apk', '/home/u/app.apk', fs(100)],
+    ['a profile over 64 KiB', '/home/u/app.nawi.mobile.yaml', fs(64 * 1024 + 1)],
+    ['a folder named like a profile', '/home/u/x.nawi.mobile.yaml', fs(0, false)],
+    ['a file that is gone', '/home/u/x.nawi.mobile.yaml', { statSync: () => { throw new Error('ENOENT') }, readFileSync: () => '' }]
+  ])('leaves %s to the app (null)', (_, file, f) => {
+    expect(readProfileText(file, f)).toBeNull()
+  })
+})
+
 describe('renderOpenResult', () => {
   const result: MobileOpenReport = {
     ok: true,
@@ -183,6 +200,7 @@ describe('renderOpenResult', () => {
     launched: { activity: 'com.example.Main', total_time_ms: 300, pid: 7 },
     first_screen: null,
     onboarding: null,
+    sign_in: null,
     steps: [
       { id: 'doctor', status: 'ok', summary: 'virtual device pixel-36 (API 36)', fix: null },
       { id: 'boot', status: 'ok', summary: 'pixel-36 booted as emulator-5554', fix: null },

@@ -266,6 +266,90 @@
         ],
         "additionalProperties": false
       }
+    },
+    "sign_in": {
+      "description": "A test account for a sign-in form in front of the app after the onboarding taps: each field is tapped, cleared and typed into, then submit is tapped. Values are only ${secret.name} / ${env.NAME} references, filled from each open's secrets and env (written by hand; mobile_open keeps it).",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "minItems": 1,
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "object",
+                "properties": {
+                  "resource_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+                  },
+                  "content_desc": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1,
+                "description": "The text field (an EditText of the app): every field given must match it exactly, and exactly one element on screen must match."
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 200,
+                "pattern": "^\\$\\{\\s*(env|secret)\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\}$",
+                "description": "What to type: ${secret.name} (CLI: NAWI_SECRET_<name>) or ${env.NAME}, given with each open."
+              }
+            },
+            "required": [
+              "field",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "submit": {
+          "type": "object",
+          "properties": {
+            "resource_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+            },
+            "content_desc": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "The button that sends the form."
+        }
+      },
+      "required": [
+        "fields",
+        "submit"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
