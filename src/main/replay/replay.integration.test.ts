@@ -427,6 +427,65 @@ steps:
     expect(run.steps.every((s) => s.shots === undefined), 'no shots at all').toBe(true)
   }, 20_000)
 
+  /** The real client, except that commands `hangs` picks never answer; records every method sent. */
+  const hangingOn = (hangs: (method: string, params?: Record<string, unknown>) => boolean) => {
+    const sent: string[] = []
+    return {
+      sent,
+      client: {
+        send: <T,>(method: string, params?: Record<string, unknown>, sid?: string): Promise<T> => {
+          sent.push(method === 'Input.dispatchMouseEvent' ? `${method}:${String(params?.type)}` : method)
+          if (hangs(method, params)) return new Promise<T>(() => undefined)
+          return client.send<T>(method, params, sid)
+        },
+        on: client.on.bind(client)
+      }
+    }
+  }
+
+  it("fails a step whose Input command hangs at its timeout_ms (+ grace), not the client's 20 s command timeout, and sends nothing after it", async () => {
+    const { client: hanging, sent } = hangingOn(
+      (method, params) => method === 'Input.dispatchMouseEvent' && params?.type === 'mousePressed'
+    )
+    const started = Date.now()
+    const run = await replayFlow(
+      hanging,
+      flow([
+        { id: 'a', action: 'click', timeout_ms: 500, target: { selectors: [{ id: 'a-btn' }] } },
+        { id: 'b', action: 'click', target: { selectors: [{ id: 'b-btn' }] } }
+      ]),
+      { sessionId }
+    )
+    const took = Date.now() - started
+    expect(statuses(run), why(run)).toEqual(['a:failed', 'b:not_run'])
+    expect(run.steps[0].error).toBe(
+      "the browser did not answer Input.dispatchMouseEvent within the step's 500 ms (+2000 ms grace)"
+    )
+    expect(took, `run took ${took} ms; a hung command must end the step at 500 + 2000 ms, not at the client's 20 s`).toBeLessThan(6_000)
+    expect(
+      sent.filter((m) => m.startsWith('Input.')),
+      'mouseReleased must never follow the press the step gave up on'
+    ).toEqual(['Input.dispatchMouseEvent:mouseMoved', 'Input.dispatchMouseEvent:mousePressed'])
+  }, 15_000)
+
+  it('gives a navigate step its timeout_ms for the load after the navigation commits, and fails it there when the page stops answering', async () => {
+    let committed = false
+    const { client: hanging } = hangingOn((method) => {
+      if (method === 'Page.navigate') committed = true
+      // Every readyState poll after the navigation hangs, like a renderer stuck in a script.
+      return committed && method === 'Runtime.evaluate'
+    })
+    const started = Date.now()
+    const run = await replayFlow(hanging, flow([{ id: 'go', action: 'navigate', url: PAGE2, timeout_ms: 400 }]), {
+      sessionId,
+      openTarget: false
+    })
+    const took = Date.now() - started
+    expect(statuses(run), why(run)).toEqual(['go:failed'])
+    expect(run.steps[0].error).toBe("the browser did not answer Runtime.evaluate within the step's 400 ms (+2000 ms grace)")
+    expect(took, `run took ${took} ms`).toBeLessThan(6_000)
+  }, 15_000)
+
   it('fails a select whose option is disabled or missing, with the reason', async () => {
     const run = await replay(
       flow([{ id: 'plan', action: 'select', timeout_ms: 300, target: { selectors: [{ id: 'plan' }] }, value: 'Legacy' }])

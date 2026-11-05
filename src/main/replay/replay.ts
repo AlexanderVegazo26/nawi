@@ -191,14 +191,55 @@ export function replaySources(): string {
   return `${buildProbeSource()}\n${replaySource}`
 }
 
+/**
+ * How long past its deadline a step's CDP command may still answer. A command
+ * that started just before the deadline (the last poll, the click after the
+ * locate) gets this long; one that hangs fails the step here instead of
+ * waiting out the client's own 20-30 s command timeout.
+ */
+export const STEP_COMMAND_GRACE_MS = 2_000
+
 class Session {
+  /**
+   * While a step runs: its commands must answer by `until` on the monotonic
+   * clock. The budget comes from the run's (injectable) clock, so it matches
+   * the step's deadline; elapsed time is real, since the timers are.
+   */
+  private answerBy: { until: number; timeoutMs: number } | undefined
+
   constructor(
     private readonly client: ReplayClient,
-    private readonly sessionId: string | undefined
+    private readonly sessionId: string | undefined,
+    private readonly now: () => number
   ) {}
 
+  /** Bound every command sent until `clearLimit()` to `deadline + STEP_COMMAND_GRACE_MS`. */
+  limit(deadline: number, timeoutMs: number): void {
+    const budget = deadline - this.now() + STEP_COMMAND_GRACE_MS
+    // A clock that can't give a budget (tests' NaN clocks) leaves commands to the client's own timeout.
+    this.answerBy = Number.isFinite(budget) ? { until: performance.now() + budget, timeoutMs } : undefined
+  }
+
+  clearLimit(): void {
+    this.answerBy = undefined
+  }
+
   send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    return this.client.send<T>(method, params, this.sessionId)
+    const limit = this.answerBy
+    if (!limit) return this.client.send<T>(method, params, this.sessionId)
+    const late = (): StepFailure =>
+      new StepFailure(
+        `the browser did not answer ${method} within the step's ${limit.timeoutMs} ms (+${STEP_COMMAND_GRACE_MS} ms grace)`
+      )
+    const left = limit.until - performance.now()
+    // Past the limit, don't start anything new on the page (an input event the step no longer owns).
+    if (left <= 0) return Promise.reject(late())
+    const sent = this.client.send<T>(method, params, this.sessionId)
+    // The command may still answer (or fail) after the step gave up on it: nobody listens then.
+    sent.catch(() => undefined)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(late()), left)))
+    return Promise.race([sent, timeout]).finally(() => clearTimeout(timer))
   }
 
   async evaluate<T>(expression: string): Promise<T> {
@@ -314,7 +355,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
   if (options.signal?.aborted) return abort(stopReason(options.signal))
 
   const defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS
-  const session = new Session(client, options.sessionId)
+  const session = new Session(client, options.sessionId, now)
   const runner = new StepRunner(session, interp, now, defaultTimeoutMs)
 
   // A dialog blocks the page (and the Input command that opened it) until it
@@ -466,12 +507,15 @@ class StepRunner {
     const selectors = 'target' in step && step.target ? step.target.selectors : []
     let answer: PageAnswer | null = null
     try {
+      this.session.limit(deadline, timeoutMs)
       answer = await this.execute(step, deadline, timeoutMs)
     } catch (error) {
       record.status = 'failed'
       const message = error instanceof Error ? error.message : String(error)
       record.error = this.interp.redact(message)
       if (error instanceof StepFailure) answer = error.answer
+    } finally {
+      this.session.clearLimit()
     }
     if (answer && selectors.length > 0) {
       if (answer.found && answer.index >= 0) record.matched = { index: answer.index, selector: selectors[answer.index] }
@@ -576,7 +620,7 @@ class StepRunner {
         return this.waitFor(deadline, timeoutMs, sel, () => s.call('scroll', sel, dx, dy))
       }
       case 'navigate':
-        await this.navigate(this.interp.interpolate(step.url), timeoutMs)
+        await this.navigate(this.interp.interpolate(step.url), timeoutMs, true)
         return null
       case 'wait': {
         // With a target, wait for it to be visible (ms is ignored); without one, sleep ms.
@@ -715,11 +759,13 @@ class StepRunner {
     return last
   }
 
-  async navigate(url: string, timeoutMs: number): Promise<void> {
+  async navigate(url: string, timeoutMs: number, inStep = false): Promise<void> {
     const s = this.session
     const result = await s.send<{ errorText?: string }>('Page.navigate', { url })
     if (result.errorText) throw new StepFailure(`navigation to ${url} failed: ${result.errorText}`)
     const deadline = this.now() + timeoutMs
+    // The load wait starts once the navigation committed; in a step, so does its command limit.
+    if (inStep) this.session.limit(deadline, timeoutMs)
     const loaded = await until(deadline, this.now, async () => {
       try {
         const state = await s.evaluate<string>('document.readyState')
