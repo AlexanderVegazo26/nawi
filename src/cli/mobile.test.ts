@@ -178,11 +178,13 @@ describe('renderOpenResult', () => {
     package: 'com.example',
     target: { kind: 'avd', name: 'pixel-36', serial: 'emulator-5554', api: 36, booted: true },
     permissions: { granted: ['android.permission.CAMERA'], not_granted: [] },
+    settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }, applied: ['animations'], not_applied: [] },
     launched: { activity: 'com.example.Main', total_time_ms: 300, pid: 7 },
     steps: [
       { id: 'doctor', status: 'ok', summary: 'virtual device pixel-36 (API 36)', fix: null },
       { id: 'boot', status: 'ok', summary: 'pixel-36 booted as emulator-5554', fix: null },
-      { id: 'grant', status: 'warn', summary: 'granted 1 of 2', fix: 'Those permissions will be asked for in a dialog.' }
+      { id: 'grant', status: 'warn', summary: 'granted 1 of 2', fix: 'Those permissions will be asked for in a dialog.' },
+      { id: 'settings', status: 'ok', summary: 'animations off', fix: null }
     ],
     doctor: null,
     apk: '/home/u/app.apk',
@@ -198,6 +200,7 @@ describe('renderOpenResult', () => {
       '  ok    doctor   virtual device pixel-36 (API 36)',
       '  ok    boot     pixel-36 booted as emulator-5554',
       '  warn  grant    granted 1 of 2',
+      '  ok    settings animations off',
       '',
       'The .apk changed since the profile was saved (its SHA-256 differs); the profile now records the new one.',
       '',

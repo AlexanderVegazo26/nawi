@@ -4,8 +4,8 @@
  */
 
 /** `read` is reading the .apk; the rest are mobile_open's steps, in order. */
-export type MobileStepId = 'read' | 'doctor' | 'boot' | 'install' | 'grant' | 'launch'
-export const MOBILE_STEPS: readonly MobileStepId[] = ['read', 'doctor', 'boot', 'install', 'grant', 'launch']
+export type MobileStepId = 'read' | 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch'
+export const MOBILE_STEPS: readonly MobileStepId[] = ['read', 'doctor', 'boot', 'install', 'grant', 'settings', 'launch']
 
 export type MobileStepStatus = 'ok' | 'warn' | 'fail' | 'skipped'
 

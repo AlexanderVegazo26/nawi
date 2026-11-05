@@ -916,6 +916,11 @@ export async function openMobileFile(
     target: args.target ?? fromProfile?.target?.name ?? null,
     grant,
     activity: fromProfile?.launch.activity ?? null,
+    // A profile from before M2b has no device section: it keeps leaving the device alone. A new open gets the
+    // defaults for the device it lands on.
+    settings: fromProfile ? (fromProfile.device ?? null) : undefined,
+    // Values in a profile pinned to a phone were written for a phone; any other profile's stay off physical devices.
+    settingsOnPhone: fromProfile?.target?.kind === 'device',
     headless: args.headless,
     bootTimeoutMs: args.boot_timeout_ms,
     signal: opts.signal,
@@ -927,18 +932,23 @@ export async function openMobileFile(
   let profileError: string | null = null
   if (result.ok && args.save_profile && result.target && sha256) {
     const app = { apk: apkFile, package: apk.package, version_code: apk.version_code, version_name: apk.version_name, sha256 }
-    // From a profile, only the app facts are refreshed: the target, permissions and activity it pins (or leaves
-    // null for "best available" / "launcher") are the user's choice, and a one-off --target doesn't change them.
+    const screen = { framework: apk.framework.kind, read: apk.framework.read_strategy }
+    // From a profile, only the app facts are refreshed: the target, permissions, activity and device settings it
+    // pins (or leaves null for "best available" / "launcher" / "as it is") are the user's choice, and a one-off
+    // --target doesn't change them.
     const next: MobileProfile | null = fromProfile
       ? apkChanged || args.profile !== undefined
-        ? { ...fromProfile, app }
+        ? { ...fromProfile, app, screen }
         : null
       : {
           version: 1,
           app,
           target: { kind: result.target.kind, name: result.target.name },
           permissions: { grant: runtimePermissionsFor(apk, result.target.api) },
-          launch: { activity: result.launched?.activity ?? null }
+          launch: { activity: result.launched?.activity ?? null },
+          screen,
+          // What openApp chose for this device (its defaults, minus what its Android version lacks).
+          ...(result.settings.requested ? { device: result.settings.requested } : {})
         }
     const out = args.profile ?? (fromProfile ? args.file : defaultProfilePath(apkFile, apk.package))
     if (next === null) profile = args.file
@@ -965,15 +975,22 @@ const mobileOpen = defineTool({
     'the app) unless `target` names one (adb serial or AVD name); boots that AVD when it is not running (it keeps ' +
     'running afterwards; headless: true starts it without a window), installs the app (replacing an installed copy ' +
     'and keeping its data), grants its runtime permissions with `pm grant` so no permission dialog blocks a run ' +
-    '(grant: false skips that), and starts its launcher activity. ' +
+    '(grant: false skips that), applies device settings, and starts its launcher activity. Device settings on a ' +
+    'virtual device default to English (en-US, the app\'s own locale), light theme, font scale 1 and animations ' +
+    'off (minus what its Android version lacks), so runs see the same screen; a physical phone is left as it is ' +
+    'unless the profile was saved for that phone and its device section asks for a value (global settings such as ' +
+    'animations stay changed afterwards). ' +
     'Returns ok, fix (the one next step when not ok), target ({kind, name, serial, api, booted}), permissions ' +
-    '({granted, not_granted}), launched ({activity, total_time_ms, pid}) and per-step status ' +
-    '(doctor/boot/install/grant/launch: ok/warn/fail/skipped with its own fix). A device or setup problem is a ' +
+    '({granted, not_granted}), settings ({requested, applied, not_applied}: keys of the profile\'s device section), launched ({activity, total_time_ms, ' +
+    'pid}) and per-step status (doctor/boot/install/grant/settings/launch: ok/warn/fail/skipped with its own fix). ' +
+    'A device or setup problem is a ' +
     'normal result with ok: false, not an error. ' +
-    'On success it saves the profile (app path + SHA-256, target, permissions, activity) next to the .apk as ' +
+    'On success it saves the profile (app path + SHA-256, target, permissions, activity, screen: the UI framework ' +
+    'and how its screen is read, device: the settings) next to the .apk as ' +
     '<package>.nawi.mobile.yaml, or to `profile`; save_profile: false skips it. With a profile, its target, ' +
-    'permission list and activity are used and kept (null target: the best device; null activity: the launcher); ' +
-    'only its app facts (SHA-256, version) are updated when the .apk changed. Booting can take minutes: send a ' +
+    'permission list, activity and device settings are used and kept (null target: the best device; null activity: ' +
+    'the launcher; a null setting or no device section: leave the device as it is); only its app facts (SHA-256, ' +
+    'version, screen) are updated when the .apk changed. Booting can take minutes: send a ' +
     'progressToken in _meta to get a notifications/progress message per step. Pausing agent access or cancelling ' +
     'the call stops it before the next step. The device screen is shown in Nawi\'s window (drop the .apk there), not returned here.',
   idempotent: false,

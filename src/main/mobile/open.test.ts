@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { ApkInfo } from './apk'
 import { detectFramework } from './framework'
 import type { ExecResult } from './doctor'
+import { defaultDeviceSettings, KEEP_DEVICE_SETTINGS, type DeviceSettings } from './profile'
 import {
   BOOT_POLL_MS,
   freeEmulatorPort,
@@ -75,6 +76,8 @@ interface Sim {
   grant?: (perm: string) => ExecResult
   am?: ExecResult
   pidof?: ExecResult
+  /** `settings put ...` and `cmd ...` lines (device settings, M2b); default: success, printing what Android prints. */
+  setting?: (line: string) => ExecResult
 }
 
 const ok = (stdout = ''): ExecResult => ({ code: 0, stdout, stderr: '' })
@@ -110,6 +113,7 @@ function simHost(sim: Sim, over: Partial<OpenHost> = {}): OpenHost {
       if (line.startsWith('pm grant')) return sim.grant?.(line) ?? ok()
       if (line.startsWith('am start')) return sim.am ?? ok('Starting: Intent { cmp=x }\nStatus: ok\nLaunchState: COLD\nActivity: x\nTotalTime: 412\nWaitTime: 420\nComplete\n')
       if (line.startsWith('pidof')) return sim.pidof ?? ok('4242\n')
+      if (line.startsWith('settings put') || line.startsWith('cmd ')) return sim.setting?.(line) ?? ok(line.startsWith('cmd uimode') ? 'Night mode: no\n' : '')
       return failed(`unexpected shell ${line}`)
     },
     spawnDetached: (file, args) => {
@@ -168,8 +172,9 @@ describe('openApp on a connected device', () => {
     ])
     expect(r.permissions, 'READ_EXTERNAL_STORAGE has maxSdkVersion 32 < API 34, so it is not granted').toEqual({ granted: ['android.permission.CAMERA'], not_granted: [] })
     expect(r.launched).toEqual({ activity: 'dev.nawi.sample.MainActivity', total_time_ms: 412, pid: 4242 })
-    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'launch:ok'])
+    expect(r.steps.map((s) => `${s.id}:${s.status}`)).toEqual(['doctor:ok', 'boot:skipped', 'install:ok', 'grant:ok', 'settings:skipped', 'launch:ok'])
     expect(spawned, 'nothing booted when a device is connected').toEqual([])
+    expect(r.settings, 'a physical phone keeps its own settings by default').toEqual({ requested: KEEP_DEVICE_SETTINGS, applied: [], not_applied: [] })
   })
 
   it('uses the profile\'s permission list and activity instead of the manifest\'s, and grant [] skips granting', async () => {
@@ -336,6 +341,95 @@ describe('openApp choosing and booting a virtual device', () => {
     const r = openApp(req({ signal: stop.signal, onStep: (id) => id === 'install' && stop.abort(new Error('cancelled by test')) }), simHost({ devices: [{ serial: 'R58M', api: 34 }] }))
     await expect(r).rejects.toThrow('cancelled by test')
     expect(adbCalls().some((c) => c.includes('pm grant')), 'nothing after the abort').toBe(false)
+  })
+})
+
+describe('openApp device settings (roadmap M2b)', () => {
+  const ALL_SET: DeviceSettings = { locale: 'es-419', dark_mode: true, font_scale: 1.3, animations: false }
+
+  it('on a virtual device applies the test defaults (animations off, light theme, font scale 1, en-US) after granting and before launch', async () => {
+    avd('Pixel_API_36', 36)
+    const r = await openApp(req(), simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }] }))
+    expect(r.ok, JSON.stringify(r.steps)).toBe(true)
+    const sent = adbCalls().filter((c) => /shell (settings|cmd|pm grant|am start)/.test(c))
+    expect(sent, 'grant, then settings in a fixed order, then launch').toEqual([
+      "emulator-5554 shell pm grant 'dev.nawi.sample' 'android.permission.CAMERA'",
+      'emulator-5554 shell settings put global window_animation_scale 0 && settings put global transition_animation_scale 0 && settings put global animator_duration_scale 0',
+      'emulator-5554 shell cmd uimode night no',
+      'emulator-5554 shell settings put system font_scale 1',
+      "emulator-5554 shell cmd locale set-app-locales 'dev.nawi.sample' --locales 'en-US'",
+      "emulator-5554 shell am start -W -n 'dev.nawi.sample/dev.nawi.sample.MainActivity'"
+    ])
+    expect(r.settings).toEqual({ requested: defaultDeviceSettings('avd'), applied: ['animations', 'dark_mode', 'font_scale', 'locale'], not_applied: [] })
+    expect(step(r, 'settings')).toEqual({ id: 'settings', status: 'ok', summary: 'animations off, dark mode off, font scale 1, locale en-US', fix: null })
+  })
+
+  it('never applies settings meant for a virtual device to a physical phone (a profile saved on an AVD, run with --target <phone>)', async () => {
+    const r = await openApp(req({ settings: defaultDeviceSettings('avd') }), simHost({ devices: [{ serial: 'R58M', api: 34 }] }))
+    expect(r.ok).toBe(true)
+    expect(adbCalls().filter((c) => /shell (settings|cmd)/.test(c)), 'no setting command reaches the phone').toEqual([])
+    expect(step(r, 'settings')).toMatchObject({ status: 'skipped', summary: "the profile's device settings are for a virtual device; R58M is a physical device and is left as it is" })
+    expect(r.settings.requested, 'nothing was requested of the phone').toBeNull()
+  })
+
+  it('leaves out of the virtual-device defaults what an older Android lacks, so a default open does not warn', async () => {
+    avd('Pixel_API_30', 30)
+    const r = await openApp(req(), simHost({ devices: [{ serial: 'emulator-5554', api: 30, avd: 'Pixel_API_30' }] }))
+    expect(r.settings).toEqual({ requested: { locale: null, dark_mode: false, font_scale: 1, animations: false }, applied: ['animations', 'dark_mode', 'font_scale'], not_applied: [] })
+    expect(step(r, 'settings')?.status, 'API 30: no per-app locale, and no warning for it').toBe('ok')
+  })
+
+  it('applies a physical phone\'s settings only when asked, and settings: null leaves even a virtual device alone', async () => {
+    const asked = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, dark_mode: true }, settingsOnPhone: true }), simHost({ devices: [{ serial: 'R58M', api: 34 }] }))
+    expect(adbCalls().filter((c) => /shell (settings|cmd)/.test(c)), 'only the one setting the profile asks for').toEqual(['R58M shell cmd uimode night yes'])
+    expect(asked.settings.applied).toEqual(['dark_mode'])
+    expect(step(asked, 'settings')?.summary).toBe('dark mode on')
+
+    calls = []
+    avd('Pixel_API_36', 36)
+    const left = await openApp(req({ settings: null }), simHost({ devices: [{ serial: 'emulator-5554', api: 36, avd: 'Pixel_API_36' }] }))
+    expect(adbCalls().filter((c) => /shell (settings|cmd)/.test(c)), 'settings: null sends no setting command').toEqual([])
+    expect(step(left, 'settings')).toMatchObject({ status: 'skipped', summary: 'no device settings to apply (the device is left as it is)' })
+    expect(left.settings.requested).toBeNull()
+  })
+
+  it('skips a setting the device\'s Android version lacks with the version it needs, as a warning, and still launches', async () => {
+    const r = await openApp(req({ settings: ALL_SET, settingsOnPhone: true }), simHost({ devices: [{ serial: 'R58M', api: 28 }] }))
+    expect(r.ok, 'missing settings do not stop the launch').toBe(true)
+    expect(adbCalls().filter((c) => /shell (settings|cmd)/.test(c)), 'nothing sent for the settings API 28 lacks').toEqual([
+      'R58M shell settings put global window_animation_scale 0 && settings put global transition_animation_scale 0 && settings put global animator_duration_scale 0',
+      'R58M shell settings put system font_scale 1.3'
+    ])
+    expect(r.settings.applied).toEqual(['animations', 'font_scale'])
+    expect(r.settings.not_applied, 'named by their profile keys').toEqual([
+      { name: 'dark_mode', reason: 'needs Android 10 (API 29); R58M is API 28' },
+      { name: 'locale', reason: 'needs Android 13 (API 33); R58M is API 28' }
+    ])
+    expect(step(r, 'settings')?.status).toBe('warn')
+    expect(step(r, 'settings')?.summary).toMatch(/^applied 2 of 4; not applied: dark mode on \(needs Android 10/)
+    expect(step(r, 'settings')?.fix).toMatch(/set dark_mode, locale to null in the profile's device section/)
+    expect(r.launched?.activity).toBe('dev.nawi.sample.MainActivity')
+  })
+
+  it.each([
+    ['an exception printed with exit code 0', ok('Exception occurred while executing \'set-app-locales\':\njava.lang.IllegalArgumentException: Unknown package\n'), "Exception occurred while executing 'set-app-locales':"],
+    ['a missing service', ok("cmd: Can't find service: locale\n"), "cmd: Can't find service: locale"],
+    // What API 36 prints (exit code 0) for a package it does not know.
+    ['an unknown package', ok('Unknown package dev.nawi.sample for userId 0\n'), 'Unknown package dev.nawi.sample for userId 0'],
+    ['a non-zero exit', failed('/system/bin/sh: cmd: inaccessible or not found'), '/system/bin/sh: cmd: inaccessible or not found'],
+    ['a timeout', { code: null, stdout: '', stderr: '', error: 'timeout' } as ExecResult, 'the device did not answer']
+  ])('reports a setting the device refuses (%s) as not applied, with what it said', async (_case, answer, reason) => {
+    const r = await openApp(req({ settings: { ...KEEP_DEVICE_SETTINGS, locale: 'en-US' }, settingsOnPhone: true }), simHost({ devices: [{ serial: 'R58M', api: 34 }], setting: () => answer }))
+    expect(r.ok).toBe(true)
+    expect(r.settings.not_applied).toEqual([{ name: 'locale', reason }])
+    expect(step(r, 'settings')?.status).toBe('warn')
+  })
+
+  it('a cancel while applying settings stops before the launch', async () => {
+    const stop = new AbortController()
+    const r = openApp(req({ settings: ALL_SET, settingsOnPhone: true, signal: stop.signal, onStep: (id) => id === 'settings' && stop.abort(new Error('cancelled by test')) }), simHost({ devices: [{ serial: 'R58M', api: 34 }] }))
+    await expect(r).rejects.toThrow('cancelled by test')
+    expect(adbCalls().some((c) => c.includes('am start') || /shell (settings|cmd)/.test(c)), 'no setting or launch after the abort').toBe(false)
   })
 })
 

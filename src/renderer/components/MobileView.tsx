@@ -31,6 +31,7 @@ const STEP_LABEL: Record<MobileStepId, string> = {
   boot: 'Start the virtual device',
   install: 'Install',
   grant: 'Grant permissions',
+  settings: 'Device settings',
   launch: 'Launch'
 }
 

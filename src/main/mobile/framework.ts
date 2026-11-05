@@ -7,7 +7,8 @@
  * an app cannot easily drop, e.g. the Flutter engine library or the React Native JavaScript bundle.
  */
 
-export type AppFramework = 'native' | 'flutter' | 'react_native' | 'game_engine' | 'webview'
+export const APP_FRAMEWORKS = ['native', 'flutter', 'react_native', 'game_engine', 'webview'] as const
+export type AppFramework = (typeof APP_FRAMEWORKS)[number]
 
 /**
  * How the screen is read:
@@ -17,7 +18,8 @@ export type AppFramework = 'native' | 'flutter' | 'react_native' | 'game_engine'
  * - `webview_cdp`: the DOM inside the app's WebView over the Chrome DevTools Protocol (needs WebView debugging).
  * - `screenshot`: no element tree at all (a game engine draws everything on one surface): screenshots only.
  */
-export type ReadStrategy = 'accessibility' | 'flutter_semantics' | 'webview_cdp' | 'screenshot'
+export const READ_STRATEGIES = ['accessibility', 'flutter_semantics', 'webview_cdp', 'screenshot'] as const
+export type ReadStrategy = (typeof READ_STRATEGIES)[number]
 
 export interface FrameworkInfo {
   kind: AppFramework

@@ -42,7 +42,7 @@ vi.mock('../mobile/open', async (importOriginal) => ({
 const { makeZip } = await import('../mobile/fixtures/make-zip')
 const { TOOLS } = await import('./tools')
 const { dispatch } = await import('./dispatch')
-const { parseMobileProfile, sha256File, stringifyMobileProfile } = await import('../mobile/profile')
+const { defaultDeviceSettings, KEEP_DEVICE_SETTINGS, parseMobileProfile, sha256File, stringifyMobileProfile } = await import('../mobile/profile')
 
 const TOKEN = 't'.repeat(43)
 const outside = mkdtempSync(join(tmpdir(), 'nawi-mcp-apk-out-'))
@@ -140,11 +140,14 @@ describe('mobile_open', () => {
     package: 'dev.nawi.sample',
     target: { kind: 'avd', name: 'Pixel_API_36', serial: 'emulator-5554', api: 36, booted: true },
     permissions: { granted: ['android.permission.CAMERA'], not_granted: [{ name: 'android.permission.RECORD_AUDIO', reason: 'x' }] },
+    settings: { requested: defaultDeviceSettings('avd'), applied: ['animations'], not_applied: [] },
     launched: { activity: 'dev.nawi.sample.MainActivity', total_time_ms: 300, pid: 7 },
     steps: [],
     doctor: null,
     ...over
   })
+  // The aapt2 fixture has no framework markers: a native app, read through the accessibility tree.
+  const NATIVE = { framework: 'native', read: 'accessibility' }
   const apkPath = () => join(home, 'sample.apk')
   const savedProfile = () => join(home, 'dev.nawi.sample.nawi.mobile.yaml')
 
@@ -153,6 +156,7 @@ describe('mobile_open', () => {
     openResult = running()
     const r = await open({ file: apkPath() })
     expect(openCalls[0], 'request handed to openApp').toMatchObject({ apkFile: apkPath(), target: null, grant: null, activity: null, headless: false })
+    expect('settings' in openCalls[0] && openCalls[0].settings, 'no profile: openApp picks the defaults for the device it lands on').toBeUndefined()
     expect((openCalls[0].apk as { package: string }).package).toBe('dev.nawi.sample')
     const sha256 = await sha256File(apkPath())
     expect(r).toMatchObject({ ok: true, apk: apkPath(), sha256, apk_changed: null, profile: savedProfile(), profile_error: null })
@@ -165,20 +169,54 @@ describe('mobile_open', () => {
         target: { kind: 'avd', name: 'Pixel_API_36' },
         // The fixture's runtime permissions at API 36 (ACCESS_FINE_LOCATION stops at maxSdkVersion 32).
         permissions: { grant: ['android.permission.CAMERA', 'android.permission.POST_NOTIFICATIONS', 'android.permission.READ_CONTACTS'] },
-        launch: { activity: 'dev.nawi.sample.MainActivity' }
+        launch: { activity: 'dev.nawi.sample.MainActivity' },
+        screen: NATIVE,
+        device: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }
       }
     })
+  })
+
+  it('writes the same profile byte for byte when the same APK is opened twice (M2 done-when: stable across runs)', async () => {
+    rmSync(savedProfile(), { force: true })
+    openResult = running()
+    await open({ file: apkPath() })
+    const first = readFileSync(savedProfile(), 'utf8')
+    rmSync(savedProfile())
+    await open({ file: apkPath() })
+    expect(readFileSync(savedProfile(), 'utf8'), 'second run of the same APK').toBe(first)
+    expect(first, 'the saved profile names the read strategy and settings').toMatch(/screen:\n {2}framework: native\n {2}read: accessibility\ndevice:\n {2}locale: en-US\n/)
+  })
+
+  it('on a physical phone saves a device section that leaves the phone as it is', async () => {
+    rmSync(savedProfile(), { force: true })
+    openResult = running({ target: { kind: 'device', name: 'R58M', serial: 'R58M', api: 34, booted: false }, settings: { requested: KEEP_DEVICE_SETTINGS, applied: [], not_applied: [] } })
+    await open({ file: apkPath() })
+    const saved = parseMobileProfile(readFileSync(savedProfile(), 'utf8'))
+    expect(saved.ok && saved.profile.device).toEqual(KEEP_DEVICE_SETTINGS)
   })
 
   it('reopens from the profile with its target, permissions and activity, and writes it back in place', async () => {
     openResult = running()
     await open({ file: apkPath() })
-    const edited = readFileSync(savedProfile(), 'utf8').replace(/^\s*- android\.permission\.(POST_NOTIFICATIONS|READ_CONTACTS)\n/gm, '').replace(/target:\n\s+kind: avd\n\s+name: Pixel_API_36\n/, 'target: null\n').replace('dev.nawi.sample.MainActivity', 'dev.nawi.sample.Other')
+    const edited = readFileSync(savedProfile(), 'utf8')
+      .replace(/^\s*- android\.permission\.(POST_NOTIFICATIONS|READ_CONTACTS)\n/gm, '')
+      .replace(/target:\n\s+kind: avd\n\s+name: Pixel_API_36\n/, 'target: null\n')
+      .replace('dev.nawi.sample.MainActivity', 'dev.nawi.sample.Other')
+      .replace('locale: en-US', 'locale: es-419')
+      .replace('dark_mode: false', 'dark_mode: null')
+    expect(edited, 'the test edits the device section').toMatch(/locale: es-419\n {2}dark_mode: null/)
     writeFileSync(savedProfile(), edited)
     openCalls.length = 0
     openResult = running({ launched: { activity: 'dev.nawi.sample.Other', total_time_ms: 1, pid: 8 } })
     const r = await open({ file: savedProfile(), headless: true })
-    expect(openCalls[0], 'request from the profile').toMatchObject({ target: null, grant: ['android.permission.CAMERA'], activity: 'dev.nawi.sample.Other', headless: true })
+    expect(openCalls[0], 'request from the profile').toMatchObject({
+      target: null,
+      grant: ['android.permission.CAMERA'],
+      activity: 'dev.nawi.sample.Other',
+      settings: { locale: 'es-419', dark_mode: null, font_scale: 1, animations: false },
+      settingsOnPhone: false,
+      headless: true
+    })
     expect(r).toMatchObject({ ok: true, apk_changed: false, profile: savedProfile() })
     expect(readFileSync(savedProfile(), 'utf8'), 'an unchanged APK leaves the edited profile byte for byte').toBe(edited)
     // grant: false sends no permissions; a one-off target doesn't change the profile.
@@ -193,10 +231,16 @@ describe('mobile_open', () => {
     const app = { apk: apkPath(), package: 'dev.nawi.sample', version_code: 1, version_name: 'old', sha256: 'f'.repeat(64) }
     const pinned = { version: 1 as const, app, target: null, permissions: { grant: ['android.permission.CAMERA'] }, launch: { activity: null } }
     writeFileSync(savedProfile(), stringifyMobileProfile(pinned))
+    openCalls.length = 0
     const r = await open({ file: savedProfile(), target: 'R58M' })
+    expect(openCalls[0]?.settings, 'a profile from before device settings leaves the device alone').toBeNull()
     expect(r).toMatchObject({ ok: true, apk_changed: true, profile: savedProfile() })
     const again = parseMobileProfile(readFileSync(savedProfile(), 'utf8'))
-    expect(again.ok && again.profile).toEqual({ ...pinned, app: { ...app, version_code: 42, version_name: '1.4.2', sha256: await sha256File(apkPath()) } })
+    expect(again.ok && again.profile, 'app facts and screen refreshed; no device section added').toEqual({
+      ...pinned,
+      app: { ...app, version_code: 42, version_name: '1.4.2', sha256: await sha256File(apkPath()) },
+      screen: NATIVE
+    })
   })
 
   it('an APK opened with grant: false still saves its runtime permissions for the next open', async () => {

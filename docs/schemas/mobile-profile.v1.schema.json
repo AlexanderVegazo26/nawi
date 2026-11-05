@@ -128,6 +128,86 @@
         "activity"
       ],
       "additionalProperties": false
+    },
+    "screen": {
+      "description": "The UI framework found in the .apk and how Nawi reads its screen (refreshed with the app facts).",
+      "type": "object",
+      "properties": {
+        "framework": {
+          "type": "string",
+          "enum": [
+            "native",
+            "flutter",
+            "react_native",
+            "game_engine",
+            "webview"
+          ]
+        },
+        "read": {
+          "type": "string",
+          "enum": [
+            "accessibility",
+            "flutter_semantics",
+            "webview_cdp",
+            "screenshot"
+          ]
+        }
+      },
+      "required": [
+        "framework",
+        "read"
+      ],
+      "additionalProperties": false
+    },
+    "device": {
+      "description": "Device settings applied before launch. Missing (profiles saved before these settings existed): the device is left as it is.",
+      "type": "object",
+      "properties": {
+        "locale": {
+          "default": null,
+          "description": "The app's own language (per-app locale, Android 13+); the rest of the device keeps its language.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dark_mode": {
+          "default": null,
+          "description": "Dark theme on or off for the whole device (Android 10+).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "font_scale": {
+          "default": null,
+          "description": "Font size multiplier for the whole device (1 is the default size).",
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0.5,
+              "maximum": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "animations": {
+          "default": null,
+          "description": "System animations; false turns them off so screens settle at once and runs are steadier.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": [

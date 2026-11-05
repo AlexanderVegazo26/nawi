@@ -1,20 +1,26 @@
 import { spawn } from 'node:child_process'
 import type { ApkInfo } from './apk'
 import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult, type MobileDoctorReport } from './doctor'
-import { CLASS_RE, PACKAGE_RE, PERMISSION_RE, TARGET_RE } from './profile'
+import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
+import { androidVersionFor, settingCommands, type DeviceSettingName } from './settings'
+import { shQuote } from './shell'
+
+export { shQuote }
 
 /**
  * Roadmap M1 (third slice, M1c): put an app on a device and start it. Uses the doctor (M1b) to pick a connected
  * device or a virtual device (AVD) that can run the app, boots the AVD when needed, installs the .apk, grants its
- * runtime permissions (`pm grant`, so no dialog blocks a run) and starts its launcher activity (`am start -W`).
+ * runtime permissions (`pm grant`, so no dialog blocks a run), applies the profile's device settings (M2b: locale,
+ * dark mode, font scale, animations) and starts its launcher activity (`am start -W`).
  * Every failure is a normal result with the step that failed and one fix. Electron-free; adb, the emulator and the
  * clock are injectable so tests never touch a real device.
  *
  * Side effects (that is the point): may start an emulator, which keeps running afterwards; installs (or replaces)
- * the app on the target; grants permissions; starts the app.
+ * the app on the target; grants permissions; changes device settings (global ones like animations and font scale
+ * stay changed); starts the app.
  */
 
-export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'launch'
+export type OpenStepId = 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch'
 export type OpenStepStatus = 'ok' | 'warn' | 'fail' | 'skipped'
 
 export interface OpenStep {
@@ -44,6 +50,11 @@ export interface MobileOpenResult {
   package: string
   target: OpenTarget | null
   permissions: { granted: string[]; not_granted: { name: string; reason: string }[] }
+  /**
+   * The device settings asked for (null fields: left alone; null: none), the ones applied and the ones not, by their
+   * key in the profile's device section (`locale`, `dark_mode`, `font_scale`, `animations`).
+   */
+  settings: { requested: DeviceSettings | null; applied: DeviceSettingName[]; not_applied: { name: DeviceSettingName; reason: string }[] }
   launched: { activity: string; total_time_ms: number | null; pid: number | null } | null
   steps: OpenStep[]
   /** The doctor's report, when no target could be chosen (it explains why). */
@@ -58,6 +69,17 @@ export interface OpenRequest {
   target?: string | null
   /** Permissions to grant; default: the app's runtime permissions requested at the target's API level. */
   grant?: string[] | null
+  /**
+   * Device settings to apply before launch; null leaves the device as it is. Default: defaultDeviceSettings for the
+   * chosen target (a fixed setup on a virtual device, nothing on a physical phone).
+   */
+  settings?: DeviceSettings | null
+  /**
+   * Whether `settings` may also change a physical phone. Off by default: settings saved for a virtual device (the
+   * defaults) must not land on somebody's own phone when a run is pointed at it; a profile pinned to a phone turns
+   * it on, since any value in it was written for that phone.
+   */
+  settingsOnPhone?: boolean
   /** Activity to start; default: the launcher activity. */
   activity?: string | null
   /** Start a booted emulator without a window (servers, CI). */
@@ -119,10 +141,6 @@ export function defaultOpenHost(): OpenHost {
   }
 }
 
-/** Single-quote a token for the device's `sh` (adb shell joins its arguments into one command line). */
-export function shQuote(token: string): string {
-  return `'${token.replace(/'/g, `'\\''`)}'`
-}
 
 function firstLine(text: string): string {
   return text.split(/\r?\n/).map((l) => l.trim()).find(Boolean)?.slice(0, 300) ?? ''
@@ -225,6 +243,7 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
     package: pkg,
     target: null,
     permissions: { granted: [], not_granted: [] },
+    settings: { requested: null, applied: [], not_applied: [] },
     launched: null,
     steps: [],
     doctor: null
@@ -330,7 +349,56 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
       )
     }
 
-    // 5. Launch.
+    // 5. Device settings (a failure is a warning: the app still runs, only on a less predictable screen).
+    checkAbort()
+    const api = result.target.api
+    const onPhone = result.target.kind === 'device'
+    const wanted = req.settings === undefined ? defaultDeviceSettings(result.target.kind, api) : req.settings
+    const commands = wanted ? settingCommands(pkg, wanted) : []
+    if (commands.length > 0 && onPhone && req.settings !== undefined && !req.settingsOnPhone) {
+      steps.push({ id: 'settings', status: 'skipped', summary: `the profile's device settings are for a virtual device; ${serial} is a physical device and is left as it is`, fix: null })
+    } else if (commands.length === 0) {
+      result.settings.requested = wanted
+      steps.push({ id: 'settings', status: 'skipped', summary: 'no device settings to apply (the device is left as it is)', fix: null })
+    } else {
+      result.settings.requested = wanted
+      req.onStep?.('settings', `applying ${commands.map((c) => c.label).join(', ')}`)
+      const done: string[] = []
+      const missed: string[] = []
+      for (const c of commands) {
+        checkAbort()
+        if (c.minApi !== null && api !== null && api < c.minApi) {
+          const reason = `needs Android ${androidVersionFor(c.minApi)} (API ${c.minApi}); ${serial} is API ${api}`
+          result.settings.not_applied.push({ name: c.name, reason })
+          missed.push(`${c.label} (${reason})`)
+          continue
+        }
+        const r = await host.exec(adbPath, ['-s', serial, 'shell', c.line], SHELL_TIMEOUT_MS)
+        // `cmd` and `settings` print their errors on stdout and exit 0 on some versions, like pm does.
+        const text = `${r.stdout}\n${r.stderr}`
+        if (r.code === 0 && !/Exception|Error|Unknown|Invalid|not found|Can't find service|No shell command/i.test(text)) {
+          result.settings.applied.push(c.name)
+          done.push(c.label)
+        } else {
+          const reason = r.error === 'timeout' ? 'the device did not answer' : said(r)
+          result.settings.not_applied.push({ name: c.name, reason })
+          missed.push(`${c.label} (${reason})`)
+        }
+      }
+      const keys = result.settings.not_applied.map((m) => m.name).join(', ')
+      steps.push(
+        missed.length === 0
+          ? { id: 'settings', status: 'ok', summary: done.join(', '), fix: null }
+          : {
+              id: 'settings',
+              status: 'warn',
+              summary: `applied ${done.length} of ${commands.length}; not applied: ${missed.join('; ')}`,
+              fix: `The app runs with the device's own value for those; set ${keys} to null in the profile's device section to stop asking, or use a newer device.`
+            }
+      )
+    }
+
+    // 6. Launch.
     checkAbort()
     const activity = req.activity ?? req.apk.launcher_activity
     if (!activity) {

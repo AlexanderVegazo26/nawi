@@ -40,6 +40,7 @@ function view(over: Partial<MobileOpenView> = {}): MobileOpenView {
       { id: 'boot', status: 'ok', summary: 'loop-api36 booted as emulator-5560', fix: null },
       { id: 'install', status: 'ok', summary: 'installed', fix: null },
       { id: 'grant', status: 'skipped', summary: 'no runtime permissions to grant', fix: null },
+      { id: 'settings', status: 'ok', summary: 'animations off, dark mode off, font scale 1, locale en-US', fix: null },
       { id: 'launch', status: 'ok', summary: 'started in 812 ms', fix: null }
     ],
     profile: '/home/u/apps/com.example.demo.nawi.mobile.yaml',
@@ -164,6 +165,7 @@ describe('MobileView', () => {
     await reply(0, { ok: true, value: view() })
     expect(screen.getByRole('status').textContent, 'status after success').toBe('com.example.demo is running on loop-api36.')
     expect(stepRow('Grant permissions').textContent, 'grant row').toContain('— skipped')
+    expect(stepRow('Device settings').textContent, 'settings row with what was set').toContain('animations off, dark mode off, font scale 1, locale en-US')
     expect(screen.getByText(/Saved as \/home\/u\/apps\/com\.example\.demo\.nawi\.mobile\.yaml/), 'profile line').toBeTruthy()
     expect(frames.map((f) => f.serial), 'frames asked for').toEqual(['emulator-5560'])
     await act(async () => frames[0].reply.resolve(frame()))

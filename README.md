@@ -501,7 +501,7 @@ alone.
   that is not running (on a free emulator port; it keeps running afterwards),
   installs the app (`adb install -r -t`: replaces an installed copy, keeps its
   data), grants its runtime permissions with `pm grant` so no dialog blocks a
-  run, starts the launcher activity (`am start -W`, with its start time) and
+  run, applies device settings, starts the launcher activity (`am start -W`, with its start time) and
   checks the app is still alive. Each failure stops at its step with one fix
   (a different signing key or a newer version installed, no storage, no
   matching ABI, an unsigned APK, the phone refusing USB installs, an emulator
@@ -509,13 +509,24 @@ alone.
   crash at startup). On success it saves a **mobile profile**
   (`<package>.nawi.mobile.yaml` next to the APK, or `--profile <path>`): the APK
   path and SHA-256, the device, the permissions to grant and the activity to
-  start (schema: `docs/schemas/mobile-profile.v1.schema.json`). Passing the
-  profile instead of the APK repeats that setup, including any edits to its
-  permission list or activity.
+  start, the app's UI framework and how its screen is read (`screen`), and the
+  device settings (`device`; schema: `docs/schemas/mobile-profile.v1.schema.json`).
+  Passing the profile instead of the APK repeats that setup, including any
+  edits to its permission list, activity or settings; the file is rewritten
+  only when the APK changed (its app facts and `screen`) or `--profile` names
+  where to save it. Device settings (`src/main/mobile/settings.ts`) on a virtual device
+  default to the app's own language `en-US` (per-app locale, Android 13+), light
+  theme (Android 10+), font scale 1 and animations off, so every run sees the
+  same screen (settings an older Android lacks are left out). A physical phone
+  is left as it is unless the profile was saved for that phone and asks for a
+  value; settings saved for a virtual device are never applied to a phone. A
+  null or missing setting, or a profile saved before these settings existed,
+  leaves that setting as it is; a setting the device refuses is a warning, not
+  a failure.
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
   `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
   **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
-  step (read, find a device, boot, install, grant, launch) as it happens, with
+  step (read, find a device, boot, install, grant, device settings, launch) as it happens, with
   Cancel, the one fix when a step fails, and Try again. Once the app runs, its
   live screen is shown next to the steps (`adb exec-out screencap`, one frame at
   a time, paused while the view is hidden; only for a device the window opened

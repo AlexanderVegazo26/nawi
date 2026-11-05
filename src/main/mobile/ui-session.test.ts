@@ -20,12 +20,14 @@ function outcome(over: Partial<OpenOutcome> = {}): OpenOutcome {
     package: 'com.example.demo',
     target: { kind: 'avd', name: 'loop-api36', serial: 'emulator-5560', api: 36, booted: true },
     permissions: { granted: ['android.permission.CAMERA'], not_granted: [] },
+    settings: { requested: { locale: 'en-US', dark_mode: false, font_scale: 1, animations: false }, applied: ['animations', 'dark_mode', 'font_scale', 'locale'], not_applied: [] },
     launched: { activity: 'com.example.demo.MainActivity', total_time_ms: 812, pid: 4242 },
     steps: [
       { id: 'doctor', status: 'ok', summary: 'virtual device loop-api36 (API 36)', fix: null },
       { id: 'boot', status: 'ok', summary: 'loop-api36 booted as emulator-5560', fix: null },
       { id: 'install', status: 'ok', summary: 'com.example.demo 1.0 installed on emulator-5560', fix: null },
       { id: 'grant', status: 'ok', summary: 'granted 1: android.permission.CAMERA', fix: null },
+      { id: 'settings', status: 'ok', summary: 'animations off, dark mode off, font scale 1, locale en-US', fix: null },
       { id: 'launch', status: 'ok', summary: 'com.example.demo.MainActivity started in 812 ms (pid 4242)', fix: null }
     ],
     doctor: null,
@@ -90,7 +92,7 @@ describe('MobileUiSession.open', () => {
       { openId: 1, id: 'doctor', summary: 'checking the Android setup' },
       { openId: 1, id: 'boot', summary: 'booting loop-api36 as emulator-5560' }
     ])
-    expect(view.steps.map((s) => `${s.id}:${s.status}`), 'step list of a successful open').toEqual(['read:ok', 'doctor:ok', 'boot:ok', 'install:ok', 'grant:ok', 'launch:ok'])
+    expect(view.steps.map((s) => `${s.id}:${s.status}`), 'step list of a successful open').toEqual(['read:ok', 'doctor:ok', 'boot:ok', 'install:ok', 'grant:ok', 'settings:ok', 'launch:ok'])
     expect(view, 'view of a successful open').toMatchObject({ openId: 1, ok: true, cancelled: false, fix: null, package: 'com.example.demo', profile: '/home/u/apps/com.example.demo.nawi.mobile.yaml' })
     expect(view.steps[0].summary, 'read step names the package').toBe('com.example.demo')
     expect(h.session.busy, 'not busy afterwards').toBe(false)
