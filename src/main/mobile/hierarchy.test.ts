@@ -45,6 +45,14 @@ describe('parseUiDump on real dumps', () => {
     expect([...intro.nodes, ...permission.nodes].filter((n) => n.selected).map((n) => n.i), 'selected nodes in both dumps').toEqual([])
   })
 
+  it('reads the inventory flags (checkable, focusable, scrollable, long-clickable) and the hint as the dump writes them', () => {
+    const box = parseUiDump(fixture('camera-intro.txt')).nodes.find((n) => n.resource_id === 'com.android.camera2:id/check_box')
+    expect(box, 'the real check box').toMatchObject({ checkable: true, clickable: true, focusable: true, scrollable: false, long_clickable: false, hint: '' })
+    const { nodes } = parseUiDump(wrap('<node scrollable="true" long-clickable="true" hint="Search &amp; go"/><node checkable="TRUE" focusable="1"/>'))
+    expect([nodes[0].scrollable, nodes[0].long_clickable, nodes[0].hint]).toEqual([true, true, 'Search & go'])
+    expect([nodes[1].checkable, nodes[1].focusable], 'only the exact value "true" sets a flag').toEqual([false, false])
+  })
+
   it('skips the "UI hierchary dumped to" line and the XML declaration', () => {
     const screen = parseUiDump(fixture('camera-intro.txt'))
     expect(screen.nodes.map((n) => n.text).filter(Boolean)).toEqual(['Remember photo locations?', "Tag your photos and videos with the locations where they're taken.", 'NEXT'])
@@ -60,7 +68,7 @@ describe('parseUiDump on edge cases', () => {
   it('reads rotation, missing attributes as empty / false / enabled, and bad bounds as null', () => {
     const { rotation, nodes } = parseUiDump(wrap('<node class="a.B"/><node enabled="false" bounds="[5,5][1,1]"/>'))
     expect(rotation).toBe(1)
-    expect(nodes[0]).toEqual({ i: 0, parent: null, depth: 0, class: 'a.B', package: '', text: '', resource_id: '', content_desc: '', clickable: false, enabled: true, password: false, checked: false, selected: false, bounds: null })
+    expect(nodes[0]).toEqual({ i: 0, parent: null, depth: 0, class: 'a.B', package: '', text: '', resource_id: '', content_desc: '', hint: '', clickable: false, long_clickable: false, focusable: false, scrollable: false, checkable: false, enabled: true, password: false, checked: false, selected: false, bounds: null })
     expect(nodes[1].enabled).toBe(false)
     const flags = parseUiDump(wrap('<node checked="true" selected="true"/><node checked="false" selected="TRUE"/>')).nodes
     expect(flags.map((n) => [n.checked, n.selected]), 'only the exact value "true" sets checked/selected').toEqual([[true, true], [false, false]])

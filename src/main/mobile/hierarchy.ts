@@ -1,5 +1,5 @@
 /**
- * Roadmap M2 (third slice, M2c; M3 reuses it): read the screen of an Android device as data. `uiautomator dump`
+ * Roadmap M2 (third slice, M2c; M3 reuses it and its inventory fields): read the screen of an Android device as data. `uiautomator dump`
  * writes the accessibility tree of what is on screen as XML; this turns that XML into a flat list of nodes in
  * document order (each with its depth and parent), so callers can look for a dialog, a button or a password field
  * without a DOM.
@@ -33,7 +33,17 @@ export interface UiNode {
   /** `com.example:id/accept`, or '' when the view has no id. */
   resource_id: string
   content_desc: string
+  /** A text field's hint (its accessible name while empty); '' on images older than API 26 and on other views. */
+  hint: string
   clickable: boolean
+  /** Long-press does something (a context menu, drag, select). */
+  long_clickable: boolean
+  /** Can take keyboard / accessibility focus on its own. */
+  focusable: boolean
+  /** Scrolls (a list, a pager, a scroll view). */
+  scrollable: boolean
+  /** A checkbox, switch, radio button or toggle. */
+  checkable: boolean
   enabled: boolean
   /** A password field (its text is never the password: Android hides it). */
   password: boolean
@@ -145,7 +155,12 @@ export function parseUiDump(text: string): UiScreen {
       text: attrs.get('text') ?? '',
       resource_id: attrs.get('resource-id') ?? '',
       content_desc: attrs.get('content-desc') ?? '',
+      hint: attrs.get('hint') ?? '',
       clickable: flag('clickable'),
+      long_clickable: flag('long-clickable'),
+      focusable: flag('focusable'),
+      scrollable: flag('scrollable'),
+      checkable: flag('checkable'),
       // uiautomator always writes it; a node without it is treated as enabled, like Android's default.
       enabled: attrs.get('enabled') !== 'false',
       password: flag('password'),

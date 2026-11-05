@@ -144,10 +144,13 @@ function withTap(nodes: UiNode[], kind: BlockerKind, summary: string, hit: UiNod
 
 const quote = (s: string, max = 120): string => `"${s.length > max ? `${s.slice(0, max - 1)}…` : s}"`
 
+/** The package of the window in front: the first node that names one (Android's prompt sits on top of the app). */
+export const frontPackage = (nodes: readonly UiNode[]): string | null => nodes.find((n) => n.package !== '')?.package ?? null
+
 /** The blockers on one screen of `pkg`, front-most first (Android's prompt sits on top of the app). */
 export function findFirstRunBlockers(screen: UiScreen, pkg: string): FirstScreen {
   const nodes = screen.nodes
-  const front = nodes.find((n) => n.package !== '')?.package ?? null
+  const front = frontPackage(nodes)
   const blockers: FirstRunBlocker[] = []
 
   const prompt = nodes.filter((n) => PERMISSION_PACKAGES.has(n.package))
