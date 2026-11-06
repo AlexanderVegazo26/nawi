@@ -262,6 +262,20 @@ describe('scrubStudy', () => {
     expect(scrubbed.notes).toEqual(['saw ${secret.long}'])
     expect(scrubStudy(study, []), 'no secrets: the same object').toBe(study)
   })
+
+  it('scrubs a 10,000-element study with 5 secrets in well under a second (patterns built once, not per string)', () => {
+    const study = studyScreen(parseUiDump(formDump('com.example.shop', 'typed')), { package: 'com.example.shop', densityDpi: 420 })
+    const secrets = Array.from({ length: 5 }, (_, i) => [`s${i}`, `p@ss word-${i}-${'x'.repeat(24)}`] as const)
+    const element = study.elements[0]
+    const elements = Array.from({ length: 10_000 }, (_, i) => ({ ...element, i, text: i === 4321 ? `pw ${secrets[2][1]}` : `row ${i}` }))
+    const started = performance.now()
+    const scrubbed = scrubStudy({ ...study, elements }, secrets)
+    const ms = performance.now() - started
+    expect(scrubbed.elements[4321].text, 'the one element showing a secret').toBe('pw ${secret.s2}')
+    expect(scrubbed.elements[17].text, 'an element without one').toBe('row 17')
+    // Building each secret's pattern for every string took ~7 s here; built once it is a few tens of ms.
+    expect(ms, `scrubStudy took ${Math.round(ms)} ms on 10,000 elements x 5 secrets`).toBeLessThan(1500)
+  })
 })
 
 describe('writeStudy', () => {

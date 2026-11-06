@@ -137,7 +137,12 @@ export function createInterpolator(
       return v
     })
 
-  const redact = (text: string): string => redactSecrets(text, secrets)
+  // Secrets only ever get added to the map, so a redactor built for its current size is still the right one.
+  let redactor = { size: -1, run: (text: string): string => text }
+  const redact = (text: string): string => {
+    if (redactor.size !== secrets.size) redactor = { size: secrets.size, run: secretRedactor(secrets) }
+    return redactor.run(text)
+  }
 
   return { interpolate, redact }
 }
@@ -147,10 +152,24 @@ export function createInterpolator(
  * placeholder. Longest first, so a secret that contains another is scrubbed whole.
  */
 export function redactSecrets(text: string, secrets: Iterable<readonly [name: string, value: string]>): string {
-  let out = text
-  const order = [...secrets].filter(([, v]) => v.length > 0).sort((a, b) => b[1].length - a[1].length)
-  for (const [name, value] of order) out = out.replace(secretPattern(value), () => `\${secret.${name}}`)
-  return out
+  return secretRedactor(secrets)(text)
+}
+
+/**
+ * redactSecrets with the secrets' patterns built once: use it to scrub many strings (every node of a screen dump)
+ * with the same secrets. Building a secret's pattern costs far more than running it on a short string.
+ */
+export function secretRedactor(secrets: Iterable<readonly [name: string, value: string]>): (text: string) => string {
+  const order = [...secrets]
+    .filter(([, v]) => v.length > 0)
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([name, value]) => [secretPattern(value), `\${secret.${name}}`] as const)
+  if (order.length === 0) return (text) => text
+  return (text) => {
+    let out = text
+    for (const [pattern, placeholder] of order) out = out.replace(pattern, () => placeholder)
+    return out
+  }
 }
 
 const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

@@ -8,7 +8,7 @@ import { readScreen, runningAvdName } from './open'
 import { PACKAGE_RE, TARGET_RE } from './profile'
 import { captureScreen, execBinary, type BinaryExec } from './screen'
 import { parseDensity, studyScreen, type ScreenStudy } from './study'
-import { redactSecrets } from '../../shared/flow/interpolate'
+import { secretRedactor } from '../../shared/flow/interpolate'
 
 /**
  * Roadmap M3 (second slice, M3b): study the screen a device shows right now. Reads it the way mobile_open does
@@ -101,7 +101,7 @@ async function pickTarget(doctor: MobileDoctorReport, host: StudyHost, adb: stri
 /** Every string a study reports, with each secret value replaced by its `${secret.name}` placeholder. */
 export function scrubStudy(study: ScreenStudy, secrets: ReadonlyArray<readonly [string, string]>): ScreenStudy {
   if (secrets.length === 0) return study
-  const r = (t: string): string => redactSecrets(t, secrets)
+  const r = secretRedactor(secrets)
   return {
     ...study,
     elements: study.elements.map((e) => ({
@@ -127,7 +127,8 @@ export function appPackage(screen: UiScreen): string | null {
 
 /** Whether a secret value is on the screen (in what the dump read): then the screenshot shows it too. */
 function showsSecret(screen: UiScreen, secrets: ReadonlyArray<readonly [string, string]>): boolean {
-  return screen.nodes.some((n) => [n.text, n.content_desc, n.hint].some((t) => t !== '' && redactSecrets(t, secrets) !== t))
+  const r = secretRedactor(secrets)
+  return screen.nodes.some((n) => [n.text, n.content_desc, n.hint].some((t) => t !== '' && r(t) !== t))
 }
 
 export async function studyLiveScreen(req: LiveStudyRequest, host: StudyHost = defaultStudyHost()): Promise<LiveStudyResult> {
@@ -135,7 +136,8 @@ export async function studyLiveScreen(req: LiveStudyRequest, host: StudyHost = d
   if (req.package != null && !PACKAGE_RE.test(req.package)) throw new Error(`"${req.package}" is not an Android package name.`)
   const secrets = Object.entries(req.secrets ?? {}).filter(([, v]) => v.length > 0)
   const result: LiveStudyResult = { ok: false, fix: null, error: null, target: null, study: null, screenshot: null, screenshot_error: null }
-  const stop = (error: string, fix: string): LiveStudyResult => ({ ...result, error: redactSecrets(error, secrets), fix: redactSecrets(fix, secrets) })
+  const redact = secretRedactor(secrets)
+  const stop = (error: string, fix: string): LiveStudyResult => ({ ...result, error: redact(error), fix: redact(fix) })
 
   const doctor = await runMobileDoctor(null, host)
   const adb = doctor.adb?.path
@@ -167,7 +169,7 @@ export async function studyLiveScreen(req: LiveStudyRequest, host: StudyHost = d
   }
   const frame = await captureScreen(adb, serial, host.execBinary)
   if (!frame.ok) {
-    result.screenshot_error = redactSecrets(`${frame.error.replace(/\.$/, '')}; \`adb -s ${serial} exec-out screencap -p > screen.png\` shows why`, secrets)
+    result.screenshot_error = redact(`${frame.error.replace(/\.$/, '')}; \`adb -s ${serial} exec-out screencap -p > screen.png\` shows why`)
     return result
   }
   if (secrets.length > 0) {

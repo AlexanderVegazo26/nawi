@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { FlowSchema, type Flow, type FlowStep } from './schema'
-import { createInterpolator, interpolatedStrings, MissingFlowInputsError } from './interpolate'
+import { createInterpolator, interpolatedStrings, MissingFlowInputsError, redactSecrets, secretRedactor } from './interpolate'
 
 function flow(steps: FlowStep[], vars?: Record<string, string>, url = 'https://app.example/${env.PATH_PART}'): Flow {
   return FlowSchema.parse({ version: 1, name: 't', target: { kind: 'browser', url }, ...(vars ? { vars } : {}), steps })
@@ -92,5 +92,27 @@ describe('createInterpolator', () => {
     const i = createInterpolator(f, { env: { PATH_PART: 'p' }, secret: (n) => (asked.push(n), 'v') })
     i.interpolate('${secret.pw}')
     expect(asked).toEqual(['pw'])
+  })
+})
+
+describe('secretRedactor', () => {
+  const secrets = [['short', 'abc'], ['long', 'abc 123'], ['empty', '']] as const
+
+  it('scrubs exactly like redactSecrets: longest first, encoded and whitespace-folded forms, empty secrets ignored', () => {
+    for (const text of ['abc', 'x abc 123 y', 'q=abc+123&r=abc', 'abc%20123', 'nothing here', '']) {
+      expect(secretRedactor(secrets)(text), `redacting ${JSON.stringify(text)}`).toBe(redactSecrets(text, secrets))
+    }
+    expect(secretRedactor(secrets)('x abc 123 y')).toBe('x ${secret.long} y')
+  })
+
+  it('gives the same answer every time it is reused (its global patterns keep no position between strings)', () => {
+    const r = secretRedactor(secrets)
+    const answers = ['abc abc', 'abc abc', 'zz abc', 'abc abc'].map(r)
+    expect(answers).toEqual(['${secret.short} ${secret.short}', '${secret.short} ${secret.short}', 'zz ${secret.short}', '${secret.short} ${secret.short}'])
+  })
+
+  it('returns text unchanged when there are no non-empty secrets', () => {
+    expect(secretRedactor([['empty', '']])('abc')).toBe('abc')
+    expect(secretRedactor([])('abc')).toBe('abc')
   })
 })

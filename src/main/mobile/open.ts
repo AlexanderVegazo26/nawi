@@ -8,7 +8,7 @@ import { MAX_ONBOARDING_TAPS, nextOnboardingTap, screenKey, type OnboardingTap }
 import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
 import { androidVersionFor, DEFAULT_NETWORK_LINE, isNetworkSerial, parseDefaultNetwork, settingCommands, type DeviceSettingName } from './settings'
 import { shQuote } from './shell'
-import { redactSecrets } from '../../shared/flow/interpolate'
+import { secretRedactor } from '../../shared/flow/interpolate'
 import { clearLine, locateOnApp, promptInFront, resolveSignIn, typeLines, type SignInInputs, type SignInSpec } from './sign-in'
 
 export { shQuote }
@@ -570,7 +570,7 @@ export async function openApp(req: OpenRequest, host: OpenHost = defaultOpenHost
 
 /** A first screen with every secret that was typed replaced by its placeholder in the text read from the screen. */
 export function scrubScreen(screen: FirstScreen, secrets: ReadonlyArray<readonly [string, string]>): FirstScreen {
-  const r = (t: string): string => redactSecrets(t, secrets)
+  const r = secretRedactor(secrets)
   return {
     package: screen.package,
     blockers: screen.blockers.map((b) => ({
