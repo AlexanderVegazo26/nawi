@@ -60,8 +60,14 @@ const SYSTEM_PACKAGES: ReadonlySet<string> = new Set([...PERMISSION_PACKAGES, 'c
 
 type Target = NonNullable<LiveStudyResult['target']>
 
-/** The connected device to study, or why there is none. Never boots one: a study looks at what is already there. */
-async function pickTarget(doctor: MobileDoctorReport, host: StudyHost, adb: string, wanted: string | null): Promise<Target | { error: string; fix: string }> {
+/** The connected device to study (or explore), or why there is none. Never boots one: it looks at what is already there. */
+export async function pickTarget(
+  doctor: MobileDoctorReport,
+  host: StudyHost,
+  adb: string,
+  wanted: string | null,
+  verb: 'study' | 'explore' = 'study'
+): Promise<Target | { error: string; fix: string }> {
   const online = doctor.devices.filter((d) => d.state === 'device')
   const asTarget = async (serial: string, api: number | null, emulator: boolean): Promise<Target> => {
     const avd = emulator ? await runningAvdName(host, adb, serial) : null
@@ -91,10 +97,10 @@ async function pickTarget(doctor: MobileDoctorReport, host: StudyHost, adb: stri
     if (doctor.devices.length > 0 && check?.fix) {
       return { error: `no device is ready (${doctor.devices.map((d) => `${d.serial} is ${d.state}`).join(', ')})`, fix: check.fix }
     }
-    return { error: 'no device is connected', fix: 'Connect a phone with USB debugging on, or start the app on a virtual device with `nawi mobile-open <file.apk>`, then study it.' }
+    return { error: 'no device is connected', fix: `Connect a phone with USB debugging on, or start the app on a virtual device with \`nawi mobile-open <file.apk>\`, then ${verb} it.` }
   }
   if (online.length > 1) {
-    return { error: `${online.length} devices are connected (${online.map((d) => d.serial).join(', ')})`, fix: 'Say which one to study with target (an adb serial or the AVD name of a running emulator).' }
+    return { error: `${online.length} devices are connected (${online.map((d) => d.serial).join(', ')})`, fix: `Say which one to ${verb} with target (an adb serial or the AVD name of a running emulator).` }
   }
   return asTarget(online[0].serial, online[0].api, online[0].emulator)
 }

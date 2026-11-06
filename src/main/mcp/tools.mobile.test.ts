@@ -50,6 +50,17 @@ vi.mock('../mobile/study-live', async (importOriginal) => ({
   }
 }))
 
+// The live exploration (adb) is tested against a simulated device in mobile/explore-live.test.ts; here it returns a result.
+const exploreCalls: Record<string, unknown>[] = []
+let exploreResult: Record<string, unknown> = {}
+vi.mock('../mobile/explore-live', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../mobile/explore-live')>()),
+  exploreLiveApp: async (req: Record<string, unknown>) => {
+    exploreCalls.push(req)
+    return exploreResult
+  }
+}))
+
 const { makeZip } = await import('../mobile/fixtures/make-zip')
 const { TOOLS } = await import('./tools')
 const { dispatch } = await import('./dispatch')
@@ -454,5 +465,112 @@ describe('mobile_study', () => {
     studyCalls.length = 0
     await expect(studyTool(args)).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' })
     expect(studyCalls).toEqual([])
+  })
+})
+
+describe('mobile_explore', () => {
+  const exploreTool = (args: Record<string, unknown>) =>
+    dispatch(
+      { token: TOKEN, tools: TOOLS, isPaused: async () => false },
+      { name: 'mobile_explore', args, authorization: `Bearer ${TOKEN}`, origin: null, callId: `c5-${Math.random()}` }
+    ) as Promise<Record<string, unknown>>
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9])
+  const target = { kind: 'avd', name: 'Pixel_9', serial: 'emulator-5554', api: 35 }
+  const finding = (n: number) => ({ kind: 'missing_label', severity: 'error', element: n, summary: `unlabeled ${n}`, fix: 'add a label' })
+  const screen = (id: string, depth: number, labels: string[], png: Uint8Array | null, findings = 0) => ({
+    screen_id: id,
+    depth,
+    path: labels.map((label) => ({ locator: { text: label }, label })),
+    study: { screen_id: id, package: 'dev.nawi.sample', rotation: 0, density_dpi: 420, elements: [{ i: 0 }, { i: 1 }], findings: Array.from({ length: findings }, (_, k) => finding(k)), notes: [] },
+    screenshot: png,
+    screenshot_error: png ? null : 'not taken: a secret value typed into the app is on the screen, and a screenshot cannot be scrubbed'
+  })
+  const graph = {
+    start: 's-000000000001',
+    screens: [screen('s-000000000001', 0, [], PNG, 12), screen('s-000000000002', 1, ['Settings'], null, 1)],
+    edges: [
+      { from: 's-000000000001', to: 's-000000000002', tap: { locator: { text: 'Settings' }, label: 'Settings' }, result: 'screen' },
+      { from: 's-000000000001', to: null, tap: { locator: { text: 'Help' }, label: 'Help' }, result: 'left_app', package: 'com.android.chrome' }
+    ],
+    skipped: [{ screen_id: 's-000000000001', label: 'Delete account', locator: { text: 'Delete account' }, reason: 'never_press' }],
+    stopped: 'done',
+    taps: 2,
+    notes: []
+  }
+  const done = (exploration: Record<string, unknown> = graph) => ({ ok: true, error: null, fix: null, target, package: 'dev.nawi.sample', density_dpi: 420, exploration })
+
+  it('passes the budgets (seconds -> ms), never_press and secrets through, with the defaults for what is left out', async () => {
+    exploreCalls.length = 0
+    exploreResult = done()
+    await exploreTool({ target: 'Pixel_9', package: 'dev.nawi.sample', max_depth: 2, max_screens: 5, max_taps: 9, time_budget_s: 60, never_press: ['archive', 'mark read'], secrets: { pw: 'x' } })
+    expect(exploreCalls[0], 'request handed to exploreLiveApp').toMatchObject({ target: 'Pixel_9', package: 'dev.nawi.sample', maxDepth: 2, maxScreens: 5, maxTaps: 9, timeBudgetMs: 60_000, neverPress: ['archive', 'mark read'], secrets: { pw: 'x' } })
+    await exploreTool({})
+    expect(exploreCalls[1], 'defaults').toMatchObject({ target: null, package: null, maxDepth: 3, maxScreens: 30, maxTaps: 200, timeBudgetMs: 600_000 })
+    expect((exploreCalls[1].signal as AbortSignal).aborted, 'a live abort signal (pause / cancel)').toBe(false)
+  })
+
+  it('saves graph.json + one PNG per screen and returns the graph with their paths', async () => {
+    exploreResult = done()
+    const r = await exploreTool({})
+    expect(r, 'top-level facts').toMatchObject({ ok: true, target, package: 'dev.nawi.sample', density_dpi: 420, start: 's-000000000001', stopped: 'done', taps: 2, screens_total: 2, edges_total: 2, skipped_total: 1, findings_total: 13, save_error: null })
+    expect(r.exploration_dir).toBe(join(home, 'explorations', r.exploration_id as string))
+    const screens = r.screens as Array<Record<string, unknown>>
+    expect(screens[0], 'start screen: path, counts, findings capped at 10, screenshot path').toMatchObject({ screen_id: 's-000000000001', depth: 0, path: [], elements_total: 2, findings_total: 12, screenshot: join(r.exploration_dir as string, 's-000000000001.png'), screenshot_error: null })
+    expect((screens[0].findings as unknown[]).length).toBe(10)
+    expect(screens[0].findings).toContainEqual({ kind: 'missing_label', severity: 'error', summary: 'unlabeled 0', fix: 'add a label' })
+    expect(screens[1], 'a screen without a screenshot says why').toMatchObject({ path: ['Settings'], screenshot: null, screenshot_error: expect.stringMatching(/secret value/) })
+    expect(r.edges, 'edges carry the tapped label, not the locator').toEqual([
+      { from: 's-000000000001', to: 's-000000000002', label: 'Settings', result: 'screen' },
+      { from: 's-000000000001', to: null, label: 'Help', result: 'left_app', package: 'com.android.chrome' }
+    ])
+    expect(r.skipped).toEqual([{ screen_id: 's-000000000001', label: 'Delete account', reason: 'never_press' }])
+    expect(readFileSync(screens[0].screenshot as string), 'the PNG bytes').toEqual(Buffer.from(PNG))
+    const saved = JSON.parse(readFileSync(join(r.exploration_dir as string, 'graph.json'), 'utf8'))
+    expect(saved, 'graph.json keeps every finding and the full study').toMatchObject({ exploration_id: r.exploration_id, target, package: 'dev.nawi.sample', start: 's-000000000001' })
+    expect(saved.screens[0].study.findings.length).toBe(12)
+  })
+
+  it('caps screens, edges and skipped controls, and says how many there are', async () => {
+    const id = (n: number) => `s-${n.toString(16).padStart(12, '0')}`
+    const screens = Array.from({ length: 60 }, (_, n) => screen(id(n + 1), 1, ['x'], null))
+    const edges = Array.from({ length: 250 }, () => graph.edges[0])
+    const skipped = Array.from({ length: 120 }, () => graph.skipped[0])
+    exploreResult = done({ ...graph, screens, edges, skipped })
+    const r = await exploreTool({})
+    expect([(r.screens as unknown[]).length, r.screens_total, (r.edges as unknown[]).length, r.edges_total, (r.skipped as unknown[]).length, r.skipped_total], 'returned vs total').toEqual([50, 60, 200, 250, 100, 120])
+  })
+
+  it('returns a device problem as ok: false with the fix and why the explorer stopped, and saves nothing', async () => {
+    exploreResult = { ok: false, error: 'dev.nawi.sample is not in front (com.android.launcher3 is): open it first, then explore', fix: 'Bring dev.nawi.sample to the front.', target, package: 'dev.nawi.sample', density_dpi: 420, exploration: { ...graph, start: null, screens: [], edges: [], skipped: [], stopped: 'not_in_app', notes: ['not in front'] } }
+    const before = existsSync(join(home, 'explorations')) ? readdirSync(join(home, 'explorations')).length : 0
+    const r = await exploreTool({})
+    expect(r).toEqual({ ok: false, error: exploreResult.error, fix: 'Bring dev.nawi.sample to the front.', target, package: 'dev.nawi.sample', exploration_id: null, exploration_dir: null, stopped: 'not_in_app', notes: ['not in front'] })
+    expect(existsSync(join(home, 'explorations')) ? readdirSync(join(home, 'explorations')).length : 0, 'no exploration folder written').toBe(before)
+  })
+
+  it('still answers when the graph cannot be saved', async () => {
+    rmSync(join(home, 'explorations'), { recursive: true, force: true })
+    writeFileSync(join(home, 'explorations'), 'not a folder')
+    try {
+      exploreResult = done()
+      const r = await exploreTool({})
+      expect(r).toMatchObject({ ok: true, exploration_id: null, exploration_dir: null, start: 's-000000000001', screens_total: 2 })
+      expect(r.save_error).toMatch(/the exploration could not be saved/)
+      const screens = r.screens as Array<Record<string, unknown>>
+      expect(screens.map((s) => s.screenshot_error), 'a captured screenshot lost with the folder vs one never taken').toEqual(['not saved: see save_error', expect.stringMatching(/secret value/)])
+    } finally {
+      rmSync(join(home, 'explorations'), { force: true })
+    }
+  })
+
+  it.each([
+    ['a target with shell characters', { target: 'a;reboot' }],
+    ['a never-press word with shell characters', { never_press: ['x; rm -rf'] }],
+    ['a depth over 10', { max_depth: 11 }],
+    ['a time budget under 10 s', { time_budget_s: 5 }]
+  ])('refuses %s at the schema without touching the device', async (_why, args) => {
+    exploreCalls.length = 0
+    await expect(exploreTool(args)).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' })
+    expect(exploreCalls).toEqual([])
   })
 })

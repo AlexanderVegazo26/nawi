@@ -8,13 +8,16 @@ import {
   parseMobileInspectArgs,
   parseMobileOpenArgs,
   parseMobileStudyArgs,
+  parseMobileExploreArgs,
   readProfileText,
   renderApkInfo,
   renderDoctorReport,
   renderOpenResult,
   renderStudyResult,
+  renderExploreResult,
   type MobileOpenReport,
-  type MobileStudyReport
+  type MobileStudyReport,
+  type MobileExploreReport
 } from './mobile'
 
 describe('parseMobileInspectArgs', () => {
@@ -326,5 +329,77 @@ describe('renderStudyResult', () => {
     expect(renderStudyResult({ ok: false, error: 'no device is connected', fix: 'Connect a phone.', target: null, study_id: null, screenshot: null, screenshot_error: null })).toBe(
       'Could not study the screen: no device is connected.\n\nNext: Connect a phone.'
     )
+  })
+})
+
+describe('parseMobileExploreArgs', () => {
+  it('reads the device, app, budgets, never-press words and secret names', () => {
+    expect(
+      parseMobileExploreArgs(['--target', 'Pixel_9', '--package', 'dev.a', '--depth', '2', '--max-screens', '12', '--max-taps', '40', '--time-budget', '90', '--never-press', 'archive', '--never-press', 'mark read', '--never-press', 'archive', '--secret', 'PW', '--json'])
+    ).toEqual({ json: true, target: 'Pixel_9', package: 'dev.a', max_depth: 2, max_screens: 12, max_taps: 40, time_budget_s: 90, never_press: ['archive', 'mark read'], secret: ['PW'] })
+    expect(parseMobileExploreArgs([]), 'no flags: the tool defaults apply').toEqual({ json: false, never_press: [], secret: [] })
+  })
+
+  it.each([
+    [['--depth', '0'], /--depth takes a whole number from 1 to 10/],
+    [['--depth', '2.5'], /--depth takes a whole number/],
+    [['--max-screens', '201'], /from 1 to 200/],
+    [['--time-budget', '5'], /--time-budget takes a whole number from 10 to 3600/],
+    [['--never-press'], /--never-press needs a value/],
+    [['--never-press', ' '], /--never-press takes a word or short phrase/],
+    [['--never-press', 'mark.read'], /--never-press takes a word or short phrase/],
+    [Array.from({ length: 51 }, (_, i) => ['--never-press', `w${i}`]).flat(), /at most 50 words/],
+    [['--secret', 'a-b'], /--secret takes a name/],
+    [['--retry'], /Unknown flag --retry/],
+    [['app.apk'], /mobile-explore takes no file/]
+  ])('refuses %j', (argv, message) => {
+    expect(() => parseMobileExploreArgs(argv)).toThrow(MobileUsageError)
+    expect(() => parseMobileExploreArgs(argv)).toThrow(message)
+  })
+})
+
+describe('renderExploreResult', () => {
+  const base: MobileExploreReport = {
+    ok: true,
+    error: null,
+    fix: null,
+    target: { kind: 'avd', name: 'Pixel_9', serial: 'emulator-5554', api: 35 },
+    package: 'dev.nawi.sample',
+    density_dpi: 420,
+    exploration_id: 'x',
+    exploration_dir: '/home/u/.config/Nawi/explorations/x',
+    save_error: null,
+    start: 's-000000000001',
+    stopped: 'max_screens',
+    taps: 7,
+    notes: ['Stopped: the budget of 2 screens was reached.'],
+    screens: [
+      { screen_id: 's-000000000001', depth: 0, path: [], findings_total: 0, findings: [], screenshot: '/x/s-000000000001.png' },
+      { screen_id: 's-000000000002', depth: 1, path: ['Settings'], findings_total: 3, findings: [{ severity: 'error', summary: 'Button has no label' }], screenshot: null }
+    ],
+    screens_total: 2,
+    edges_total: 1,
+    skipped: [{ reason: 'never_press' }, { reason: 'text_field' }, { reason: 'never_press' }],
+    skipped_total: 3,
+    findings_total: 3
+  }
+
+  it('summarises the graph: screens with their path and findings, why it stopped, what was left alone, where it is saved', () => {
+    const out = renderExploreResult(base)
+    expect(out).toContain('Explored dev.nawi.sample on virtual device Pixel_9 (emulator-5554), 420 dpi: 2 screens, 7 taps, 3 findings.')
+    expect(out).toContain('stopped    max_screens (the screen budget ran out)')
+    expect(out).toMatch(/s-000000000002 {2}depth 1 {2}"Settings" {2}findings 3\n {6}FAIL {2}Button has no label\n {6}\(1 of 3 findings shown\)/)
+    expect(out).toContain('left alone 3 (2 never press, 1 text field)')
+    expect(out).toContain('note       Stopped: the budget of 2 screens was reached.')
+    expect(out).toContain('Saved: /home/u/.config/Nawi/explorations/x (graph.json + a screenshot per screen)')
+  })
+
+  it('says when the graph could not be saved', () => {
+    expect(renderExploreResult({ ...base, exploration_dir: null, save_error: 'the exploration could not be saved: EACCES.' })).toContain('Not saved: the exploration could not be saved: EACCES.')
+  })
+
+  it('prints the error and the one next step when it could not explore', () => {
+    const out = renderExploreResult({ ok: false, error: 'dev.a is not in front', fix: 'Bring dev.a to the front.', target: { kind: 'device', name: 'R5', serial: 'R5', api: 34 }, package: 'dev.a', exploration_id: null, exploration_dir: null, stopped: 'not_in_app', notes: [] })
+    expect(out).toBe('Could not explore dev.a on device R5: dev.a is not in front.\n\nNext: Bring dev.a to the front.')
   })
 })

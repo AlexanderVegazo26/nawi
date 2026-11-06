@@ -35,6 +35,8 @@ import {
 } from '../mobile/profile'
 import { realpath } from 'node:fs/promises'
 import { DEFAULT_KEEP_STUDIES, studyLiveScreen, writeStudy } from '../mobile/study-live'
+import { DEFAULT_KEEP_EXPLORATIONS, MAX_NEVER_PRESS_WORDS, NEVER_PRESS_WORD_RE, exploreLiveApp, writeExploration } from '../mobile/explore-live'
+import { DEFAULT_MAX_DEPTH, DEFAULT_MAX_SCREENS, DEFAULT_MAX_TAPS, DEFAULT_TIME_BUDGET_MS } from '../mobile/explore'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -1141,6 +1143,136 @@ const mobileStudy = defineTool({
   }
 })
 
+/** Where saved explorations live: one folder per run (graph.json + <screen_id>.png per screen). */
+export const explorationsDir = (): string => join(app.getPath('userData'), 'explorations')
+
+/** How much of a screen graph a mobile_explore answer carries; graph.json in the exploration folder has it all. */
+export const MAX_EXPLORE_SCREENS = 50
+export const MAX_EXPLORE_FINDINGS_PER_SCREEN = 10
+export const MAX_EXPLORE_EDGES = 200
+export const MAX_EXPLORE_SKIPPED = 100
+
+/**
+ * Roadmap M3 (fourth slice, M3c2): explore the app a connected device shows now and save its screen graph.
+ */
+const mobileExplore = defineTool({
+  name: 'mobile_explore',
+  description:
+    'Explore the Android app a connected device shows right now and map it: from the screen in front, tap each ' +
+    'control that is safe to tap, study the screen it opens (like mobile_study), press Back, and repeat depth first ' +
+    'until every safe control within max_depth was tapped or a budget runs out. Safe means nothing is destroyed, ' +
+    'bought, sent or typed: controls whose label, description or view id say delete, remove, pay, buy, send, save, ' +
+    'sign out, ... (plus the `never_press` words you add) are never pressed; text fields, switches, checkboxes and ' +
+    'controls covered by another are never touched; the keyboard is hidden before every tap. Installs, launches and ' +
+    'boots nothing: start the app with mobile_open first. `target` and `package` work like mobile_study (default: ' +
+    'the only connected device, the app in front). Returns ok, error and fix (the one next step when not ok), target, ' +
+    'package, density_dpi, exploration_id, exploration_dir, start (the first screen_id), stopped (done / max_screens / ' +
+    'max_taps / max_time / lost / unreadable / device_error / cancelled / not_in_app), taps, notes (why it stopped, ' +
+    'what it could not do), screens ({screen_id, depth, path: the labels tapped from the start screen, ' +
+    'elements_total, findings_total, findings ({kind, severity, summary, fix}), screenshot: the PNG\'s path or null ' +
+    'with screenshot_error}), edges ({from, to, label, result: screen / same_screen / left_app, package for left_app}), ' +
+    'skipped ({screen_id, label, reason: never_press / text_field / toggle / covered / no_locator / repeated_row / ' +
+    `gone}) and findings_total. At most ${MAX_EXPLORE_SCREENS} screens (${MAX_EXPLORE_FINDINGS_PER_SCREEN} findings each), ` +
+    `${MAX_EXPLORE_EDGES} edges and ${MAX_EXPLORE_SKIPPED} skipped controls are returned (*_total say how many there are); ` +
+    'graph.json in exploration_dir has them all, with each screen\'s full study (save_error when it could not be ' +
+    `saved). The newest ${DEFAULT_KEEP_EXPLORATIONS} explorations are kept. \`secrets\`: values typed into the app (a ` +
+    'sign-in); they are replaced by ${secret.name} in everything returned and saved, and a screen showing one keeps ' +
+    'no screenshot. Send a progressToken in _meta to get a notifications/progress message per screen found. Pausing ' +
+    'agent access or cancelling stops the run before its next tap (stopped: cancelled; what was found is kept). A ' +
+    'device problem is a normal result with ok: false, not an error.',
+  idempotent: false,
+  errors: [],
+  schema: z.object({
+    target: z.string().regex(TARGET_RE, 'an adb serial (see mobile_doctor devices) or an AVD name').optional().describe('Device serial or AVD name of a running emulator; default: the only connected device.'),
+    package: z.string().regex(PACKAGE_RE, 'an Android package name').optional().describe('The app to explore; it must be in front. Default: the app in front.'),
+    max_depth: z.number().int().min(1).max(10).default(DEFAULT_MAX_DEPTH).describe('Taps from the start screen to the deepest screen explored.'),
+    max_screens: z.number().int().min(1).max(200).default(DEFAULT_MAX_SCREENS).describe('Distinct screens to find before stopping.'),
+    max_taps: z.number().int().min(1).max(1000).default(DEFAULT_MAX_TAPS).describe('Taps on the app\'s controls before stopping (Back not counted).'),
+    time_budget_s: z.number().int().min(10).max(3600).default(DEFAULT_TIME_BUDGET_MS / 1000).describe('Seconds before stopping.'),
+    never_press: z
+      .array(z.string().regex(NEVER_PRESS_WORD_RE, 'a word or short phrase (letters and digits, up to 40 characters)'))
+      .max(MAX_NEVER_PRESS_WORDS)
+      .optional()
+      .describe('Words added to the never-press list for this app (e.g. "archive", "mark read"), matched as whole words.'),
+    secrets: inputMap('secrets').describe('Values typed into the app, scrubbed from the result. Never stored or reported.')
+  }),
+  async run(args, ctx) {
+    const stop = new AbortController()
+    const off = settings.onSettingsChanged((next) => {
+      if (next.agentAccessPaused) stop.abort(agentAccessPaused())
+    })
+    try {
+      if ((await settings.getSettings()).agentAccessPaused) throw agentAccessPaused()
+      const takenAt = Date.now()
+      const live = await exploreLiveApp({
+        target: args.target ?? null,
+        package: args.package ?? null,
+        maxDepth: args.max_depth,
+        maxScreens: args.max_screens,
+        maxTaps: args.max_taps,
+        timeBudgetMs: args.time_budget_s * 1000,
+        neverPress: args.never_press,
+        secrets: args.secrets,
+        signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
+        onScreen: ctx.progress
+          ? (s, found) => ctx.progress?.({ progress: found, total: args.max_screens, message: `${s.screen_id}: depth ${s.depth}, ${s.study.findings.length} findings` })
+          : undefined
+      })
+      const x = live.exploration
+      if (!live.ok || !x || live.package === null) {
+        return { ok: false, error: live.error, fix: live.fix, target: live.target, package: live.package, exploration_id: null, exploration_dir: null, stopped: x?.stopped ?? null, notes: x?.notes ?? [] }
+      }
+      const id = newRunId(takenAt)
+      let saved: { dir: string; screenshots: Map<string, string> } | null = null
+      let saveError: string | null = null
+      try {
+        saved = await writeExploration(explorationsDir(), id, { target: live.target, package: live.package, density_dpi: live.density_dpi, taken_at: new Date(takenAt).toISOString(), exploration: x })
+        await pruneRuns(explorationsDir(), DEFAULT_KEEP_EXPLORATIONS).catch(() => [])
+      } catch (err) {
+        // The graph itself is the answer; only the saved copy (and the screenshots, which live in it) is lost.
+        saveError = `the exploration could not be saved: ${err instanceof Error ? err.message : String(err)}`
+      }
+      return {
+        ok: true,
+        error: null,
+        fix: null,
+        target: live.target,
+        package: live.package,
+        density_dpi: live.density_dpi,
+        exploration_id: saved ? id : null,
+        exploration_dir: saved?.dir ?? null,
+        save_error: saveError,
+        start: x.start,
+        stopped: x.stopped,
+        taps: x.taps,
+        notes: x.notes,
+        screens: x.screens.slice(0, MAX_EXPLORE_SCREENS).map((s) => {
+          const screenshot = saved?.screenshots.get(s.screen_id) ?? null
+          return {
+            screen_id: s.screen_id,
+            depth: s.depth,
+            path: s.path.map((t) => t.label),
+            elements_total: s.study.elements.length,
+            findings_total: s.study.findings.length,
+            findings: s.study.findings.slice(0, MAX_EXPLORE_FINDINGS_PER_SCREEN).map((f) => ({ kind: f.kind, severity: f.severity, summary: f.summary, fix: f.fix })),
+            screenshot,
+            // Why there is no screenshot: withheld or failed on the device, else lost with the folder (save_error).
+            screenshot_error: screenshot ? null : (s.screenshot_error ?? (s.screenshot ? 'not saved: see save_error' : null))
+          }
+        }),
+        screens_total: x.screens.length,
+        edges: x.edges.slice(0, MAX_EXPLORE_EDGES).map((e) => ({ from: e.from, to: e.to, label: e.tap.label, result: e.result, ...(e.package !== undefined ? { package: e.package } : {}) })),
+        edges_total: x.edges.length,
+        skipped: x.skipped.slice(0, MAX_EXPLORE_SKIPPED).map((k) => ({ screen_id: k.screen_id, label: k.label, reason: k.reason })),
+        skipped_total: x.skipped.length,
+        findings_total: x.screens.reduce((n, s) => n + s.study.findings.length, 0)
+      }
+    } finally {
+      off()
+    }
+  }
+})
+
 /** The FR-AGT.1 surface, in the order the requirement lists them. */
 export const TOOLS: ToolDefinition[] = [
   captureScreen,
@@ -1162,7 +1294,8 @@ export const TOOLS: ToolDefinition[] = [
   inspectApk,
   mobileDoctor,
   mobileOpen,
-  mobileStudy
+  mobileStudy,
+  mobileExplore
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)

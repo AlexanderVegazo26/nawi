@@ -211,7 +211,7 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes twenty tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes twenty-one tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
@@ -219,11 +219,12 @@ Nawi exposes twenty tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`) and
 `inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`), `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
 exit 1 when no device can run it), `mobile_open` (CLI: `nawi mobile-open <file.apk|profile.nawi.mobile.yaml>`,
-exit 1 when the app is not running) and `mobile_study` (CLI: `nawi mobile-study [--target serial|avd]`, exit 1 when
-the screen could not be read). Every tool has a CLI command (a test keeps the
+exit 1 when the app is not running), `mobile_study` (CLI: `nawi mobile-study [--target serial|avd]`, exit 1 when
+the screen could not be read) and `mobile_explore` (CLI: `nawi mobile-explore [--target serial|avd] [--depth n]
+[--never-press word]...`, exit 1 when the app could not be explored). Every tool has a CLI command (a test keeps the
 two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
 `nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
-Exit codes: 0 success, 1 the app reported an error, a flow step failed, `mobile-doctor` found no device, `mobile-open` did not get the app running or `mobile-study` could not read the screen, 2 usage, 3 Nawi not running.
+Exit codes: 0 success, 1 the app reported an error, a flow step failed, `mobile-doctor` found no device, `mobile-open` did not get the app running, `mobile-study` could not read the screen or `mobile-explore` could not explore the app, 2 usage, 3 Nawi not running.
 A refused tool call is JSON-RPC -32000 with a typed code in `error.data.code` (`NOT_FOUND`, `INVALID_ARGUMENTS` with
 `data.issues`, `AGENT_ACCESS_PAUSED`, ...); each `tools/list` entry names the codes that tool can return under
 `_meta["nawi/errors"]`, and [docs/MCP-ERRORS.md](docs/MCP-ERRORS.md) documents the shape and every code (a contract
@@ -586,6 +587,28 @@ alone.
   `NAWI_SECRET_<name>`; MCP `secrets`) are replaced by `${secret.name}` in the
   result, and no screenshot is kept while one is on the screen (the screen is
   read again after the screenshot to check).
+- **Explore an app and map its screens** (`mobile_explore`, CLI `nawi mobile-explore
+  [--target serial|avd] [--package name] [--depth 3] [--max-screens 30] [--max-taps 200]
+  [--time-budget 600] [--never-press word]... [--secret name]...`,
+  `src/main/mobile/explore-live.ts` + `src/main/mobile/explore.ts`): from the
+  screen the device shows, taps each control that is safe to tap, studies the
+  screen it opens (as `mobile_study` does), presses Back and goes on depth first
+  until every safe control within the depth was tapped or a budget runs out.
+  Never pressed: controls whose label, description or view id say delete,
+  remove, pay, buy, send, save, sign out and the like (a few languages, plus
+  your `--never-press` words); never touched: text fields, switches,
+  checkboxes and controls covered by another; the keyboard is hidden before
+  every tap. Rows of one list are tapped until two open the same screen. A tap
+  that leaves the app is backed out of; when Back leads somewhere unexpected
+  the run stops and says where (it never taps blindly). The result is a screen
+  graph: screens (id, depth, the taps that reach it, findings), edges (the tap
+  between two screens, or `left_app`), the controls left alone and why, and
+  why the run stopped. Saved as `graph.json` + `<screen_id>.png` per screen in
+  Nawi's `explorations` folder (newest 50 kept; a call returns at most 50
+  screens with 10 findings each, graph.json has every study). Same device
+  choice, secret scrubbing and "nothing installed or booted" as `mobile_study`;
+  MCP callers get a progress message per screen found, and pausing agent
+  access stops the run before its next tap.
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
   `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
   **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
@@ -696,9 +719,10 @@ CDP selectors and the MCP projection/revision model.
 
 - **Mobile: install, launch and watch, not yet drive.** An APK dropped on the
   window (or `mobile_open`) is installed and launched on a device or an existing
-  virtual device and its screen is shown live and can be studied (`mobile_study`:
-  one screen at a time; the safe-exploration engine that builds a screen graph exists
-  but is not yet exposed as a tool or command), but there is no inspector or
+  virtual device and its screen is shown live and can be studied (`mobile_study`)
+  and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
+  long-press or swipes yet, and a run that loses its way stops instead of
+  relaunching the app; the graph is not shown in the Mobile view yet), but there is no inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is

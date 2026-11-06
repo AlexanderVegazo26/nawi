@@ -39,6 +39,10 @@ export const COMMANDS: Record<string, { tool: string; summary: string }> = {
   'mobile-study': {
     tool: 'mobile_study',
     summary: 'Study the screen a connected Android device shows now: elements, locators, testability and accessibility findings, screenshot. Exit 1 if it could not.'
+  },
+  'mobile-explore': {
+    tool: 'mobile_explore',
+    summary: 'Explore the app a connected Android device shows now with safe taps and save its screen graph with findings per screen. Exit 1 if it could not.'
   }
 }
 

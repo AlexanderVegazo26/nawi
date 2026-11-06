@@ -31,18 +31,22 @@ import {
   MOBILE_INSPECT_USAGE,
   MOBILE_OPEN_USAGE,
   MOBILE_STUDY_USAGE,
+  MOBILE_EXPLORE_USAGE,
   MobileUsageError,
   parseMobileDoctorArgs,
   parseMobileInspectArgs,
   parseMobileOpenArgs,
   parseMobileStudyArgs,
+  parseMobileExploreArgs,
   readProfileText,
   renderApkInfo,
   renderDoctorReport,
   renderOpenResult,
   renderStudyResult,
+  renderExploreResult,
   type MobileOpenReport,
-  type MobileStudyReport
+  type MobileStudyReport,
+  type MobileExploreReport
 } from './mobile'
 import type { MobileDoctorReport } from '../main/mobile/doctor'
 import type { ApkInfo } from '../main/mobile/apk'
@@ -113,7 +117,7 @@ Values are parsed as JSON when they look like JSON (numbers, true/false, arrays,
 objects) and kept as strings otherwise, so --width 800 sends a number and
 --name "My shot" sends a string. A flag with no value is the boolean true.
 
-Exit codes: 0 success, 1 the app reported an error, a flow step failed, mobile-doctor found no device, mobile-open did not get the app running or mobile-study could not read the screen, 2 usage, 3 Nawi not running.
+Exit codes: 0 success, 1 the app reported an error, a flow step failed, mobile-doctor found no device, mobile-open did not get the app running, mobile-study could not read the screen or mobile-explore could not explore the app, 2 usage, 3 Nawi not running.
 
 Nawi must already be running (the app, or \`nawi serve\`); no other command starts it for you.
 
@@ -126,6 +130,8 @@ ${MOBILE_DOCTOR_USAGE}
 ${MOBILE_OPEN_USAGE}
 
 ${MOBILE_STUDY_USAGE}
+
+${MOBILE_EXPLORE_USAGE}
 
 ${SERVE_USAGE}`
 
@@ -219,6 +225,7 @@ async function main(): Promise<void> {
   if (command === 'mobile-doctor') return mobileDoctorCommand(argv.slice(1))
   if (command === 'mobile-open') return mobileOpenCommand(argv.slice(1))
   if (command === 'mobile-study') return mobileStudyCommand(argv.slice(1))
+  if (command === 'mobile-explore') return mobileExploreCommand(argv.slice(1))
 
   let parsed: { args: Record<string, unknown>; json: boolean }
   try {
@@ -413,6 +420,31 @@ async function mobileStudyCommand(argv: string[]): Promise<void> {
     fail(`Nawi returned an unexpected mobile_study result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
   }
   process.stdout.write(`${json ? JSON.stringify(report, null, 2) : renderStudyResult(report)}\n`)
+  process.exit(report.ok ? EXIT_OK : EXIT_APP_ERROR)
+}
+
+/** `nawi mobile-explore`: exit 0 when the app was explored (a budget may have stopped it), 1 with the fix when not. */
+async function mobileExploreCommand(argv: string[]): Promise<void> {
+  let parsed: ReturnType<typeof parseMobileExploreArgs>
+  try {
+    parsed = parseMobileExploreArgs(argv)
+  } catch (err) {
+    if (err instanceof MobileUsageError) fail(`${err.message}\n\n${MOBILE_EXPLORE_USAGE}`, EXIT_USAGE)
+    throw err
+  }
+  const { json, secret, never_press, ...args } = parsed
+  // Only the named secrets, from this shell (like `nawi run`); a name the shell lacks is simply not scrubbed.
+  const { secrets } = inputsFor({ env: [], secret }, process.env)
+  const result = (await callTool('mobile_explore', {
+    ...args,
+    ...(never_press.length > 0 ? { never_press } : {}),
+    ...(Object.keys(secrets).length > 0 ? { secrets } : {})
+  })) as { structuredContent?: MobileExploreReport }
+  const report = result?.structuredContent
+  if (!report || typeof report.ok !== 'boolean') {
+    fail(`Nawi returned an unexpected mobile_explore result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
+  }
+  process.stdout.write(`${json ? JSON.stringify(report, null, 2) : renderExploreResult(report)}\n`)
   process.exit(report.ok ? EXIT_OK : EXIT_APP_ERROR)
 }
 

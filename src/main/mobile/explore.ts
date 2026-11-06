@@ -61,6 +61,8 @@ export interface ExploreRequest {
   /** Values typed into the app (name -> value), scrubbed from the result. */
   secrets?: Readonly<Record<string, string>>
   signal?: AbortSignal
+  /** Called once per new screen, after it is studied (progress for a run that can take minutes). */
+  onScreen?: (screen: ExploreScreen, found: number) => void
 }
 
 export interface ExploreTap {
@@ -324,6 +326,7 @@ export async function exploreApp(req: ExploreRequest, host: ExploreHost): Promis
     const entry: ExploreScreen = { screen_id: study.screen_id, depth, path, study, screenshot: png, screenshot_error: error }
     known.set(study.screen_id, entry)
     result.screens.push(entry)
+    req.onScreen?.(entry, result.screens.length)
     return entry
   }
 

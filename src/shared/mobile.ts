@@ -7,6 +7,10 @@
 export type MobileStepId = 'read' | 'doctor' | 'boot' | 'install' | 'grant' | 'settings' | 'launch' | 'onboarding' | 'sign_in' | 'first_screen'
 export const MOBILE_STEPS: readonly MobileStepId[] = ['read', 'doctor', 'boot', 'install', 'grant', 'settings', 'launch', 'onboarding', 'sign_in', 'first_screen']
 
+/** A word the explorer never presses (mobile_explore never_press): letters or digits, with spaces, apostrophes or hyphens between them. */
+export const NEVER_PRESS_WORD_RE = /^[\p{L}\p{N}](?:[\p{L}\p{N}' -]{0,38}[\p{L}\p{N}])?$/u
+export const MAX_NEVER_PRESS_WORDS = 50
+
 /** A mobile profile's file name ends with this (src/main/mobile/profile.ts). */
 export const MOBILE_PROFILE_SUFFIX = '.nawi.mobile.yaml'
 /** A profile is a few hundred bytes; anything this large is not one. */

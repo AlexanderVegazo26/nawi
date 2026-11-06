@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { MAX_MOBILE_PROFILE_BYTES, MOBILE_PROFILE_SUFFIX } from '../shared/mobile'
+import { MAX_MOBILE_PROFILE_BYTES, MAX_NEVER_PRESS_WORDS, MOBILE_PROFILE_SUFFIX, NEVER_PRESS_WORD_RE } from '../shared/mobile'
 import { readBoundedText, type TextFs } from './run'
 import type { ApkInfo } from '../main/mobile/apk'
 import type { CheckStatus, MobileDoctorReport } from '../main/mobile/doctor'
@@ -276,5 +276,134 @@ export function renderStudyResult(r: MobileStudyReport): string {
   if ((r.elements_total ?? elements.length) > elements.length) lines.push(`  (${elements.length} of ${r.elements_total} elements shown; the saved study.json has them all)`)
   if (r.save_error) lines.push('', `Not saved: ${r.save_error.replace(/\.$/, '')}.`)
   lines.push('', r.screenshot ? `Screenshot: ${r.screenshot}` : `No screenshot: ${(r.screenshot_error ?? 'none taken').replace(/\.$/, '')}.`)
+  return lines.join('\n')
+}
+
+export const MOBILE_EXPLORE_USAGE = `nawi mobile-explore [--target <serial|avd>] [--package <name>] [--depth <n>] [--max-screens <n>]
+                    [--max-taps <n>] [--time-budget <seconds>] [--never-press <word>]... [--secret <name>]... [--json]
+
+  Explores the app a connected Android device shows now (start it with mobile-open first) and maps its screens:
+  taps each control that is safe to tap, studies the screen it opens, presses Back, and goes on depth first until
+  every safe control within --depth (default 3) was tapped or a budget runs out (--max-screens 30, --max-taps 200,
+  --time-budget 600). Never presses controls that delete, pay, send, save or sign out (add words with
+  --never-press, e.g. --never-press archive), never types or flips a switch. Saves the screen graph and a
+  screenshot per screen in Nawi's explorations folder. --target and --package work like mobile-study; --secret
+  <name> scrubs the value of NAWI_SECRET_<name> from the result and skips screenshots that show it. Exit 0 when
+  the app was explored (even when a budget stopped it), 1 when not.`
+
+export interface MobileExploreArgs {
+  json: boolean
+  target?: string
+  package?: string
+  max_depth?: number
+  max_screens?: number
+  max_taps?: number
+  time_budget_s?: number
+  never_press: string[]
+  /** Names whose NAWI_SECRET_<name> values the CLI sends to be scrubbed. */
+  secret: string[]
+}
+
+const EXPLORE_LIMITS: Record<string, { key: 'max_depth' | 'max_screens' | 'max_taps' | 'time_budget_s'; min: number; max: number }> = {
+  '--depth': { key: 'max_depth', min: 1, max: 10 },
+  '--max-screens': { key: 'max_screens', min: 1, max: 200 },
+  '--max-taps': { key: 'max_taps', min: 1, max: 1000 },
+  '--time-budget': { key: 'time_budget_s', min: 10, max: 3600 }
+}
+
+export function parseMobileExploreArgs(argv: string[]): MobileExploreArgs {
+  const out: MobileExploreArgs = { json: false, never_press: [], secret: [] }
+  const value = (flag: string, v: string | undefined): string => {
+    if (v === undefined || v.startsWith('--')) throw new MobileUsageError(`${flag} needs a value.`)
+    return v
+  }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    const limit = EXPLORE_LIMITS[a]
+    if (a === '--json') out.json = true
+    else if (a === '--target') out.target = value(a, argv[++i])
+    else if (a === '--package') out.package = value(a, argv[++i])
+    else if (limit) {
+      const v = value(a, argv[++i])
+      const n = /^\d{1,6}$/.test(v) ? Number(v) : NaN
+      if (!(n >= limit.min && n <= limit.max)) throw new MobileUsageError(`${a} takes a whole number from ${limit.min} to ${limit.max}, not "${v.slice(0, 20)}".`)
+      out[limit.key] = n
+    } else if (a === '--never-press') {
+      const w = value(a, argv[++i]).trim()
+      if (!NEVER_PRESS_WORD_RE.test(w)) throw new MobileUsageError(`--never-press takes a word or short phrase (letters and digits, up to 40 characters), not "${w.slice(0, 40)}".`)
+      if (!out.never_press.includes(w)) out.never_press.push(w)
+      if (out.never_press.length > MAX_NEVER_PRESS_WORDS) throw new MobileUsageError(`--never-press takes at most ${MAX_NEVER_PRESS_WORDS} words.`)
+    } else if (a === '--secret') {
+      const name = value(a, argv[++i])
+      if (!SECRET_NAME_RE.test(name)) throw new MobileUsageError(`--secret takes a name (letters, digits, _), not "${name.slice(0, 40)}".`)
+      if (!out.secret.includes(name)) out.secret.push(name)
+    } else if (a.startsWith('--')) throw new MobileUsageError(`Unknown flag ${a}.`)
+    else throw new MobileUsageError(`mobile-explore takes no file: it explores the app the device shows now (got "${a.slice(0, 80)}").`)
+  }
+  return out
+}
+
+/** What `nawi mobile-explore` prints; mobile_explore's structured result. */
+export interface MobileExploreReport {
+  ok: boolean
+  error: string | null
+  fix: string | null
+  target: { kind: 'device' | 'avd'; name: string; serial: string; api: number | null } | null
+  package: string | null
+  density_dpi?: number | null
+  exploration_id: string | null
+  exploration_dir: string | null
+  save_error?: string | null
+  start?: string | null
+  stopped: string | null
+  taps?: number
+  notes: string[]
+  screens?: Array<{ screen_id: string; depth: number; path: string[]; findings_total: number; findings: Array<{ severity: string; summary: string }>; screenshot: string | null }>
+  screens_total?: number
+  edges_total?: number
+  skipped?: Array<{ reason: string }>
+  skipped_total?: number
+  findings_total?: number
+}
+
+const STOPPED_TEXT: Record<string, string> = {
+  done: 'every safe control within the depth was tapped',
+  max_screens: 'the screen budget ran out',
+  max_taps: 'the tap budget ran out',
+  max_time: 'the time budget ran out',
+  lost: 'it lost its way back (see the notes)',
+  unreadable: 'the screen could not be read',
+  device_error: 'the device stopped answering a tap or Back',
+  cancelled: 'it was cancelled',
+  not_in_app: 'the app was not in front'
+}
+
+/** A terminal summary of a mobile_explore result; `--json` prints the object itself. */
+export function renderExploreResult(r: MobileExploreReport): string {
+  const where = r.target ? (r.target.kind === 'avd' ? `virtual device ${r.target.name} (${r.target.serial})` : `device ${r.target.name}`) : null
+  if (!r.ok) {
+    return [`Could not explore${r.package ? ` ${r.package}` : ' the app'}${where ? ` on ${where}` : ''}: ${r.error ?? 'unknown error'}.`, ...(r.fix ? ['', `Next: ${r.fix}`] : [])].join('\n')
+  }
+  const screens = r.screens ?? []
+  const total = r.screens_total ?? screens.length
+  const lines = [
+    `Explored ${r.package} on ${where}${r.density_dpi ? `, ${r.density_dpi} dpi` : ''}: ${total} screen${total === 1 ? '' : 's'}, ${r.taps ?? 0} taps, ${r.findings_total ?? 0} findings.`,
+    `  stopped    ${r.stopped ?? '?'}${r.stopped && STOPPED_TEXT[r.stopped] ? ` (${STOPPED_TEXT[r.stopped]})` : ''}`
+  ]
+  for (const s of screens) {
+    lines.push(`  ${s.screen_id}  depth ${s.depth}  ${s.path.length === 0 ? '(start)' : s.path.map((p) => `"${p}"`).join(' > ')}  findings ${s.findings_total}`)
+    for (const f of s.findings) lines.push(`      ${SEVERITY_MARK[f.severity] ?? f.severity}  ${f.summary}`)
+    if (s.findings_total > s.findings.length) lines.push(`      (${s.findings.length} of ${s.findings_total} findings shown)`)
+  }
+  if (total > screens.length) lines.push(`  (${screens.length} of ${total} screens shown; graph.json has them all)`)
+  const skipped = r.skipped ?? []
+  if ((r.skipped_total ?? skipped.length) > 0) {
+    const byReason = new Map<string, number>()
+    for (const k of skipped) byReason.set(k.reason, (byReason.get(k.reason) ?? 0) + 1)
+    lines.push(`  left alone ${r.skipped_total ?? skipped.length} (${[...byReason].map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(', ')}${(r.skipped_total ?? 0) > skipped.length ? ', first ones' : ''})`)
+  }
+  for (const n of r.notes) lines.push(`  note       ${n}`)
+  if (r.save_error) lines.push('', `Not saved: ${r.save_error.replace(/\.$/, '')}.`)
+  else if (r.exploration_dir) lines.push('', `Saved: ${r.exploration_dir} (graph.json + a screenshot per screen)`)
   return lines.join('\n')
 }
