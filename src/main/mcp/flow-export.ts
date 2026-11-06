@@ -20,7 +20,7 @@ import { readEntries } from './projection'
 export const MAX_EXPORT_EVENTS = 50_000
 
 export class NoInputEventsError extends Error {
-  /** `unreadable`: the sidecar names an events file that is missing, unreadable or outside the revision. */
+  /** `unreadable`: the sidecar names an events file that is missing, unreadable (or fails before any event is read) or outside the revision. */
   constructor(readonly reason: UnavailableReason | 'not_harvested' | 'unreadable') {
     super(`no input events (${reason})`)
   }
@@ -70,13 +70,18 @@ export async function flowFromSidecar(options: {
 
   const events: Record<string, unknown>[] = []
   let truncated = false
-  for await (const entry of readEntries(options.revisionDir, source)) {
+  let readError: unknown
+  for await (const entry of readEntries(options.revisionDir, source, (err) => (readError = err))) {
     if (events.length >= maxEvents) {
       truncated = true
       break
     }
     events.push(entry)
   }
+  // A read that failed (a directory, a disk error, a file cut short under the
+  // reader) must not pass for a complete recording: with nothing read it is the
+  // same as a missing file, otherwise the flow is kept and the gap is a warning.
+  if (readError !== undefined && events.length === 0) throw new NoInputEventsError('unreadable')
 
   const surface = sidecar.surface
   const hasUrl = typeof surface.url === 'string' && /\S/.test(surface.url)
@@ -94,6 +99,12 @@ export async function flowFromSidecar(options: {
   const warnings = [
     ...(truncated
       ? [`Only the first ${maxEvents} input events were read; the flow covers the start of the recording only.`]
+      : []),
+    ...(readError !== undefined
+      ? [
+          `Reading the input events failed after ${events.length} events (${errorCode(readError)}); ` +
+            'the flow covers the start of the recording only.'
+        ]
       : []),
     ...(missingStartUrl
       ? [
@@ -114,6 +125,12 @@ export async function flowFromSidecar(options: {
     warnings,
     flow_yaml: stringifyFlow(result.flow)
   }
+}
+
+/** A short, path-free label for a read error: its errno code when it has one. */
+function errorCode(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code
+  return typeof code === 'string' && /^[A-Z0-9_]{1,32}$/.test(code) ? code : 'read error'
 }
 
 function fileSlug(name: string): string {

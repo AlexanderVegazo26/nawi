@@ -162,4 +162,17 @@ describe('flowFromSidecar', () => {
     expect(err, 'a missing input_events file must not export as an empty flow').toBeInstanceOf(NoInputEventsError)
     expect((err as NoInputEventsError).reason).toBe('unreadable')
   })
+
+  it('says the events file is unreadable when the sidecar names a directory, instead of returning an empty flow', async () => {
+    // access(R_OK) passes for a directory; the read itself fails (EISDIR) once streaming starts.
+    await fs.mkdir(join(dir, 'events-dir.ndjson'), { recursive: true })
+    const err = await flowFromSidecar({
+      revisionDir: dir,
+      sidecar: recording({ input_events: { path: 'events-dir.ndjson', count: 5 } }),
+      revision: 'v1',
+      name: 'x'
+    }).catch((e: unknown) => e)
+    expect(err, 'an input_events path that is a directory must not export as an empty flow').toBeInstanceOf(NoInputEventsError)
+    expect((err as NoInputEventsError).reason).toBe('unreadable')
+  })
 })

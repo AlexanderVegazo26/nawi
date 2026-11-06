@@ -289,10 +289,15 @@ function shrinkEntry(entry: ProjectedEntry, budget: number): ProjectedEntry {
  * The NDJSON path is a streaming line scan. A line that will not parse is
  * skipped rather than aborting the query: one corrupt line in a 40 MB harvest
  * must not make the whole state layer unreadable.
+ *
+ * A read error (the file can't be opened, is a directory, or fails mid-scan)
+ * ends the scan after the entries already yielded, and is passed to
+ * `onReadError` so a caller can tell a short file from a failed read.
  */
 export async function* readEntries(
   revisionDir: string,
-  source: unknown
+  source: unknown,
+  onReadError?: (err: unknown) => void
 ): AsyncGenerator<Record<string, unknown>> {
   if (source === null || source === undefined) return
 
@@ -313,7 +318,8 @@ export async function* readEntries(
   let stream: ReturnType<typeof createReadStream>
   try {
     stream = createReadStream(absolute, { encoding: 'utf8' })
-  } catch {
+  } catch (err) {
+    onReadError?.(err)
     return
   }
 
@@ -331,9 +337,10 @@ export async function* readEntries(
         yield parsed as Record<string, unknown>
       }
     }
-  } catch {
-    // A read error mid-scan yields what was already produced. The caller reports
-    // `truncated`, so the shortfall is visible rather than silent.
+  } catch (err) {
+    // A read error mid-scan keeps what was already produced; the caller decides
+    // how to report the shortfall.
+    onReadError?.(err)
   } finally {
     lines.close()
     stream.destroy()
