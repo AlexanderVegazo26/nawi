@@ -173,8 +173,10 @@ describe('DC-6 — semver compatibility', () => {
     expect(isReadable('2.0')).toBe(false)
   })
 
-  it('this build writes 1.0', () => {
-    expect(SCHEMA_VERSION).toBe('1.0')
-    expect(validSidecar().schema_version).toBe('1.0')
+  it('this build writes 1.1 (the text selector strategy) and still reads 1.0 files as fully understood', () => {
+    expect(SCHEMA_VERSION).toBe('1.1')
+    expect(validSidecar().schema_version).toBe('1.1')
+    expect(checkCompatibility('1.0').status, 'a 1.0 sidecar is a subset of 1.1').toBe('compatible')
+    expect(checkCompatibility('1.1', '1.0').status, 'a 1.0 reader sees a 1.1 file as newer, not as its own').toBe('forward_compatible')
   })
 })

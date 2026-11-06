@@ -63,6 +63,9 @@ const varName = z
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'must be a letter or "_" followed by letters, digits or "_"')
   .refine((n) => !RESERVED_KEYS.has(n), { message: 'is a reserved name (__proto__, constructor, prototype)' })
 
+/** Longest `{ text }` locator a flow accepts. */
+export const MAX_TEXT_LOCATOR_CHARS = 500
+
 /**
  * One locator. A step lists several, most stable first (FR-STA.6's ranking:
  * test id > id > role + accessible name > visible text > CSS), so the replayer
@@ -74,7 +77,7 @@ export const SelectorSchema = z.union([
   z.strictObject({ testid: nonEmpty }),
   z.strictObject({ id: nonEmpty }),
   z.strictObject({ role: nonEmpty, name: z.string().optional() }),
-  z.strictObject({ text: nonEmpty.max(500) }),
+  z.strictObject({ text: nonEmpty.max(MAX_TEXT_LOCATOR_CHARS) }),
   z.strictObject({ css: nonEmpty })
 ])
 

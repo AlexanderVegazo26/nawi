@@ -276,6 +276,7 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
         at: Date.now(),
         selectors: [
           { strategy: 'role-name', selector: 'role=button[name="Save"]', unique: true },
+          { strategy: 'text', selector: 'Save', unique: true },
           { strategy: 'nth-child', selector: 'div:nth-of-type(1)', unique: true }
         ]
       })
@@ -287,6 +288,8 @@ describe('FR-STA.4 / FR-SEC.2 — input event shape', () => {
     expect(strategies).toContain('role_name')
     expect(strategies).toContain('nth_child')
     expect(strategies.join(',')).not.toContain('-')
+    expect(strategies, 'the AI1 text layer is kept, ranked between role+name and the CSS paths').toEqual(['role_name', 'text', 'nth_child'])
+    expect(line.target.selectors[1]).toMatchObject({ strategy: 'text', value: 'Save' })
   })
 
   it('keeps a value for a non-secret field, so suppression is targeted not blanket', async () => {

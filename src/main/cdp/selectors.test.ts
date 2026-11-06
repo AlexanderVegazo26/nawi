@@ -138,6 +138,31 @@ describe('uniqueness', () => {
   })
 })
 
+describe('visible-text candidates (roadmap AI1)', () => {
+  const withText: SelectorDescriptor[] = [
+    ...acceptanceButton,
+    { strategy: 'text', selector: 'Save', unique: true }
+  ]
+
+  it('ranks a unique text candidate below role+name and above css', () => {
+    const order = rankCandidates(withText).map((r) => r.strategy)
+    expect(order, 'FR-STA.6 order with the AI1 text layer').toEqual(['testid', 'id', 'role-name', 'text', 'css', 'nth-child'])
+    expect(BASE_STABILITY.text).toBeLessThan(BASE_STABILITY['role-name'])
+    expect(BASE_STABILITY.text).toBeGreaterThan(BASE_STABILITY.css)
+  })
+
+  it('keeps the text itself as the selector so the flow can carry it verbatim', () => {
+    const text = rankCandidates(withText).find((r) => r.strategy === 'text')
+    expect(text, 'text candidate survives ranking').toMatchObject({ selector: 'Save', unique: true, penalties: [] })
+  })
+
+  it('halves a text candidate that is not unique, like any other strategy', () => {
+    const { stability, penalties } = scoreCandidate({ strategy: 'text', selector: 'Edit', unique: false })
+    expect(stability).toBeCloseTo(BASE_STABILITY.text * 0.5)
+    expect(penalties).toEqual(['not-unique'])
+  })
+})
+
 describe('rankCandidates hygiene', () => {
   it('drops empty selectors and de-duplicates', () => {
     const ranked = rankCandidates([

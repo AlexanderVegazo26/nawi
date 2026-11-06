@@ -147,6 +147,34 @@ steps:
     }
   })
 
+  it('replays every text candidate the recorder emits to the element it was recorded on (probe and replayer agree)', async () => {
+    // Load the fixture with the probe installed, through the replayer itself.
+    const warm = await replay(flow([{ id: 'w', action: 'assert', target: { selectors: [{ id: 'archive-btn' }] }, expect: { visible: true } }]))
+    expect(warm.status, why(warm)).toBe('passed')
+    const recorded = (await read(`(() => {
+      const out = {}
+      for (const id of ['archive-btn', 'restore-btn', 'shout-btn', 'contents-btn', 'archive-hidden', 'archive-invisible']) {
+        const c = window.__nawiProbe.describeSelectors(document.getElementById(id)).find((c) => c.strategy === 'text')
+        out[id] = c ? c.selector : null
+      }
+      return out
+    })()`)) as Record<string, string | null>
+    expect(recorded, 'text candidates as the recorder writes them (rendered text, folded); hidden copies get none').toEqual({
+      'archive-btn': 'Archive all',
+      'restore-btn': 'Restore selected',
+      'shout-btn': 'SHOUT',
+      'contents-btn': 'Mark read',
+      'archive-hidden': null,
+      'archive-invisible': null
+    })
+    for (const [id, text] of Object.entries(recorded)) {
+      if (text === null) continue
+      const run = await replay(flow([{ id: 'c', action: 'click', target: { selectors: [{ text }] } }]))
+      expect(run.status, `recorded text "${text}" of #${id} should replay: ${why(run)}`).toBe('passed')
+      expect(await read(`document.getElementById('clicked').textContent`), `recorded text "${text}" should click #${id}`).toBe(id)
+    }
+  })
+
   it('treats a text locator as exact: a partial text matches nothing and falls through to the next layer', async () => {
     const run = await replay(
       flow([{ id: 'c', action: 'click', target: { selectors: [{ text: 'Archive' }, { text: 'Next pag' }, { css: '#a-btn' }] } }])

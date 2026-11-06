@@ -357,7 +357,9 @@ alone.
   turns a capture's harvested input events into flow YAML: clicks, one `fill`
   per field with its final value (`select` for a `<select>`), named keys such as
   Enter (and ArrowUp/ArrowDown in an autocomplete, so Enter picks the same
-  suggestion on replay), each with its ranked selectors and an `intent` taken from the step's note
+  suggestion on replay), each with its ranked selectors (including the element's visible
+  `text` when it is a short label the replayer finds uniquely; never for form fields,
+  editable or secret content) and an `intent` taken from the step's note
   (rewrite it to say what the step is for). Fields marked secret at capture become
   `${secret.<name>}` placeholders (their values were never recorded). Scrolls,
   resizes, modifier and editing keys, the click that only focused a field, and

@@ -30,58 +30,14 @@
     return String(el.innerText == null ? el.textContent || '' : el.innerText)
   }
 
-  function foldSpace(s) {
-    return String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
-  }
-
-  var NO_TEXT_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, TITLE: 1, HEAD: 1 }
-
-  /**
-   * `{ text }` locators (roadmap AI1): the innermost visible elements whose
-   * rendered text (`innerText`: what is on screen, so `<br>` is a space, CSS
-   * `text-transform` applies and hidden children don't count), whitespace runs
-   * folded, is exactly the wanted text. Hidden elements go first (a collapsed
-   * menu's copy is not visible text and must not make the locator ambiguous),
-   * then any element that contains another visible match (the wrappers around
-   * the button). Form-control values are not text: role + name covers those.
-   */
-  function textMatches(wanted) {
-    var want = foldSpace(wanted)
-    var body = document.body
-    if (!want || !body) return []
-    // Cheap bounds on the raw textContent before the costly innerText: a match
-    // has at least the wanted characters, and a wrapper with far more text than
-    // that (a list, the page) cannot render as exactly that text.
-    var minChars = want.replace(/ /g, '').length
-    var maxChars = want.length * 4 + 2000
-    var all = body.querySelectorAll('*')
-    var hits = []
-    for (var i = 0; i < all.length; i++) {
-      var el = all[i]
-      if (NO_TEXT_TAGS[el.tagName]) continue
-      var raw = el.textContent
-      if (raw == null || raw.length < minChars || raw.length > maxChars) continue
-      if (foldSpace(el.innerText == null ? raw : el.innerText) !== want) continue
-      if (!isVisible(el)) continue
-      hits.push(el)
-    }
-    var out = []
-    for (var j = 0; j < hits.length; j++) {
-      var inner = true
-      for (var k = 0; k < hits.length; k++) {
-        if (k !== j && hits[j].contains(hits[k])) {
-          inner = false
-          break
-        }
-      }
-      if (inner) out.push(hits[j])
-    }
-    return out
-  }
-
   /** All elements a selector matches, in document order. */
   function matchesFor(selector) {
-    if (selector.text !== undefined) return textMatches(selector.text)
+    if (selector.text !== undefined) {
+      // The probe's rule, the one the recorder measured the text candidate with.
+      var tp = probe()
+      if (!tp || typeof tp.textMatches !== 'function') return { invalid: 'text selectors need the page probe, which is not installed' }
+      return tp.textMatches(selector.text)
+    }
     if (selector.testid !== undefined) {
       return Array.prototype.slice.call(document.querySelectorAll('[' + TESTID_ATTR + '="' + CSS.escape(selector.testid) + '"]'))
     }

@@ -11,8 +11,11 @@
  * ZERO runtime imports — the renderer consumes this module directly.
  */
 
-/** The version this build writes. */
-export const SCHEMA_VERSION = '1.0'
+/**
+ * The version this build writes. Minor history: 1.1 adds the `text` selector
+ * strategy (visible-text candidates, roadmap AI1).
+ */
+export const SCHEMA_VERSION = '1.1'
 
 export interface SemVer {
   major: number

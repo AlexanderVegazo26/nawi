@@ -169,7 +169,7 @@ AND steady-state memory usage of the ring buffer stays under 1.5 GB at 1080p30
 | FR-STA.3 | P0 | Capture console entries with level, message, and stack, for the recording window plus 30 s of preamble. |
 | FR-STA.4 | P0 | Capture input events with `{t_ms, type, target_selector, target_role, target_name, coordinates}`. Key *values* are captured only for non-secret fields (see FR-SEC.2). |
 | FR-STA.5 | P1 | Capture network activity as HAR, with request/response bodies subject to size cap (default 256 KB) and redaction rules. |
-| FR-STA.6 | P1 | Selector generation must prefer stability: `data-testid` > `id` > `role+name` > scoped CSS > nth-child. Emit *all* candidates ranked, not just the winner. |
+| FR-STA.6 | P1 | Selector generation must prefer stability: `data-testid` > `id` > `role+name` > visible text (roadmap AI1; short, unique labels only) > scoped CSS > nth-child. Emit *all* candidates ranked, not just the winner. |
 | FR-STA.7 | P1 | Timestamp alignment: state events and video frames resolve to the same monotonic clock; drift over a 30-minute recording < 100 ms. |
 | FR-STA.8 | P2 | Desktop-native structured capture via platform accessibility APIs (UIAutomation / AX / AT-SPI). |
 

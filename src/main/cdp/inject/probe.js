@@ -110,14 +110,26 @@
     var labelledBy = el.getAttribute && el.getAttribute('aria-labelledby')
     if (labelledBy) {
       var ref = document.getElementById(labelledBy)
-      if (ref) return (ref.textContent || '').trim()
+      if (ref) return shownText(ref)
     }
     if (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') {
-      if (el.labels && el.labels.length) return (el.labels[0].textContent || '').trim()
+      if (el.labels && el.labels.length) return shownText(el.labels[0])
       var placeholder = el.getAttribute('placeholder')
       if (placeholder) return placeholder.trim()
     }
-    return (el.textContent || '').trim().slice(0, 120)
+    return shownText(el).slice(0, 120)
+  }
+
+  /**
+   * An element's text for a name, or '' when that text would carry a secret
+   * (FR-SEC.2): the element is secret, or holds a secret element, such as
+   * `<button>Pay <span data-nawi-secret>card-ending-4111</span></button>`. The
+   * name goes into the recording as `target_name` and the role+name selector.
+   */
+  function shownText(node) {
+    var text = (node.textContent || '').trim()
+    if (!text) return ''
+    return isSecret(node) || containsSecret(node) ? '' : text
   }
 
   var IMPLICIT_ROLES = {
@@ -143,6 +155,107 @@
       return 'textbox'
     }
     return IMPLICIT_ROLES[el.tagName] || ''
+  }
+
+  /** Longest visible text recorded as a `text` candidate: a label, not a paragraph. */
+  var TEXT_CANDIDATE_MAX_CHARS = 80
+  var NO_TEXT_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, TITLE: 1, HEAD: 1 }
+  /** Form controls and their parts: what they show is a value, and role + name already covers them. */
+  var EDITABLE_TAGS = { INPUT: 1, TEXTAREA: 1, SELECT: 1, OPTION: 1, OPTGROUP: 1, DATALIST: 1 }
+
+  function foldSpace(s) {
+    return String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
+  }
+
+  function isVisible(el) {
+    if (!el.isConnected) return false
+    if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ visibilityProperty: true })) return false
+    var r = el.getBoundingClientRect()
+    return r.width > 0 && r.height > 0
+  }
+
+  /**
+   * `{ text }` locators (roadmap AI1): the innermost visible elements whose
+   * rendered text (`innerText`: what is on screen, so `<br>` is a space, CSS
+   * `text-transform` applies and hidden children don't count), whitespace runs
+   * folded, is exactly the wanted text. Hidden elements go first (a collapsed
+   * menu's copy is not visible text and must not make the locator ambiguous),
+   * then any element that contains another visible match (the wrappers around
+   * the button). Form-control values are not text: role + name covers those.
+   * The recorder's text candidates and the replayer (replay.js `matchesFor`)
+   * both use this one function, so a recorded text locator resolves the way it
+   * was measured.
+   */
+  function textMatches(wanted) {
+    var want = foldSpace(wanted)
+    var body = document.body
+    if (!want || !body) return []
+    // Cheap bounds on the raw textContent before the costly innerText: a match
+    // has at least the wanted characters, and a wrapper with far more text than
+    // that (a list, the page) cannot render as exactly that text.
+    var minChars = want.replace(/ /g, '').length
+    var maxChars = want.length * 4 + 2000
+    var all = body.querySelectorAll('*')
+    var hits = []
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i]
+      if (NO_TEXT_TAGS[el.tagName]) continue
+      var raw = el.textContent
+      if (raw == null || raw.length < minChars || raw.length > maxChars) continue
+      if (foldSpace(el.innerText == null ? raw : el.innerText) !== want) continue
+      if (!isVisible(el)) continue
+      hits.push(el)
+    }
+    var out = []
+    for (var j = 0; j < hits.length; j++) {
+      var inner = true
+      for (var k = 0; k < hits.length; k++) {
+        if (k !== j && hits[j].contains(hits[k])) {
+          inner = false
+          break
+        }
+      }
+      if (inner) out.push(hits[j])
+    }
+    return out
+  }
+
+  /** A secret field or secret-marked element anywhere inside `el` (its text would carry the secret). */
+  function containsSecret(el) {
+    var found = false
+    eachElement(
+      el,
+      function (d) {
+        if (!found && (d.hasAttribute(MARKER) || isSecretElement(d))) found = true
+      },
+      0
+    )
+    return found
+  }
+
+  /**
+   * Roadmap AI1: the element's short visible text as a locator layer, or null.
+   * Only recorded when the replayer would find exactly this element by it (the
+   * innermost visible element showing that text: for `<a><span>Open</span></a>`
+   * that is the span, which is also what a click on the text targets). Never
+   * for form controls or editable content (what they show is user input),
+   * never for anything secret or holding a secret, and never for text without
+   * a letter (counters, prices and glyphs change or repeat). The text is page
+   * content of the same kind as the role+name candidate's accessible name.
+   * Cheap checks first: this runs in the capture-phase click/key listener.
+   */
+  function textCandidate(el) {
+    if (EDITABLE_TAGS[el.tagName] || el.isContentEditable || NO_TEXT_TAGS[el.tagName]) return null
+    var raw = el.textContent
+    // A label's textContent can't be far longer than its folded text (same bound as textMatches).
+    if (raw == null || !/\S/.test(raw) || raw.length > TEXT_CANDIDATE_MAX_CHARS * 4 + 2000) return null
+    var text = foldSpace(el.innerText == null ? raw : el.innerText)
+    if (!text || text.length > TEXT_CANDIDATE_MAX_CHARS || !/\p{L}/u.test(text)) return null
+    if (el.closest && el.closest('select, datalist')) return null
+    if (isSecret(el) || containsSecret(el)) return null
+    var hits = textMatches(text)
+    if (hits.length !== 1 || hits[0] !== el) return null
+    return { strategy: 'text', selector: text, unique: true }
   }
 
   /**
@@ -187,6 +300,9 @@
         name: name
       })
     }
+
+    var text = textCandidate(el)
+    if (text) candidates.push(text)
 
     var classes = classListOf(el)
     var cssSel = scopedCssPath(el)
@@ -413,6 +529,8 @@
     /** The same role/name approximation the recorded `role-name` candidates used, for the replayer to match them. */
     roleOf: roleOf,
     accessibleName: accessibleName,
+    /** The `{ text }` locator rule, shared with the replayer. */
+    textMatches: textMatches,
     describeInput: describeInput,
     isSecret: isSecret,
     isSecretElement: isSecretElement,

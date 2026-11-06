@@ -506,6 +506,31 @@ describe('flowFromRecording start URL', () => {
   })
 })
 
+describe('flowFromRecording: the visible-text layer (roadmap AI1)', () => {
+  it('carries a recorded text candidate into the step as a { text } locator, in ranked order', () => {
+    clock = 0
+    const archive = {
+      role: 'button',
+      accessible_name: 'Archive all',
+      bounds: null,
+      selectors: [
+        { strategy: 'role_name', value: 'role=button[name="Archive all"]', stability: 0.8 },
+        { strategy: 'text', value: 'Archive all', stability: 0.6 },
+        { strategy: 'css', value: 'div#text-card > span > button.tbtn', stability: 0.45 }
+      ]
+    }
+    const { flow } = flowFromRecording([ev('click', archive)], OPTIONS)
+    const step = flow.steps[0]
+    expect(step && 'target' in step ? step.target?.selectors : undefined, `steps were:\n${stringifyFlow(flow)}`).toEqual([
+      { role: 'button', name: 'Archive all' },
+      { text: 'Archive all' },
+      { css: 'div#text-card > span > button.tbtn' }
+    ])
+    const reparsed = parseFlow(stringifyFlow(flow))
+    expect(reparsed.ok, 'the flow with a text locator round-trips through YAML').toBe(true)
+  })
+})
+
 describe('toFlowSelector', () => {
   it.each([
     ['testid', '[data-testid="save"]', { testid: 'save' }],
@@ -519,7 +544,10 @@ describe('toFlowSelector', () => {
     ['role_name', 'role=button[name="a\\\\"b"]', { role: 'button', name: 'a\\"b' }],
     ['testid', '[data-testid="dir\\"]', { testid: 'dir\\' }],
     ['css', 'main > button.primary', { css: 'main > button.primary' }],
-    ['nth_child', 'body:nth-of-type(1) > a:nth-of-type(2)', { css: 'body:nth-of-type(1) > a:nth-of-type(2)' }]
+    ['nth_child', 'body:nth-of-type(1) > a:nth-of-type(2)', { css: 'body:nth-of-type(1) > a:nth-of-type(2)' }],
+    ['text', 'Archive all', { text: 'Archive all' }],
+    ['text', '  Restore \n\t selected ', { text: 'Restore selected' }],
+    ['text', 'x'.repeat(500), { text: 'x'.repeat(500) }]
   ])('maps %s %s', (strategy, value, expected) => {
     expect(toFlowSelector(strategy, value)).toEqual(expected)
   })
@@ -527,7 +555,9 @@ describe('toFlowSelector', () => {
   it.each([
     ['role_name', 'button "Save"'],
     ['xpath', '//button'],
-    ['css', '   ']
+    ['css', '   '],
+    ['text', ' \n '],
+    ['text', 'x'.repeat(501)]
   ])('refuses %s %s', (strategy, value) => {
     expect(toFlowSelector(strategy, value)).toBeNull()
   })

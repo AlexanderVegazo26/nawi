@@ -173,6 +173,7 @@ const STRATEGY_MAP: Record<string, SelectorStrategy> = {
   testid: 'testid',
   id: 'id',
   'role-name': 'role_name',
+  text: 'text',
   css: 'css',
   'nth-child': 'nth_child'
 }

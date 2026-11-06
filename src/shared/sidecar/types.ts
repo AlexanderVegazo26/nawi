@@ -117,7 +117,7 @@ export interface ConsoleEntry {
   stack: string | null
 }
 
-export type SelectorStrategy = 'testid' | 'id' | 'role_name' | 'css' | 'nth_child'
+export type SelectorStrategy = 'testid' | 'id' | 'role_name' | 'text' | 'css' | 'nth_child'
 
 export interface SelectorCandidate {
   strategy: SelectorStrategy

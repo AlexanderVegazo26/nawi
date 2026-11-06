@@ -190,6 +190,70 @@ describeWithBrowser('CDP client against a real Chromium (launched by our own lau
     })
   })
 
+  describe('roadmap AI1 visible-text candidates, computed against a live DOM', () => {
+    const textCandidateOf = async (target: string): Promise<string | null> => {
+      const result = await client.send<{ result: { value: string | null } }>(
+        'Runtime.evaluate',
+        {
+          expression: `(() => { const el = document.querySelector(${JSON.stringify(target)});
+            const c = window.__nawiProbe.describeSelectors(el).find((c) => c.strategy === 'text');
+            return c ? c.selector : null })()`,
+          returnByValue: true
+        },
+        pageSessionId
+      )
+      return result.result.value
+    }
+
+    it('emits the folded visible text of a short, unique label on the element that shows it', async () => {
+      for (const [target, expected] of [
+        ['#s1', 'Save'],
+        ['#wrapped-link span', 'Open settings']
+      ] as const) {
+        expect(await textCandidateOf(target), `text candidate for ${target}`).toBe(expected)
+      }
+    })
+
+    it('ranks the text candidate between role+name and css', async () => {
+      const ranked = (await rankSelectorsFor(client, '#s1', pageSessionId)) ?? []
+      expect(ranked.map((c) => c.strategy)).toEqual(['testid', 'id', 'role-name', 'text', 'css', 'nth-child'])
+    })
+
+    it('emits none for repeated text, counters, page copy, editable content, form fields or secret content', async () => {
+      for (const [target, why] of [
+        ['#dup-a', 'two buttons show "Edit"'],
+        ['#count-btn', 'no letter: a counter'],
+        ['#long-copy', 'longer than a label'],
+        ['#wrapped-link', 'its text is shown by the span inside, which replay would act on instead'],
+        ['#editable', 'contenteditable: user input'],
+        ['#editor-wrap', 'its text is the editable content inside it'],
+        ['#email', 'a form field: its value is user input'],
+        ['#pw', 'a password field'],
+        ['#pay-btn', 'contains a data-nawi-secret element'],
+        ['#pay-btn span', 'is a data-nawi-secret element']
+      ] as const) {
+        expect(await textCandidateOf(target), `${target} should have no text candidate (${why})`).toBeNull()
+      }
+    })
+
+    it('keeps text inside a secret element out of the accessible name and the role+name candidate (FR-SEC.2)', async () => {
+      const result = await client.send<{ result: { value: { selectors: unknown; name: string; input: { target_name: unknown } } } }>(
+        'Runtime.evaluate',
+        {
+          expression: `(() => { const el = document.querySelector('#pay-btn');
+            return { selectors: window.__nawiProbe.describeSelectors(el), name: window.__nawiProbe.accessibleName(el),
+              input: window.__nawiProbe.describeInput(el, 'click') } })()`,
+          returnByValue: true
+        },
+        pageSessionId
+      )
+      const seen = JSON.stringify(result.result.value)
+      expect(seen.includes('card-ending-4111'), `the secret span's text leaked into the probe's description: ${seen}`).toBe(false)
+      expect(result.result.value.name, 'no name rather than a name carrying the secret').toBe('')
+      expect(result.result.value.input.target_name).toBeNull()
+    })
+  })
+
   describe('FR-SEC.2 — secret values never cross the CDP wire', () => {
     it('marks password, one-time-code, and inherited secret targets', async () => {
       const marking = await markAndResolveSecrets(client, pageSessionId)

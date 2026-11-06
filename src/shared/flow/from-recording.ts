@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FLOW_VERSION, FlowSchema, MAX_INTENT_CHARS, RESERVED_KEYS, type Flow, type FlowStep, type FlowTarget, type Selector } from './schema'
+import { FLOW_VERSION, FlowSchema, MAX_INTENT_CHARS, MAX_TEXT_LOCATOR_CHARS, RESERVED_KEYS, type Flow, type FlowStep, type FlowTarget, type Selector } from './schema'
 
 /**
  * Recording → flow (roadmap F2).
@@ -197,8 +197,8 @@ const unescapeQuotes = (s: string): string => s.replace(/\\"/g, '"')
 /**
  * One harvest candidate as a flow selector, or null when it can't be one.
  * Exported for tests. Candidate values are what the page probe writes:
- * `[data-testid="x"]`, `#x` (CSS-escaped), `role=button[name="Save"]`, and
- * CSS paths for `css`/`nth_child`.
+ * `[data-testid="x"]`, `#x` (CSS-escaped), `role=button[name="Save"]`, the
+ * visible text for `text`, and CSS paths for `css`/`nth_child`.
  */
 export function toFlowSelector(strategy: string, value: string): Selector | null {
   if (!/\S/.test(value)) return null
@@ -217,6 +217,12 @@ export function toFlowSelector(strategy: string, value: string): Selector | null
       const m = ROLE_NAME_RE.exec(value)
       if (!m || !/\S/.test(m[1])) return null
       return { role: m[1].trim(), name: unescapeQuotes(m[2]) }
+    }
+    case 'text': {
+      // The probe writes the folded visible text; fold again for a hand-edited
+      // sidecar, and drop what the flow schema would reject.
+      const text = value.replace(/\s+/g, ' ').trim()
+      return text.length <= MAX_TEXT_LOCATOR_CHARS ? { text } : null
     }
     case 'css':
     case 'nth_child':

@@ -76,7 +76,7 @@ function leaves<C extends z.core.$ZodObjectConfig>(o: ObjectMaker<C>) {
   })
 
   const selectorCandidate = o({
-    strategy: z.enum(['testid', 'id', 'role_name', 'css', 'nth_child']),
+    strategy: z.enum(['testid', 'id', 'role_name', 'text', 'css', 'nth_child']),
     value: z.string(),
     stability
   })
