@@ -697,7 +697,8 @@ CDP selectors and the MCP projection/revision model.
 - **Mobile: install, launch and watch, not yet drive.** An APK dropped on the
   window (or `mobile_open`) is installed and launched on a device or an existing
   virtual device and its screen is shown live and can be studied (`mobile_study`:
-  one screen at a time; no exploration of other screens yet), but there is no inspector or
+  one screen at a time; the safe-exploration engine that builds a screen graph exists
+  but is not yet exposed as a tool or command), but there is no inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is

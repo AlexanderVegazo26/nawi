@@ -127,7 +127,7 @@ export function appPackage(screen: UiScreen): string | null {
 }
 
 /** Whether a secret value is on the screen (in what the dump read): then the screenshot shows it too. */
-function showsSecret(screen: UiScreen, secrets: ReadonlyArray<readonly [string, string]>): boolean {
+export function showsSecret(screen: UiScreen, secrets: ReadonlyArray<readonly [string, string]>): boolean {
   const r = secretRedactor(secrets)
   return screen.nodes.some((n) => [n.text, n.content_desc, n.hint].some((t) => t !== '' && r(t) !== t))
 }

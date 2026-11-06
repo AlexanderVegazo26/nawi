@@ -7,8 +7,8 @@ import type { RgbImage } from './png'
 /**
  * Roadmap M3 (first slice, M3a): study one screen of an Android app from its `uiautomator dump`
  * (src/main/mobile/hierarchy.ts). Offline and pure, so fixture dumps pin every rule. Reading a live device with a
- * screenshot is study-live.ts (M3b, mobile_study); the safe exploration that builds a screen graph is a later M3
- * slice that calls this.
+ * screenshot is study-live.ts (M3b, mobile_study); the safe exploration that builds a screen graph from it is
+ * explore.ts (M3c).
  *
  * - Inventory: every element a test or a person can act on or read (clickable, long-clickable, checkable,
  *   focusable, scrollable, or carrying text / a content description / a hint), with the shortest locator that finds
@@ -222,7 +222,7 @@ function basisOf(loc: UiLocator | null): LocatorBasis {
  * dumped as plain views) a scrollable view other than a scroll view whose children repeat: two or more of them
  * share a class and a view id.
  */
-function collections(nodes: UiNode[]): boolean[] {
+export function collectionFlags(nodes: UiNode[]): boolean[] {
   const seen = new Map<number, Set<string>>()
   const repeats = new Set<number>()
   for (const n of nodes) {
@@ -254,6 +254,11 @@ function clipBox(nodes: UiNode[], n: UiNode): UiBounds | null {
     cur = nodes[cur.parent]
   }
   return null
+}
+
+/** The screen id studyScreen gives this screen, without the rest of the study (cheap enough to call after every tap). */
+export function screenIdOf(screen: UiScreen): string {
+  return screenId(screen, collectionMembership(screen.nodes, collectionFlags(screen.nodes)))
 }
 
 function screenId(screen: UiScreen, inCollection: boolean[]): string {
@@ -343,7 +348,7 @@ export function studyScreen(screen: UiScreen, opts: StudyOptions = {}): ScreenSt
   const { nodes } = screen
   const pkg = opts.package ?? null
   const density = opts.densityDpi ?? null
-  const inCollection = collectionMembership(nodes, collections(nodes))
+  const inCollection = collectionMembership(nodes, collectionFlags(nodes))
   const counts = uniquenessIndex(nodes)
   const labels = new Map<number, string>()
   const elements: StudyElement[] = []
