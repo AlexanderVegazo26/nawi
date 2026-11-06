@@ -23,7 +23,8 @@ let endpoint: { url: string; token: string; port: number }
 const BRIDGE = join(process.cwd(), 'out', 'mcp', 'stdio-bridge.js')
 
 /**
- * The FR-AGT.1 surface plus `export_flow` (roadmap F2), `run_flow` (F3b), `list_runs`/`get_run` (F4c), `inspect_apk` (M1a), `mobile_doctor` (M1b) and `mobile_open` (M1c). Named here so the
+ * The FR-AGT.1 surface plus `export_flow` (roadmap F2), `run_flow` (F3b), `list_runs`/`get_run` (F4c), `inspect_apk` (M1a), `mobile_doctor` (M1b),
+ * `mobile_open` (M1c), `mobile_study` (M3b) and `mobile_explore` (M3c2). Named here so the
  * kill-switch test cannot quietly skip one.
  */
 const TOOL_NAMES = [
@@ -45,7 +46,9 @@ const TOOL_NAMES = [
   'get_run',
   'inspect_apk',
   'mobile_doctor',
-  'mobile_open'
+  'mobile_open',
+  'mobile_study',
+  'mobile_explore'
 ]
 
 /* ------------------------------------------------------------------ *
@@ -159,7 +162,7 @@ test('FR-SEC.1 — the endpoint declares itself as non-egress', async () => {
   expect(parsed.egress).toBe(false)
 })
 
-test('initialize and tools/list expose exactly the twelve FR-AGT.1 tools plus export_flow, run_flow, list_runs, get_run, inspect_apk and mobile_doctor', async () => {
+test('initialize and tools/list expose exactly the twelve FR-AGT.1 tools plus the flow, run and mobile tools', async () => {
   const init = await rpc('initialize', { protocolVersion: '2025-06-18' })
   expect(init.status).toBe(200)
   expect((init.body.result as { serverInfo: { name: string } }).serverInfo.name).toBe('nawi')
