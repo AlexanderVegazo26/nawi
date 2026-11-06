@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FlowSchema } from '@shared/flow'
@@ -7,6 +8,7 @@ import {
   MAX_FLOW_FILE_BYTES,
   REPORTED_EVIDENCE_PER_STEP,
   defaultOpenPage,
+  readFlowAsset,
   resolveFlowFile,
   runFlowFile,
   trimEvidence,
@@ -15,6 +17,7 @@ import {
   type OpenPage
 } from './flow-run'
 import { ToolError } from './mcp/errors'
+import { MAX_ANCHOR_BYTES } from './replay/replay'
 import type { StepEvidence } from './replay/evidence'
 
 /** The typed code a call failed with, or 'resolved'. */
@@ -44,6 +47,46 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
   rmSync(outside, { recursive: true, force: true })
+})
+
+describe('readFlowAsset: reference crops are read only from the flow\'s own folder', () => {
+  const flowIn = (dir: string): string => {
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'a.nawi.yaml')
+    writeFileSync(file, FLOW)
+    return file
+  }
+
+  it('reads a file next to the flow or in a subfolder of it', async () => {
+    const file = flowIn(join(root, 'flows'))
+    mkdirSync(join(root, 'flows', 'crops'))
+    writeFileSync(join(root, 'flows', 'crops', 'save.png'), 'png-bytes')
+    expect(Buffer.from(await readFlowAsset(file, 'crops/save.png')).toString()).toBe('png-bytes')
+  })
+
+  it('refuses a missing file, a folder, a file over the size limit, and a path that climbs out', async () => {
+    const file = flowIn(join(root, 'flows'))
+    mkdirSync(join(root, 'flows', 'dir.png'))
+    writeFileSync(join(root, 'flows', 'big.png'), Buffer.alloc(MAX_ANCHOR_BYTES + 1))
+    writeFileSync(join(root, 'secret.txt'), 'token=abc')
+    await expect(readFlowAsset(file, 'nope.png')).rejects.toThrow(/nope\.png does not exist next to the flow/)
+    await expect(readFlowAsset(file, 'dir.png')).rejects.toThrow(/dir\.png is not a file/)
+    await expect(readFlowAsset(file, 'big.png')).rejects.toThrow(/big\.png is larger than/)
+    await expect(readFlowAsset(file, '../secret.txt'), 'the schema refuses "..", the reader too').rejects.toThrow(/outside the flow's folder/)
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a named pipe without blocking on it', async () => {
+    const file = flowIn(join(root, 'flows'))
+    execFileSync('mkfifo', [join(root, 'flows', 'pipe.png')])
+    await expect(readFlowAsset(file, 'pipe.png')).rejects.toThrow(/pipe\.png is not a file/)
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a symlink in the flow\'s folder that points outside it', async () => {
+    const file = flowIn(join(root, 'flows'))
+    writeFileSync(join(outside, 'secret.png'), 'token=abc')
+    symlinkSync(join(outside, 'secret.png'), join(root, 'flows', 'leak.png'))
+    await expect(readFlowAsset(file, 'leak.png')).rejects.toThrow(/leak\.png resolves outside the flow's folder/)
+  })
 })
 
 describe('resolveFlowFile: which files a run may read', () => {

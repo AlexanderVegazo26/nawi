@@ -6,6 +6,8 @@ import type { FlowRun } from './replay/replay'
 import {
   RUN_ID_RE,
   buildRunRecord,
+  matchedLine,
+  missReason,
   newRunId,
   pruneRuns,
   toJUnitXml,
@@ -48,6 +50,21 @@ const record = (run: FlowRun = FAILED, name = 'Save invoice'): { record: RunReco
     run,
     environment: { app_version: '0.1.0', os: { platform: 'linux', release: '7.0.0', arch: 'x64' } }
   })
+
+describe('visual-anchor layer in text output (AI1)', () => {
+  it('prints a visual match with its score, and each kind of anchor miss in words', () => {
+    expect(matchedLine({ index: 2, selector: { image: 'save.png' }, layer: 'visual', fallback: true, score: 0.987 })).toBe(
+      'matched locator 2 (visual, fallback) image=save.png score=0.987'
+    )
+    expect(matchedLine({ index: 0, selector: { id: 'a' }, layer: 'id', fallback: false }), 'no score for DOM layers').toBe('matched locator 0 (id) id=a')
+    const image = { image: 'save.png' }
+    expect(missReason({ index: 1, selector: image, found: 2, score: 1 })).toBe('matches in 2+ places (ambiguous), best score 1')
+    expect(missReason({ index: 1, selector: image, found: 0, score: 0.81 })).toBe('no close match, best score 0.81')
+    expect(missReason({ index: 1, selector: image, found: 0, at: [10, 20] })).toBe('found on screen at (10, 20) but no element is there')
+    expect(missReason({ index: 1, selector: image, found: 0, invalid: 'not a usable PNG' })).toBe('invalid: not a usable PNG')
+    expect(missReason({ index: 0, selector: { css: '.x' }, found: 3 }), 'DOM locators keep their wording').toBe('3 matches')
+  })
+})
 
 describe('newRunId', () => {
   it('is the UTC start time to the millisecond plus a random suffix, and sorts by start time', () => {

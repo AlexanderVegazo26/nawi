@@ -1,4 +1,4 @@
-import { describe, evidenceLines, type RecordedStep, type RunRecord } from './run-record'
+import { describe, evidenceLines, missReason, scoreText, type RecordedStep, type RunRecord } from './run-record'
 
 /**
  * Roadmap F4c: the run's self-contained HTML report (`runs/<run-id>/report.html`).
@@ -95,10 +95,10 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
       const drift = s.matched.fallback && s.status === 'passed'
         ? ' <span class="drift">fallback: a more stable locator found nothing, update the flow</span>'
         : ''
-      detail.push(`<div class="muted">Matched locator ${s.matched.index}${layer}: ${htmlEscape(describe(s.matched.selector as Record<string, unknown>))}${drift}</div>`)
+      detail.push(`<div class="muted">Matched locator ${s.matched.index}${layer}: ${htmlEscape(describe(s.matched.selector as Record<string, unknown>) + scoreText(s.matched.score))}${drift}</div>`)
     }
     for (const miss of s.misses ?? []) {
-      const why = miss.invalid ? `invalid: ${miss.invalid}` : miss.found === 0 ? 'no match' : `${miss.found} matches`
+      const why = missReason(miss)
       detail.push(`<div class="muted">Locator ${miss.index} ${htmlEscape(describe(miss.selector as Record<string, unknown>))}: ${htmlEscape(why)}</div>`)
     }
     if (s.url !== undefined) detail.push(`<div class="muted">Page after the step: ${htmlEscape(s.url)}</div>`)

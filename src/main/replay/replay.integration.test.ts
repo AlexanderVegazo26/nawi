@@ -16,6 +16,7 @@ import { TEST_BROWSER_ARGS } from '../cdp/test-browser-args'
 
 const APP = pathToFileURL(resolve(__dirname, '__fixtures__/app.html')).href
 const PAGE2 = pathToFileURL(resolve(__dirname, '__fixtures__/page2.html')).href
+const ANCHOR = pathToFileURL(resolve(__dirname, '__fixtures__/anchor.html')).href
 const PASSWORD = 'hunter2-replay-secret'
 /** Quote, backslash, double space and an ampersand: changed by JSON escaping, whitespace folding and URL encoding. */
 const ODD_SECRET = 'odd"pass\\word  & more'
@@ -606,5 +607,142 @@ steps:
       'broken:failed',
       'after:not_run'
     ])
+  })
+  describe('visual-anchor layer (target.image)', () => {
+    /** The element's box as a PNG, 1 image px per CSS px: what a recording stores as its reference crop. */
+    const cropOf = async (id: string): Promise<Uint8Array> => {
+      const run = await replay(flow([{ id: 'crop', action: 'screenshot', target: { selectors: [{ id }] } }], ANCHOR))
+      expect(run.status, why(run)).toBe('passed')
+      return Buffer.from(run.steps[0].screenshotPng ?? '', 'base64')
+    }
+    const assets = (files: Record<string, Uint8Array>) => async (path: string): Promise<Uint8Array> => {
+      const bytes = files[path]
+      if (!bytes) throw new Error(`${path} does not exist next to the flow`)
+      return bytes
+    }
+
+    it('clicks the element whose reference crop it finds on screen once every locator is gone, and records the visual match as drift', async () => {
+      const save = await cropOf('save')
+      const run = await replay(
+        flow(
+          [
+            { id: 'by-id', action: 'click', target: { selectors: [{ id: 'delete' }], image: 'save.png' } },
+            { id: 'by-crop', action: 'click', target: { selectors: [{ id: 'renamed-save' }, { css: '.gone' }], image: 'save.png' } }
+          ],
+          ANCHOR
+        ),
+        { loadAsset: assets({ 'save.png': save }) }
+      )
+      expect(run.status, why(run)).toBe('passed')
+      expect(run.steps[0].matched, 'a locator that still matches wins; the crop is not even looked at').toEqual({
+        index: 0,
+        selector: { id: 'delete' },
+        layer: 'id',
+        fallback: false
+      })
+      expect(run.steps[0].misses, why(run)).toBeUndefined()
+      const matched = run.steps[1].matched
+      expect(matched, why(run)).toMatchObject({ index: 2, selector: { image: 'save.png' }, layer: 'visual', fallback: true })
+      expect(matched?.score, 'the crop matches its own page almost exactly').toBeGreaterThan(0.99)
+      expect(run.steps[1].misses).toEqual([
+        { index: 0, selector: { id: 'renamed-save' }, found: 0 },
+        { index: 1, selector: { css: '.gone' }, found: 0 }
+      ])
+      expect(await read(`document.getElementById('out').textContent`), 'the trusted click reached #save (through its inner <span>)').toBe('save')
+    })
+
+    it('fills a field found by its crop, and finds it at deviceScaleFactor 2 with a crop recorded at 1', async () => {
+      const name = await cropOf('name')
+      const del = await cropOf('delete')
+      await client.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 2, mobile: false }, sessionId)
+      try {
+        const run = await replay(
+          flow(
+            [
+              { id: 'type', action: 'fill', target: { selectors: [{ testid: 'name-field' }], image: 'name.png' }, value: 'Ada' },
+              { id: 'del', action: 'click', target: { selectors: [{ testid: 'delete' }], image: 'delete.png' } }
+            ],
+            ANCHOR
+          ),
+          { loadAsset: assets({ 'name.png': name, 'delete.png': del }) }
+        )
+        expect(run.status, why(run)).toBe('passed')
+        expect(run.steps.map((s) => s.matched?.layer), why(run)).toEqual(['visual', 'visual'])
+        expect(await read(`document.getElementById('name').value`), 'typed into the field the crop shows').toBe('Ada')
+        expect(await read(`document.getElementById('out').textContent`)).toBe('delete')
+      } finally {
+        await client.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId)
+      }
+    })
+
+    it('keeps reporting why an element found by its crop is not ready (covered), instead of the locators\' miss', async () => {
+      const del = await cropOf('delete')
+      const run = await replay(
+        flow([{ id: 'del', action: 'click', timeout_ms: 700, target: { selectors: [{ testid: 'delete' }], image: 'delete.png' } }], `${ANCHOR}?cover`),
+        { loadAsset: assets({ 'delete.png': del }) }
+      )
+      expect(run.status, why(run)).toBe('failed')
+      expect(run.steps[0].error).toMatch(/^image=delete\.png matched but it is covered by div#banner/)
+      expect(run.steps[0].matched, 'the record says which layer found it, even though it could not be clicked').toMatchObject({
+        index: 1,
+        layer: 'visual'
+      })
+      expect(await read(`document.getElementById('out').textContent`)).toBe('')
+    })
+
+    it('fills a date field found by its crop after the step scrolled it to the centre (the element stays pinned)', async () => {
+      const when = await cropOf('when')
+      const run = await replay(
+        flow([{ id: 'when', action: 'fill', target: { selectors: [{ testid: 'when' }], image: 'when.png' }, value: '2026-11-06' }], ANCHOR),
+        { loadAsset: assets({ 'when.png': when }) }
+      )
+      expect(run.status, why(run)).toBe('passed')
+      expect(Number(await read('Math.round(window.scrollY)')), 'focusing the field scrolled the page').toBeGreaterThan(0)
+      expect(await read(`document.getElementById('when').value`), 'the value went into the matched field').toBe('2026-11-06')
+    })
+
+    it('fails instead of guessing when the crop matches two places, and says so next to the locator misses', async () => {
+      // No locator singles out a twin: open the page, then cut the first one's box.
+      const opened = await replay(flow([{ id: 'open', action: 'wait', target: { selectors: [{ id: 'save' }] } }], ANCHOR))
+      expect(opened.status, why(opened)).toBe('passed')
+      const twin = await cropOfBox(100, 500, 120, 40)
+      const run = await replay(
+        flow([{ id: 'twin', action: 'click', timeout_ms: 600, target: { selectors: [{ testid: 'twin' }], image: 'twin.png' } }], ANCHOR),
+        { loadAsset: assets({ 'twin.png': twin }) }
+      )
+      expect(run.status, why(run)).toBe('failed')
+      expect(run.steps[0].error).toMatch(/testid=twin: no element; image=twin\.png: matches in 2\+ places \(ambiguous\)/)
+      expect(run.steps[0].matched).toBeUndefined()
+      expect(run.steps[0].misses?.[1]).toMatchObject({ index: 1, selector: { image: 'twin.png' }, found: 2 })
+      expect(await read(`document.getElementById('out').textContent`), 'neither twin was clicked').toBe('')
+    })
+
+    it('reports a crop it cannot read as an invalid locator, and never reads files without a loader', async () => {
+      const run = await replay(
+        flow([{ id: 'c', action: 'click', timeout_ms: 300, target: { selectors: [{ id: 'nope' }], image: 'missing.png' } }], ANCHOR)
+      )
+      expect(run.status, why(run)).toBe('failed')
+      expect(run.steps[0].misses?.[1]).toEqual({
+        index: 1,
+        selector: { image: 'missing.png' },
+        found: 0,
+        invalid: 'this run cannot read files next to the flow'
+      })
+      const bad = await replay(
+        flow([{ id: 'c', action: 'click', timeout_ms: 300, target: { selectors: [{ id: 'nope' }], image: 'x.png' } }], ANCHOR),
+        { loadAsset: async () => new TextEncoder().encode('not a png') }
+      )
+      expect(bad.steps[0].error, why(bad)).toMatch(/image=x\.png: invalid \(not a usable PNG \(not a PNG\)\)/)
+    })
+
+    /** A viewport region as a PNG, through the page's own screenshot (for elements no locator can single out). */
+    const cropOfBox = async (x: number, y: number, width: number, height: number): Promise<Uint8Array> => {
+      const shot = await client.send<{ data: string }>(
+        'Page.captureScreenshot',
+        { format: 'png', clip: { x, y, width, height, scale: 1 } },
+        sessionId
+      )
+      return Buffer.from(shot.data, 'base64')
+    }
   })
 })

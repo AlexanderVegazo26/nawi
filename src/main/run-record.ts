@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import type { ConsoleError, FailedRequest, StepEvidence } from './replay/evidence'
 import type { FlowRun, StepRun } from './replay/replay'
+import { anchorMissText } from './replay/visual-anchor'
 
 /**
  * Roadmap F4a: the run record. Every `run_flow` / `nawi run` leaves one folder
@@ -18,8 +19,9 @@ import type { FlowRun, StepRun } from './replay/replay'
  * Per step it also keeps what the page did meanwhile (F4b): console errors,
  * failed requests (status >= 400 or no response) and the URL after the step.
  * These are optional fields, so a reader of version 1 records keeps working.
- * So are AI1's: each matched locator names its layer (testid/id/role/text/css)
- * and whether it was a fallback, the record lists the steps that passed only
+ * So are AI1's: each matched locator names its layer (testid/id/role/text/css,
+ * or `visual` with a `score` when the step's reference crop was found on screen,
+ * recorded as `{ image }` at index `selectors.length`) and whether it was a fallback, the record lists the steps that passed only
  * through a fallback (`fallback_step_ids`, the flow drifting from the app),
  * and a step carries its `intent`.
  *
@@ -230,14 +232,26 @@ export function describe(selector: Record<string, unknown>): string {
 export function matchedLine(matched: NonNullable<RecordedStep['matched']>): string {
   // Records written before AI1 have no layer: say nothing rather than guess.
   const layer = typeof matched.layer === 'string' ? ` (${matched.layer}${matched.fallback ? ', fallback' : ''})` : ''
-  return `matched locator ${matched.index}${layer} ${describe(matched.selector as Record<string, unknown>)}`
+  return `matched locator ${matched.index}${layer} ${describe(matched.selector as Record<string, unknown>)}${scoreText(matched.score)}`
+}
+
+/** ` score=0.987` for a visual-anchor match, else nothing. */
+export function scoreText(score: unknown): string {
+  return typeof score === 'number' ? ` score=${score}` : ''
+}
+
+/** Why a locator missed: invalid, no match, N matches; for the visual anchor, in its own words. */
+export function missReason(miss: NonNullable<RecordedStep['misses']>[number]): string {
+  if (miss.invalid) return `invalid: ${miss.invalid}`
+  if ('image' in miss.selector) return anchorMissText(miss)
+  return miss.found === 0 ? 'no match' : `${miss.found} matches`
 }
 
 function failureDetail(step: RecordedStep): string {
   const lines = [step.error ?? 'the step failed']
   if (step.intent !== undefined) lines.push(`  intent: ${step.intent}`)
   for (const miss of step.misses ?? []) {
-    const why = miss.invalid ? `invalid: ${miss.invalid}` : miss.found === 0 ? 'no match' : `${miss.found} matches`
+    const why = missReason(miss)
     lines.push(`  locator ${miss.index} ${describe(miss.selector as Record<string, unknown>)}: ${why}`)
   }
   if (step.matched) lines.push(`  ${matchedLine(step.matched)}`)

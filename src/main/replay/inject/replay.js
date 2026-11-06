@@ -30,8 +30,50 @@
     return String(el.innerText == null ? el.textContent || '' : el.innerText)
   }
 
+  /**
+   * What a visual-anchor match points at: the control under the matched
+   * crop's centre (its nearest interactive ancestor, so an icon inside a
+   * button resolves to the button), not whatever inline child is on top.
+   */
+  var INTERACTIVE =
+    'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable="true"],' +
+    '[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[role="tab"],[role="menuitem"],' +
+    '[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="textbox"],[role="combobox"],[role="slider"]'
+
+  /**
+   * The element a visual-anchor point resolves to, pinned by its `pin` token:
+   * the first lookup takes the element under the point, later lookups with the
+   * same token return that element while it is still in the document, so a
+   * step that scrolled it (point, focusForFill) acts on it again rather than
+   * on whatever now sits at the old point.
+   */
+  var anchorPin = null
+
+  function anchorMatches(selector) {
+    if (anchorPin && anchorPin.pin === selector.pin) return anchorPin.el.isConnected ? [anchorPin.el] : []
+    // Every layer under the point, topmost first: the control the crop shows may sit under an overlay
+    // (a cookie banner), and acting on the overlay would be wrong. Resolve to the control; point() then
+    // reports it as covered.
+    var stack = document.elementsFromPoint(selector.__anchor[0], selector.__anchor[1])
+    if (stack.length === 0) return []
+    var el = null
+    for (var i = 0; i < stack.length && !el; i++) {
+      var hit = stack[i]
+      el = hit.closest(INTERACTIVE)
+      // Text drawn by a label stands for its control (a fill on the "Email" label fills the field).
+      if (!el) {
+        var label = hit.closest('label')
+        if (label && label.control) el = label.control
+      }
+    }
+    if (!el) el = stack[0]
+    anchorPin = { pin: selector.pin, el: el }
+    return [el]
+  }
+
   /** All elements a selector matches, in document order. */
   function matchesFor(selector) {
+    if (selector.__anchor !== undefined) return anchorMatches(selector)
     if (selector.text !== undefined) {
       // The probe's rule, the one the recorder measured the text candidate with.
       var tp = probe()

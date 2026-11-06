@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Visual anchor fixture</title>
+<style>
+  /* Fixed boxes and colours so a crop cut from one load matches the next; no transitions, no caret blink in a crop. */
+  * { transition: none !important; animation: none !important; }
+  body { margin: 0; font: bold 16px sans-serif; background: #fff; }
+  .b { position: absolute; width: 140px; height: 48px; border: 0; color: #fff; font: inherit; outline: none; }
+  #save { left: 101px; top: 99px; background: #2a7; }
+  #delete { left: 403px; top: 301px; background: #c33; }
+  .twin { position: absolute; top: 500px; width: 120px; height: 40px; border: 0; background: #36c; color: #fff; font: inherit; }
+  #name { position: absolute; left: 700px; top: 100px; width: 200px; height: 30px; border: 3px solid #a0a; font: inherit; caret-color: transparent; outline: none; }
+</style>
+</head>
+<body>
+  <button id="save" class="b" onclick="document.getElementById('out').textContent = 'save'"><span>Save</span></button>
+  <button id="delete" class="b" onclick="document.getElementById('out').textContent = 'delete'">Delete</button>
+  <button class="twin" style="left: 100px" onclick="document.getElementById('out').textContent = 'twin-1'">Twin</button>
+  <button class="twin" style="left: 600px" onclick="document.getElementById('out').textContent = 'twin-2'">Twin</button>
+  <input id="name" aria-label="Name">
+  <input id="when" type="date" aria-label="When" style="position: absolute; left: 700px; top: 640px; width: 200px; height: 30px; border: 3px solid #0aa; font: inherit; outline: none">
+  <div id="out" style="position: absolute; left: 0; top: 700px"></div>
+  <!-- Makes the page scroll, so a step that scrolls its element to the centre moves it off the matched point. -->
+  <div style="position: absolute; top: 2000px; height: 1px; width: 1px"></div>
+  <script>
+    // ?cover: a banner over Delete (the click must report it, not land on the banner).
+    if (location.search.includes('cover')) {
+      const banner = document.createElement('div')
+      banner.id = 'banner'
+      banner.style.cssText = 'position: fixed; left: 380px; top: 280px; width: 200px; height: 100px; background: rgba(0, 0, 0, 0.01)'
+      document.body.appendChild(banner)
+    }
+  </script>
+</body>
+</html>

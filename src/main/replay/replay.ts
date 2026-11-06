@@ -23,6 +23,8 @@ import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowI
 import { locatorLayer, type Flow, type FlowStep, type LocatorLayer, type Selector } from '@shared/flow/schema'
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
 import { EvidenceCollector, type StepEvidence } from './evidence'
+import { decodePng, type RgbImage } from '../mobile/png'
+import { anchorMissText, findAnchor, scaleImage, type AnchorResult } from './visual-anchor'
 
 /**
  * Just enough of `CdpClient`. `on` is optional so a bare `send` double still
@@ -50,13 +52,29 @@ export type StepScreenshots = 'all' | 'failed' | 'off'
 
 export type StepStatus = 'passed' | 'failed' | 'skipped' | 'not_run'
 
+/**
+ * The visual-anchor layer (roadmap AI1) in run records: the step's reference
+ * crop (`target.image`), tried after every locator in `target.selectors`, at
+ * index `selectors.length`.
+ */
+export interface AnchorLocator {
+  image: string
+}
+
+/** Layers a run record reports: the flow's locator kinds plus the visual anchor. */
+export type MatchedLayer = LocatorLayer | 'visual'
+
 export interface LocatorMiss {
   index: number
-  selector: Selector
-  /** Elements it matched: 0 = gone, 2+ = ambiguous. */
+  selector: Selector | AnchorLocator
+  /** Elements it matched: 0 = gone, 2+ = ambiguous (visual: places the crop matched). */
   found: number
-  /** Set when the selector itself is broken (bad CSS). */
+  /** Set when the selector itself is broken (bad CSS, an unreadable crop). */
   invalid?: string
+  /** Visual anchor: how close the best place came (1 = identical). */
+  score?: number
+  /** Visual anchor: where the crop was found (CSS px) when no element was there. */
+  at?: [number, number]
 }
 
 /**
@@ -78,7 +96,7 @@ export interface StepRun extends StepEvidence {
    * be updated before this locator breaks too. An earlier locator that only
    * matched several elements does not count (see `isFallback`).
    */
-  matched?: { index: number; selector: Selector; layer: LocatorLayer; fallback: boolean }
+  matched?: { index: number; selector: Selector | AnchorLocator; layer: MatchedLayer; fallback: boolean; score?: number }
   /** The step's `intent` from the flow (what it is for), scrubbed. */
   intent?: string
   /** Locators tried before the match (or all of them, when nothing matched). */
@@ -129,6 +147,12 @@ export interface ReplayOptions extends FlowInputs {
   /** Page screenshots around each step; default `off`. */
   stepScreenshots?: StepScreenshots
   /**
+   * Reads an asset the flow points at (`target.image`, relative to the flow
+   * file), confined to the flow's folder. Without it the visual-anchor layer
+   * reports the crop as unreadable instead of reading any path.
+   */
+  loadAsset?: (path: string) => Promise<Uint8Array>
+  /**
    * Told about every step in order as it settles: passed, failed, skipped, or
    * not_run once the run has failed or stopped.
    * For progress reports: it carries no error text, values or URLs, and a
@@ -166,7 +190,25 @@ interface PageAnswer {
   box?: { x: number; y: number; width: number; height: number }
   /** mask: the token its unmask takes. */
   generation?: number
+  /** Set on the main side by waitFor: the locator list this answer came from. */
+  locators?: PageLocator[]
 }
+
+/** What the page helpers resolve: the flow's locators, plus the internal visual-anchor point. */
+type PageLocator = Selector | { __anchor: [number, number]; pin: number }
+
+/** How often a step whose locators all miss looks for its reference crop again (a screenshot + match each time). */
+export const VISUAL_EVERY_MS = 250
+/** A viewport capture for the anchor layer that takes longer than this turns the layer off for the run. */
+export const ANCHOR_SHOT_TIMEOUT_MS = 1_500
+/**
+ * Pins each anchor lookup to the element it first resolved to (replay.js
+ * anchorMatches). Process-wide, so runs replayed one after another on one
+ * long-lived page never reuse a token the page still remembers.
+ */
+let anchorPins = 0
+/** Largest reference crop read from disk. */
+export const MAX_ANCHOR_BYTES = 8 * 1024 * 1024
 
 class StepFailure extends Error {
   readonly answer: PageAnswer | null
@@ -326,26 +368,61 @@ function isFallback(answer: PageAnswer): boolean {
   return answer.tried.some((t) => t.index < answer.index && (t.found === 0 || t.invalid !== undefined))
 }
 
-function missesOf(answer: PageAnswer | null, selectors: Selector[]): LocatorMiss[] {
-  return (answer?.tried ?? []).map((t) => ({
+/** The step's latest look for its reference crop (visual-anchor layer). */
+interface AnchorTry {
+  image: string
+  result: AnchorResult
+  /** The crop was found, but the page had no element at its centre. */
+  noElement?: boolean
+}
+
+/** The locator at `index` in a step's layers: a flow locator, or the visual anchor just past them. */
+function locatorAt(selectors: Selector[], index: number, image: string | undefined): Selector | AnchorLocator {
+  return index === selectors.length && image !== undefined ? { image } : selectors[index]
+}
+
+function describeLocator(locator: Selector | AnchorLocator): string {
+  return 'image' in locator ? `image=${locator.image}` : describeSelector(locator)
+}
+
+function missesOf(answer: PageAnswer | null, selectors: Selector[], visual?: AnchorTry): LocatorMiss[] {
+  const misses: LocatorMiss[] = (answer?.tried ?? []).map((t) => ({
     index: t.index,
     selector: selectors[t.index],
     found: t.found,
     ...(t.invalid !== undefined ? { invalid: t.invalid } : {})
   }))
+  // The anchor is a miss unless the answer came through it (then it is `matched`, even when blocked).
+  if (visual && !(answer?.found && answer.index === selectors.length)) {
+    const r = visual.result
+    if (r.found !== 1 || visual.noElement) {
+      misses.push({
+        index: selectors.length,
+        selector: { image: visual.image },
+        found: r.found === 1 ? 0 : r.found,
+        ...('invalid' in r ? { invalid: r.invalid } : {}),
+        ...(r.found === 1 ? { at: [r.x, r.y] as [number, number] } : {}),
+        ...('score' in r && r.score !== undefined ? { score: r.score } : {})
+      })
+    }
+  }
+  return misses
 }
 
-function notFoundMessage(answer: PageAnswer | null, selectors: Selector[], timeoutMs: number): string {
+function missText(m: LocatorMiss): string {
+  const what = describeLocator(m.selector)
+  if (m.invalid !== undefined) return `${what}: invalid (${m.invalid})`
+  if ('image' in m.selector) return `${what}: ${anchorMissText(m)}`
+  return `${what}: ${m.found === 0 ? 'no element' : `${m.found} elements (ambiguous)`}`
+}
+
+function notFoundMessage(answer: PageAnswer | null, selectors: Selector[], timeoutMs: number, visual?: AnchorTry): string {
   if (!answer) return `the page never became ready for the step within ${timeoutMs} ms`
   if (!answer.found) {
-    const parts = missesOf(answer, selectors).map((m) =>
-      m.invalid !== undefined
-        ? `${describeSelector(m.selector)}: invalid (${m.invalid})`
-        : `${describeSelector(m.selector)}: ${m.found === 0 ? 'no element' : `${m.found} elements (ambiguous)`}`
-    )
+    const parts = missesOf(answer, selectors, visual).map(missText)
     return `no locator matched exactly one element within ${timeoutMs} ms — ${parts.join('; ')}`
   }
-  return `${describeSelector(selectors[answer.index])} matched but ${answer.blocked ?? 'it never became ready'} (waited ${timeoutMs} ms)`
+  return `${describeLocator(locatorAt(selectors, answer.index, visual?.image))} matched but ${answer.blocked ?? 'it never became ready'} (waited ${timeoutMs} ms)`
 }
 
 const WS = /\s+/g
@@ -381,7 +458,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
 
   const defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS
   const session = new Session(client, options.sessionId, now)
-  const runner = new StepRunner(session, interp, now, defaultTimeoutMs)
+  const runner = new StepRunner(session, interp, now, defaultTimeoutMs, options.loadAsset)
 
   // A dialog blocks the page (and the Input command that opened it) until it
   // is answered: dismiss it, accept beforeunload so navigations go on, and
@@ -507,8 +584,16 @@ class StepRunner {
     private readonly session: Session,
     private readonly interp: FlowInterpolator,
     private readonly now: () => number,
-    private readonly defaultTimeoutMs: number
+    private readonly defaultTimeoutMs: number,
+    private readonly loadAsset?: (path: string) => Promise<Uint8Array>
   ) {}
+
+  /** Reference crops read this run, by path (a flow often reuses one; a bad one is reported once per step, read once). */
+  private readonly crops = new Map<string, Promise<RgbImage | { invalid: string }>>()
+  /** The current step's latest look for its reference crop, for its record and failure text. */
+  private visual: AnchorTry | undefined
+  /** Set once the viewport could not be captured for the anchor layer in time: later steps don't wait on it again. */
+  private anchorsGaveUp = false
 
   /** Scrubs the run's secret values out of text (for step intents). */
   readonly redact = (text: string): string => this.interp.redact(text)
@@ -529,11 +614,13 @@ class StepRunner {
     const record: StepRun = { id: step.id, action: step.action, status: 'passed', startedAt }
     if (step.intent !== undefined) record.intent = this.interp.redact(step.intent)
     this.dialogs = []
+    this.visual = undefined
     // `wait` with a target and `ms`: ms is how long to wait for it.
     const waitMs = step.action === 'wait' && step.target && step.ms !== undefined ? step.ms : undefined
     const timeoutMs = step.timeout_ms ?? waitMs ?? this.defaultTimeoutMs
     const deadline = startedAt + timeoutMs
     const selectors = 'target' in step && step.target ? step.target.selectors : []
+    const image = 'target' in step && step.target ? step.target.image : undefined
     let answer: PageAnswer | null = null
     try {
       this.session.limit(deadline, timeoutMs)
@@ -546,12 +633,17 @@ class StepRunner {
     } finally {
       this.session.clearLimit()
     }
+    // Set by waitFor while the step ran (TS can't see that through the awaits).
+    const visual = this.visual as AnchorTry | undefined
     if (answer && selectors.length > 0) {
-      if (answer.found && answer.index >= 0) {
+      if (answer.found && answer.index >= 0 && answer.index < selectors.length) {
         const selector = selectors[answer.index]
         record.matched = { index: answer.index, selector, layer: locatorLayer(selector), fallback: isFallback(answer) }
+      } else if (answer.found && answer.index === selectors.length && image !== undefined && visual?.result.found === 1) {
+        record.matched = { index: answer.index, selector: { image }, layer: 'visual', fallback: isFallback(answer), score: visual.result.score }
       }
-      const misses = missesOf(answer, selectors)
+      // A crop looked for while the page was still loading is not a miss once a locator matched after all.
+      const misses = missesOf(answer, selectors, answer.found && answer.index < selectors.length ? undefined : visual)
       if (misses.length > 0) record.misses = misses
     }
     if (this.dialogs.length > 0) record.dialogs = this.dialogs
@@ -562,24 +654,124 @@ class StepRunner {
     return record
   }
 
-  /** Wait for a page answer that `ready` accepts; on timeout, fail with the last answer. */
+  /**
+   * Wait for a page answer that `ready` accepts; on timeout, fail with the
+   * last answer. `ask` gets the locators to resolve: the step's own, or, when
+   * none of them finds exactly one element and the step has a reference crop
+   * (`image`), those plus the point where the crop was last found on screen
+   * (visual-anchor layer). The screen is looked at again at most every
+   * VISUAL_EVERY_MS; in between, every poll asks the page about the last
+   * match, so an anchored element that is still covered or disabled keeps
+   * reporting that, not the locators' miss. The answer carries the locator
+   * list it came from (`locators`), for follow-up calls on the same element.
+   */
   private async waitFor(
     deadline: number,
     timeoutMs: number,
     selectors: Selector[],
-    ask: () => Promise<PageAnswer | null>,
-    ready: (a: PageAnswer) => boolean = (a) => a.found && a.blocked === undefined
+    ask: (locators: PageLocator[]) => Promise<PageAnswer | null>,
+    ready: (a: PageAnswer) => boolean = (a) => a.found && a.blocked === undefined,
+    image?: string
   ): Promise<PageAnswer> {
     let last: PageAnswer | null = null
-    const ok = await until(deadline, this.now, async () => {
-      last = await ask()
-      if (last && last.found && last.permanent) {
-        throw new StepFailure(`${describeSelector(selectors[last.index])} matched but ${last.blocked}`, last)
+    let nextLook = -Infinity
+    let anchored: PageLocator[] | undefined
+    /** The answer, if it settles the wait: ready, or (thrown) never going to be. */
+    const settle = (a: PageAnswer, locators: PageLocator[]): PageAnswer | undefined => {
+      a.locators = locators
+      if (a.found && a.permanent) {
+        throw new StepFailure(`${describeLocator(locatorAt(selectors, a.index, image))} matched but ${a.blocked}`, a)
       }
-      return last && ready(last) ? last : undefined
+      return ready(a) ? a : undefined
+    }
+    const ok = await until(deadline, this.now, async () => {
+      const own = await ask(selectors)
+      if (!own) {
+        last = own
+        return undefined
+      }
+      if (own.found || image === undefined || this.anchorsGaveUp) {
+        last = own
+        return settle(own, selectors)
+      }
+      // Every locator missed: look at the screen again when due (wall clock: the run's clock may be a test's fake).
+      if (performance.now() >= nextLook) {
+        nextLook = performance.now() + VISUAL_EVERY_MS
+        const result = await this.findOnScreen(image)
+        this.visual = { image, result }
+        anchored = result.found === 1 ? [...selectors, { __anchor: [result.x, result.y], pin: ++anchorPins }] : undefined
+      }
+      last = own
+      if (!anchored) return undefined
+      const viaAnchor = await ask(anchored)
+      // Only the anchor's own answer counts: a locator that appeared meanwhile is picked up by the next poll.
+      if (!viaAnchor || !viaAnchor.found || viaAnchor.index !== selectors.length) {
+        if (this.visual?.result.found === 1) this.visual.noElement = true
+        return undefined
+      }
+      if (this.visual) this.visual.noElement = false
+      last = viaAnchor
+      return settle(viaAnchor, anchored)
     })
     if (ok) return ok
-    throw new StepFailure(notFoundMessage(last, selectors, timeoutMs), last)
+    throw new StepFailure(notFoundMessage(last, selectors, timeoutMs, this.visual), last)
+  }
+
+  /** The crop at `path`, decoded once per run; `invalid` says why it can't be used. */
+  private crop(path: string): Promise<RgbImage | { invalid: string }> {
+    let pending = this.crops.get(path)
+    if (!pending) {
+      pending = (async () => {
+        if (!this.loadAsset) return { invalid: 'this run cannot read files next to the flow' }
+        let bytes: Uint8Array
+        try {
+          bytes = await this.loadAsset(path)
+        } catch (error) {
+          return { invalid: `could not read it: ${(error as Error).message ?? error}` }
+        }
+        if (bytes.length > MAX_ANCHOR_BYTES) return { invalid: `it is larger than ${MAX_ANCHOR_BYTES} bytes` }
+        const png = decodePng(bytes)
+        return png.ok ? png.image : { invalid: `not a usable PNG (${png.error})` }
+      })()
+      this.crops.set(path, pending)
+    }
+    return pending
+  }
+
+  /**
+   * Look for the crop in the viewport, in CSS px: a lossless screenshot,
+   * scaled down by the device pixel ratio to the layout viewport's size.
+   * A page that can't be captured right now (mid-navigation) is "no match":
+   * the step keeps polling its locators. One that takes longer than
+   * ANCHOR_SHOT_TIMEOUT_MS (a minimised window) turns the layer off for the
+   * rest of the run, so it never holds up locator polling again.
+   */
+  private async findOnScreen(path: string): Promise<AnchorResult> {
+    const crop = await this.crop(path)
+    if ('invalid' in crop) return { found: 0, invalid: crop.invalid }
+    const look = (async (): Promise<{ size: unknown; data: unknown } | undefined> => {
+      try {
+        const size = await this.session.evaluate<unknown>('[window.innerWidth, window.innerHeight]')
+        const shot = await this.session.send<{ data?: unknown }>('Page.captureScreenshot', { format: 'png' })
+        return { size, data: shot?.data }
+      } catch {
+        return undefined
+      }
+    })()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<'timeout'>((done) => (timer = setTimeout(() => done('timeout'), ANCHOR_SHOT_TIMEOUT_MS)))
+    const got = await Promise.race([look, timeout]).finally(() => clearTimeout(timer))
+    if (got === 'timeout') {
+      this.anchorsGaveUp = true
+      return { found: 0, invalid: `the page could not be captured within ${ANCHOR_SHOT_TIMEOUT_MS} ms, so reference crops are not looked for in this run` }
+    }
+    if (!got || typeof got.data !== 'string' || !Array.isArray(got.size)) return { found: 0 }
+    const png = decodePng(Buffer.from(got.data, 'base64'))
+    if (!png.ok) return { found: 0 }
+    const [width, height] = got.size as unknown[]
+    const css =
+      typeof width === 'number' && typeof height === 'number' && Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0
+    return findAnchor(css ? scaleImage(png.image, width, height) : png.image, crop)
   }
 
   private async execute(step: FlowStep, deadline: number, timeoutMs: number): Promise<PageAnswer | null> {
@@ -588,7 +780,7 @@ class StepRunner {
       case 'click':
       case 'hover': {
         const sel = step.target.selectors
-        const at = await this.waitFor(deadline, timeoutMs, sel, () => s.call('point', sel, step.action === 'click'))
+        const at = await this.waitFor(deadline, timeoutMs, sel, (l) => s.call('point', l, step.action === 'click'), undefined, step.target.image)
         await this.mouse('mouseMoved', at.x!, at.y!)
         if (step.action === 'click') {
           await this.mouse('mousePressed', at.x!, at.y!, 1)
@@ -605,13 +797,13 @@ class StepRunner {
           this.secretTargetKeys.add(JSON.stringify(sel))
           this.secretTargets.push(sel)
         }
-        const at = await this.waitFor(deadline, timeoutMs, sel, () => s.call('focusForFill', sel, secret))
+        const at = await this.waitFor(deadline, timeoutMs, sel, (l) => s.call('focusForFill', l, secret), undefined, step.target.image)
         if (at.setValue) {
           // date/time-like inputs ignore typed text: set the value and check it took.
-          const set = await s.call('setValue', sel, value)
+          const set = await s.call('setValue', at.locators ?? sel, value)
           if (!set || set.blocked) {
             throw new StepFailure(
-              `${describeSelector(sel[at.index])} matched but ${set?.blocked ?? 'the page changed before the value was set'}`,
+              `${describeLocator(locatorAt(sel, at.index, step.target.image))} matched but ${set?.blocked ?? 'the page changed before the value was set'}`,
               set ?? at
             )
           }
@@ -622,7 +814,7 @@ class StepRunner {
       case 'select': {
         const sel = step.target.selectors
         const value = this.interp.interpolate(step.value)
-        return this.waitFor(deadline, timeoutMs, sel, () => s.call('selectOption', sel, value))
+        return this.waitFor(deadline, timeoutMs, sel, (l) => s.call('selectOption', l, value), undefined, step.target.image)
       }
       case 'press': {
         let key: KeyPress
@@ -635,7 +827,7 @@ class StepRunner {
         let at: PageAnswer | null = null
         if (step.target) {
           const sel = step.target.selectors
-          at = await this.waitFor(deadline, timeoutMs, sel, () => s.call('focus', sel))
+          at = await this.waitFor(deadline, timeoutMs, sel, (l) => s.call('focus', l), undefined, step.target.image)
         }
         await this.key(key)
         return at
@@ -649,7 +841,7 @@ class StepRunner {
           return null
         }
         const sel = step.target.selectors
-        return this.waitFor(deadline, timeoutMs, sel, () => s.call('scroll', sel, dx, dy))
+        return this.waitFor(deadline, timeoutMs, sel, (l) => s.call('scroll', l, dx, dy), undefined, step.target.image)
       }
       case 'navigate':
         await this.navigate(this.interp.interpolate(step.url), timeoutMs, true)
@@ -661,11 +853,18 @@ class StepRunner {
           return null
         }
         const sel = step.target!.selectors
-        return this.waitFor(deadline, timeoutMs, sel, async () => {
-          const a = await s.call('state', sel)
-          if (a?.found && !a.visible) a.blocked = 'it is not visible'
-          return a
-        })
+        return this.waitFor(
+          deadline,
+          timeoutMs,
+          sel,
+          async (l) => {
+            const a = await s.call('state', l)
+            if (a?.found && !a.visible) a.blocked = 'it is not visible'
+            return a
+          },
+          undefined,
+          step.target!.image
+        )
       }
       case 'assert':
         return this.assert(step, deadline, timeoutMs)
@@ -674,7 +873,7 @@ class StepRunner {
         let at: PageAnswer | null = null
         if (step.target) {
           const sel = step.target.selectors
-          at = await this.waitFor(deadline, timeoutMs, sel, () => s.call('box', sel))
+          at = await this.waitFor(deadline, timeoutMs, sel, (l) => s.call('box', l), undefined, step.target.image)
           const b = at.box!
           if (b.width <= 0 || b.height <= 0) throw new StepFailure('the element has no area to capture', at)
           clip = { x: b.x, y: b.y, width: b.width, height: b.height, scale: 1 }

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import { promises as fs } from 'node:fs'
+import { constants as fsConstants, promises as fs } from 'node:fs'
 import { arch, homedir, platform, release } from 'node:os'
 import { within } from './confine'
-import { isAbsolute } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import {
   FLOW_FILE_SUFFIX,
   FlowSchema,
@@ -15,7 +15,7 @@ import {
 import { CdpClient } from './cdp/client'
 import { attachToEndpoint, launchDebugBrowser, parseEndpoint, type LaunchOptions } from './cdp/launcher'
 import { ToolError } from './mcp/errors'
-import { replayFlow, withIntent, type FlowRun, type ReplayClient, type ReplayOptions, type StepRun, type StepScreenshots } from './replay/replay'
+import { MAX_ANCHOR_BYTES, replayFlow, withIntent, type FlowRun, type ReplayClient, type ReplayOptions, type StepRun, type StepScreenshots } from './replay/replay'
 import type { StepEvidence } from './replay/evidence'
 import {
   buildRunRecord,
@@ -170,6 +170,36 @@ export async function resolveFlowFile(file: string, roots: string[] = [homedir()
     })
   }
   return real
+}
+
+/**
+ * Bytes of an asset a flow points at (`target.image`), read only from inside
+ * the flow's own folder: the schema already refuses absolute paths and `..`,
+ * and this also refuses a symlink that resolves outside it, a non-file and
+ * anything over MAX_ANCHOR_BYTES. The resolved file is checked, opened
+ * without blocking (a FIFO swapped in would otherwise hang the run) and
+ * checked again through that handle.
+ */
+export async function readFlowAsset(flowFile: string, path: string): Promise<Uint8Array> {
+  const folder = await fs.realpath(dirname(flowFile))
+  let real: string
+  try {
+    real = await fs.realpath(resolve(folder, path))
+  } catch {
+    throw new Error(`${path} does not exist next to the flow`)
+  }
+  if (!within(folder, real)) throw new Error(`${path} resolves outside the flow's folder`)
+  // A named pipe would block open() itself: refuse non-files before opening, and open without blocking.
+  if (!(await fs.stat(real)).isFile()) throw new Error(`${path} is not a file`)
+  const handle = await fs.open(real, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0))
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile()) throw new Error(`${path} is not a file`)
+    if (stat.size > MAX_ANCHOR_BYTES) throw new Error(`${path} is larger than ${MAX_ANCHOR_BYTES} bytes`)
+    return await handle.readFile()
+  } finally {
+    await handle.close()
+  }
 }
 
 /** The flow with `overrides` applied to its declared vars; undeclared names are refused, not silently ignored. */
@@ -462,6 +492,7 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       stepScreenshots: deps.record ? (request.screenshots ?? 'all') : 'off',
       signal: deps.signal,
       onStep: deps.onStep,
+      loadAsset: (path) => readFlowAsset(real, path),
       now
     })
     if (deps.record) facts = await browserFacts(page)

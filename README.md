@@ -370,7 +370,14 @@ alone.
   over raw CDP. Each step's locators are tried in order: the first one matching
   exactly one element wins (one matching several is ambiguous and skipped). A
   `text` locator matches the innermost visible element whose rendered text, with
-  whitespace folded, is exactly that text. It
+  whitespace folded, is exactly that text. When no locator finds exactly one
+  element and the target has a reference crop (`image`, a PNG next to the flow
+  file, one image pixel per CSS pixel), the crop is looked for in a screenshot
+  of the viewport (scaled by the device pixel ratio) as the last layer, the
+  visual anchor: a close, unique match resolves to the control under its centre;
+  a crop that matches in two places is ambiguous and fails the step instead of
+  guessing. Crops are read only from inside the flow's folder (no symlinks out,
+  at most 8 MiB). `assert` steps don't use it yet. It
   waits for the element to be visible, enabled and not covered, up to the step's
   `timeout_ms` (default 5 s), then acts with real input events (click, hover,
   fill, select by value or label, key chords such as `Control+a`, scroll,
@@ -381,7 +388,7 @@ alone.
   dismissed and recorded on the step. `${env.*}` and
   `${secret.*}` are resolved before the first step, and a missing one stops the
   run before anything happens. Each step gets a result: status, timing, which
-  locator matched, its layer and whether it was a fallback (a more stable
+  locator matched, its layer (`visual` with a match score for the crop) and whether it was a fallback (a more stable
   locator found nothing: the flow is drifting from the app even though the step
   passed), what the earlier ones found, and a reason when it fails.
   Typed values are never put in the result, and secret values are scrubbed from
