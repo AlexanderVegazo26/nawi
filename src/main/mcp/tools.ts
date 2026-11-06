@@ -387,7 +387,8 @@ const getStateLayer = defineTool({
     'Read a capture\'s DC-4 state layer with field projection, filtering and pagination. The response is hard-capped ' +
     `at ${MAX_RESPONSE_BYTES} bytes: entries are emitted until the budget is spent, then next_cursor and truncated ` +
     'are returned — pass the cursor back to continue. Every entry keeps its t_ms and carries a seekable video_url. ' +
-    'A source that was never harvested is reported as unavailable with a reason, not omitted.',
+    'A source that was never harvested is reported as unavailable with a reason, not omitted. A side file that ' +
+    'fails to read (missing, I/O error) sets read_error to the error code on its field, after the entries read before it.',
   idempotent: false,
   errors: ['NOT_FOUND', 'UNAVAILABLE'],
   schema: z.object({

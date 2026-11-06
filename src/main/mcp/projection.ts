@@ -108,6 +108,14 @@ export interface ProjectedField {
   available?: number
   /** True when this field ran out of budget mid-way. */
   truncated?: boolean
+  /**
+   * Set when the field's side file could not be read to the end (missing, a
+   * directory, an I/O error mid-scan): the error code, e.g. `"EIO"`, or
+   * `"read_failed"` when the error has none. The entries read before the error
+   * are kept. Without it a failed read looks like a complete, shorter field.
+   * No cursor points past the failure: a retry would hit the same file.
+   */
+  read_error?: string
   /** DC-2: null with a reason, rather than an omitted key. */
   unavailable?: string
 }
@@ -347,6 +355,18 @@ export async function* readEntries(
   }
 }
 
+const ERROR_CODE_RE = /^[A-Z][A-Z0-9_]{0,31}$/
+
+/**
+ * The error's `code` (`EIO`, `ENOENT`, `EISDIR`...) and nothing else: the
+ * message carries the absolute path of the user's data directory, which an MCP
+ * client has no business seeing.
+ */
+export function readErrorCode(err: unknown): string {
+  const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined
+  return typeof code === 'string' && ERROR_CODE_RE.test(code) ? code : 'read_failed'
+}
+
 function matchesConsole(entry: Record<string, unknown>, levels?: ConsoleLevel[]): boolean {
   if (!levels) return true
   return levels.includes(entry.level as ConsoleLevel)
@@ -455,8 +475,9 @@ export async function project(options: ProjectOptions): Promise<ProjectionResult
     // filter regardless of how many non-matching rows sit between them.
     let index = 0
     let stopped = false
+    let readError: unknown = null
 
-    for await (const raw of readEntries(revisionDir, source)) {
+    for await (const raw of readEntries(revisionDir, source, (err) => (readError = err))) {
       if (field === 'console_log' && !matchesConsole(raw, query.level)) continue
       if (field === 'input_events' && !matchesInput(raw, query.type)) continue
 
@@ -493,6 +514,12 @@ export async function project(options: ProjectOptions): Promise<ProjectionResult
 
       bucket.entries?.push(entry)
       budget -= cost
+    }
+
+    if (readError !== null) {
+      bucket.read_error = readErrorCode(readError)
+      // A few dozen bytes, paid like an entry so later fields stay in budget.
+      budget -= byteLen({ read_error: bucket.read_error })
     }
 
     if (stopped) break
