@@ -343,6 +343,15 @@ describe('exploreApp (roadmap M3c): screen graph of a fixture app', () => {
     expect(time.taps).toBeLessThanOrEqual(2)
   })
 
+  it('goes back to the screen it was exploring when the screen budget runs out, so the device is not left on a screen outside the graph', async () => {
+    const dev = device()
+    const r = await exploreApp({ ...REQ, maxScreens: 2 }, dev.host)
+    expect(r.stopped).toBe('max_screens')
+    expect(dev.tapped.at(-1), 'the tap that found the screen over the budget').toBe('settings:About')
+    expect(dev.stack, 'device screen stack after the run: back on settings, about (over the budget) closed').toEqual(['launcher', 'home', 'settings'])
+    expect(r.notes.join(' '), 'a note names the budget and the screen left unexplored').toMatch(new RegExp(`2 screens.*${idOf('about')}`))
+  })
+
   it('stops as lost, naming where it ended up, when Back leads off the explored path', async () => {
     APP.about.back = 'promo'
     try {

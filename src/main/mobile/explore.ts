@@ -421,7 +421,14 @@ export async function exploreApp(req: ExploreRequest, host: ExploreHost): Promis
         cur = await returnTo(stack, after)
         continue
       }
-      if (!known.has(id) && known.size >= maxScreens) throw new Stop('max_screens')
+      if (!known.has(id) && known.size >= maxScreens) {
+        // The tap already opened a screen the graph won't keep: leave it, so the device ends on a screen of the graph
+        // (the tap and time budgets stop before a tap, so they already do). If that fails, the Stop it throws (lost,
+        // device_error, cancelled) says where the device is better than max_screens would.
+        result.notes.push(`Stopped: the budget of ${maxScreens} screens was reached; ${id} (from "${c.label}" on ${here.screen_id}) was left unexplored.`)
+        await backOut(stack, id)
+        throw new Stop('max_screens')
+      }
       result.edges.push({ from: here.screen_id, to: id, tap: edgeTap, result: 'screen' })
       if (!known.has(id)) {
         const next = await addScreen(after, here.depth + 1, [...here.path, edgeTap])
