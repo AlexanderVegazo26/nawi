@@ -177,7 +177,8 @@ interface ReportStep {
   action: string
   status: string
   durationMs?: number
-  matched?: { index: number; selector: Record<string, unknown> }
+  /** `layer`/`fallback` since roadmap AI1. */
+  matched?: { index: number; selector: Record<string, unknown>; layer?: string; fallback?: boolean }
   error?: string
   consoleErrors?: Array<{ source: string; message: string }>
   consoleErrorsDropped?: number
@@ -238,6 +239,10 @@ export function renderRun(report: RunReport): string {
     const ms = step.durationMs !== undefined ? ` (${step.durationMs} ms)` : ''
     lines.push(`  ${MARK[step.status] ?? step.status} ${step.id} ${step.action}${ms}`)
     if (step.error) lines.push(`       ${step.error}`)
+    if (step.status === 'passed' && step.matched?.fallback) {
+      // Still passing, but a more stable locator stopped matching: say so before it fails too.
+      lines.push(`       fallback: found by locator ${step.matched.index} (${step.matched.layer ?? 'unknown layer'}); a more stable locator found nothing, update the flow`)
+    }
     if (step.status === 'failed' && step.shots?.after !== undefined && report.run_dir) {
       lines.push(`       screenshot: ${join(report.run_dir, step.shots.after)}`)
     }

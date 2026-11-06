@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FLOW_VERSION, FlowSchema, RESERVED_KEYS, type Flow, type FlowStep, type FlowTarget, type Selector } from './schema'
+import { FLOW_VERSION, FlowSchema, MAX_INTENT_CHARS, RESERVED_KEYS, type Flow, type FlowStep, type FlowTarget, type Selector } from './schema'
 
 /**
  * Recording → flow (roadmap F2).
@@ -348,6 +348,22 @@ function describe(target: RecordedTarget | null | undefined): string {
   return role ? `the ${role}` : 'the element'
 }
 
+/**
+ * A recorded step's `intent` (roadmap AI1): its note as one line, since the
+ * note already says what was done to which element ("Click \"Save\""), or a
+ * placeholder naming the action for a person to rewrite. Run records carry
+ * the intent, so it must never hold a typed value: a field's note names it by
+ * its accessible name, which for an unlabeled field can be its own text, so a
+ * note that contains the step's value falls back to the placeholder.
+ */
+export function intentOf(step: { action: string; note?: string; value?: string }): string {
+  const note = (step.note ?? '').replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim()
+  const typed = (step.value ?? '').replace(/\s+/g, ' ').trim()
+  const echoesValue = typed.length >= 3 && !typed.startsWith('${') && note.includes(typed)
+  if (note && !echoesValue) return note.length > MAX_INTENT_CHARS ? `${note.slice(0, MAX_INTENT_CHARS - 3)}...` : note
+  return `${step.action[0].toUpperCase()}${step.action.slice(1)} (recorded; say what this step is for)`
+}
+
 export function flowFromRecording(
   events: readonly unknown[],
   options: FlowFromRecordingOptions
@@ -579,7 +595,7 @@ export function flowFromRecording(
     name: /\S/.test(options.name) ? options.name : 'Recording',
     ...(options.description !== undefined ? { description: options.description } : {}),
     target: flowTarget,
-    steps: writable.map((p, i) => ({ id: `s${i + 1}`, ...p.step }) as FlowStep)
+    steps: writable.map((p, i) => ({ id: `s${i + 1}`, intent: intentOf(p.step), ...p.step }) as FlowStep)
   }
 
   const checked = FlowSchema.safeParse(flow)

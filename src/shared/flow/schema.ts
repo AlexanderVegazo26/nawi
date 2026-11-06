@@ -65,15 +65,31 @@ const varName = z
 
 /**
  * One locator. A step lists several, most stable first (FR-STA.6's ranking:
- * test id > id > role + accessible name > CSS), so the replayer can fall back
- * when the first no longer matches.
+ * test id > id > role + accessible name > visible text > CSS), so the replayer
+ * can fall back when the first no longer matches (roadmap AI1: layered
+ * locators). `text` is the element's whole visible text, whitespace runs
+ * folded and trimmed; it matches the innermost element showing exactly that.
  */
 export const SelectorSchema = z.union([
   z.strictObject({ testid: nonEmpty }),
   z.strictObject({ id: nonEmpty }),
   z.strictObject({ role: nonEmpty, name: z.string().optional() }),
+  z.strictObject({ text: nonEmpty.max(500) }),
   z.strictObject({ css: nonEmpty })
 ])
+
+/** The kinds of locator a step can list (its "layers"), most stable first. */
+export const LOCATOR_LAYERS = ['testid', 'id', 'role', 'text', 'css'] as const
+export type LocatorLayer = (typeof LOCATOR_LAYERS)[number]
+
+/** Which layer a locator belongs to, for run records ("matched by role"). */
+export function locatorLayer(selector: Selector): LocatorLayer {
+  if ('testid' in selector) return 'testid'
+  if ('id' in selector) return 'id'
+  if ('role' in selector) return 'role'
+  if ('text' in selector) return 'text'
+  return 'css'
+}
 
 const pixel = z.number().finite()
 
@@ -121,8 +137,24 @@ export const ExpectSchema = z
     message: 'needs at least one of visible, enabled, text, url'
   })
 
+/**
+ * What a step is for, in one plain sentence ("Open the invoice list"), so a
+ * person, a healing proposal or a failure triage can tell whether a match is
+ * still the right element after the UI changed (roadmap AI1). One line: it is
+ * shown next to the step in run records and reports.
+ */
+export const MAX_INTENT_CHARS = 300
+
+const intent = z
+  .string()
+  .regex(/\S/, 'must not be empty or blank')
+  .max(MAX_INTENT_CHARS, `must be one sentence (at most ${MAX_INTENT_CHARS} characters)`)
+  .refine((s) => !/[\u0000-\u001f\u007f]/.test(s), { message: 'must be one line (no line breaks or control characters)' })
+
 const common = {
   id: stepId,
+  /** What the step is for (roadmap AI1); additive to version 1. */
+  intent: intent.optional(),
   /** Human description; becomes guide text later. */
   note: z.string().optional(),
   /** Kept in the file but skipped by the replayer. */

@@ -20,7 +20,7 @@
 import replaySource from './inject/replay.js?raw'
 import { buildProbeSource, type ProbeClient } from '../cdp/probe'
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '@shared/flow/interpolate'
-import type { Flow, FlowStep, Selector } from '@shared/flow/schema'
+import { locatorLayer, type Flow, type FlowStep, type LocatorLayer, type Selector } from '@shared/flow/schema'
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
 import { EvidenceCollector, type StepEvidence } from './evidence'
 
@@ -71,8 +71,16 @@ export interface StepRun extends StepEvidence {
   /** Epoch ms. Absent for steps that never started. */
   startedAt?: number
   durationMs?: number
-  /** The locator that resolved the target, by its position in `target.selectors`. */
-  matched?: { index: number; selector: Selector }
+  /**
+   * The locator that resolved the target, by its position in `target.selectors`,
+   * and its layer (roadmap AI1). `fallback` = an earlier, more stable locator
+   * found nothing (or is broken): the flow is drifting from the app and should
+   * be updated before this locator breaks too. An earlier locator that only
+   * matched several elements does not count (see `isFallback`).
+   */
+  matched?: { index: number; selector: Selector; layer: LocatorLayer; fallback: boolean }
+  /** The step's `intent` from the flow (what it is for), scrubbed. */
+  intent?: string
   /** Locators tried before the match (or all of them, when nothing matched). */
   misses?: LocatorMiss[]
   error?: string
@@ -184,6 +192,8 @@ export function describeSelector(selector: Selector): string {
   if ('testid' in selector) return `testid=${selector.testid}`
   if ('id' in selector) return `id=${selector.id}`
   if ('css' in selector) return `css=${selector.css}`
+  // JSON quoting: a text with quotes or line breaks stays one readable, pasteable token.
+  if ('text' in selector) return `text=${JSON.stringify(selector.text)}`
   return selector.name === undefined ? `role=${selector.role}` : `role=${selector.role}[name="${selector.name}"]`
 }
 
@@ -301,6 +311,21 @@ async function until<T>(deadline: number, now: () => number, attempt: () => Prom
   }
 }
 
+/** A step's id and action, plus its `intent` when the flow gave one (scrubbed when secrets are known). */
+export function withIntent(step: FlowStep, redact: (text: string) => string = (t) => t): Pick<StepRun, 'id' | 'action' | 'intent'> {
+  return step.intent === undefined ? { id: step.id, action: step.action } : { id: step.id, action: step.action, intent: redact(step.intent) }
+}
+
+/**
+ * Drift (roadmap AI1): an earlier, more stable locator is gone (finds nothing)
+ * or broken. An earlier locator that is merely ambiguous is not drift: the
+ * recorder keeps ranked candidates that were never unique (a test id shared by
+ * every row), so they are skipped on the very day the flow was recorded.
+ */
+function isFallback(answer: PageAnswer): boolean {
+  return answer.tried.some((t) => t.index < answer.index && (t.found === 0 || t.invalid !== undefined))
+}
+
 function missesOf(answer: PageAnswer | null, selectors: Selector[]): LocatorMiss[] {
   return (answer?.tried ?? []).map((t) => ({
     index: t.index,
@@ -330,7 +355,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
   const now = options.now ?? Date.now
   const startedAt = now()
   const notRun = (): StepRun[] =>
-    flow.steps.map((s) => ({ id: s.id, action: s.action, status: s.disabled ? 'skipped' : 'not_run' }))
+    flow.steps.map((s) => ({ ...withIntent(s), status: s.disabled ? 'skipped' : 'not_run' }))
   const abort = (error: string): FlowRun => ({
     status: 'failed',
     startedAt,
@@ -441,13 +466,13 @@ async function runSteps(
   let lastAfter: string | undefined
   for (const [index, step] of flow.steps.entries()) {
     if (step.disabled) {
-      steps.push({ id: step.id, action: step.action, status: 'skipped' })
+      steps.push({ ...withIntent(step, runner.redact), status: 'skipped' })
       settled(index, step, 'skipped')
       continue
     }
     if (failed === undefined && stopped === undefined && signal?.aborted) stopped = stopReason(signal)
     if (failed !== undefined || stopped !== undefined) {
-      steps.push({ id: step.id, action: step.action, status: 'not_run' })
+      steps.push({ ...withIntent(step, runner.redact), status: 'not_run' })
       settled(index, step, 'not_run')
       continue
     }
@@ -485,6 +510,9 @@ class StepRunner {
     private readonly defaultTimeoutMs: number
   ) {}
 
+  /** Scrubs the run's secret values out of text (for step intents). */
+  readonly redact = (text: string): string => this.interp.redact(text)
+
   private dialogs: Array<{ type: string; message: string }> = []
   /** Locators of fields this run typed a secret into; screenshots mask them. */
   private readonly secretTargets: Selector[][] = []
@@ -499,6 +527,7 @@ class StepRunner {
   async run(step: FlowStep): Promise<StepRun> {
     const startedAt = this.now()
     const record: StepRun = { id: step.id, action: step.action, status: 'passed', startedAt }
+    if (step.intent !== undefined) record.intent = this.interp.redact(step.intent)
     this.dialogs = []
     // `wait` with a target and `ms`: ms is how long to wait for it.
     const waitMs = step.action === 'wait' && step.target && step.ms !== undefined ? step.ms : undefined
@@ -518,7 +547,10 @@ class StepRunner {
       this.session.clearLimit()
     }
     if (answer && selectors.length > 0) {
-      if (answer.found && answer.index >= 0) record.matched = { index: answer.index, selector: selectors[answer.index] }
+      if (answer.found && answer.index >= 0) {
+        const selector = selectors[answer.index]
+        record.matched = { index: answer.index, selector, layer: locatorLayer(selector), fallback: isFallback(answer) }
+      }
       const misses = missesOf(answer, selectors)
       if (misses.length > 0) record.misses = misses
     }

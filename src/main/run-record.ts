@@ -18,6 +18,10 @@ import type { FlowRun, StepRun } from './replay/replay'
  * Per step it also keeps what the page did meanwhile (F4b): console errors,
  * failed requests (status >= 400 or no response) and the URL after the step.
  * These are optional fields, so a reader of version 1 records keeps working.
+ * So are AI1's: each matched locator names its layer (testid/id/role/text/css)
+ * and whether it was a fallback, the record lists the steps that passed only
+ * through a fallback (`fallback_step_ids`, the flow drifting from the app),
+ * and a step carries its `intent`.
  *
  * Electron-free and pure apart from the write, so the format is tested without
  * an app. The folder is written under a temporary name and renamed into place,
@@ -104,6 +108,12 @@ export interface RunRecord {
   opening?: RecordedEvidence
   /** The page's URL when the run ended, scrubbed. */
   final_url?: string
+  /**
+   * Steps that passed although a more stable locator found nothing (their
+   * target came from a fallback): the flow no longer matches the app as recorded.
+   * Absent when there are none.
+   */
+  fallback_step_ids?: string[]
   steps: RecordedStep[]
 }
 
@@ -173,6 +183,8 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
   })
   const count = (status: StepRun['status']): number => run.steps.filter((s) => s.status === status).length
   const opening = run.opening && recordedEvidence(run.opening)
+  // Passed steps only: a failed step's own error is what to read, not the drift note.
+  const fallbacks = run.steps.filter((s) => s.status === 'passed' && s.matched?.fallback === true).map((s) => s.id)
   const record: RunRecord = {
     version: RUN_RECORD_VERSION,
     run_id: input.runId,
@@ -186,6 +198,7 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     environment: input.environment,
     ...(opening && Object.keys(opening).length > 0 ? { opening } : {}),
     ...(run.finalUrl !== undefined ? { final_url: run.finalUrl } : {}),
+    ...(fallbacks.length > 0 ? { fallback_step_ids: fallbacks } : {}),
     steps
   }
   return { record, assets }
@@ -213,13 +226,21 @@ export function describe(selector: Record<string, unknown>): string {
     .join(' ')
 }
 
+/** `matched locator 1 (role, fallback) role=button name=Save`, for text output. */
+export function matchedLine(matched: NonNullable<RecordedStep['matched']>): string {
+  // Records written before AI1 have no layer: say nothing rather than guess.
+  const layer = typeof matched.layer === 'string' ? ` (${matched.layer}${matched.fallback ? ', fallback' : ''})` : ''
+  return `matched locator ${matched.index}${layer} ${describe(matched.selector as Record<string, unknown>)}`
+}
+
 function failureDetail(step: RecordedStep): string {
   const lines = [step.error ?? 'the step failed']
+  if (step.intent !== undefined) lines.push(`  intent: ${step.intent}`)
   for (const miss of step.misses ?? []) {
     const why = miss.invalid ? `invalid: ${miss.invalid}` : miss.found === 0 ? 'no match' : `${miss.found} matches`
     lines.push(`  locator ${miss.index} ${describe(miss.selector as Record<string, unknown>)}: ${why}`)
   }
-  if (step.matched) lines.push(`  matched locator ${step.matched.index} ${describe(step.matched.selector as Record<string, unknown>)}`)
+  if (step.matched) lines.push(`  ${matchedLine(step.matched)}`)
   if (step.url !== undefined) lines.push(`  page: ${step.url}`)
   if (step.shots?.after !== undefined) lines.push(`  screenshot after the step: ${step.shots.after} (in the run folder)`)
   lines.push(...evidenceLines(step).map((l) => `  ${l}`))

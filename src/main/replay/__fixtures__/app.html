@@ -50,6 +50,14 @@
   <p id="confirmed" data-testid="confirmed"></p>
   <div id="tall"><p id="far">Far down</p></div>
   <div id="overlay-host"></div>
+  <!-- AI1 text locators: the button's text spans lines, its wrappers show the same text, a hidden copy exists. -->
+  <div id="text-card"><span><button class="tbtn" id="archive-btn">  Archive
+      all  </button></span></div>
+  <nav style="display:none"><button class="tbtn" id="archive-hidden">Archive all</button></nav>
+  <nav style="visibility:hidden"><button class="tbtn" id="archive-invisible">Archive all</button></nav>
+  <button class="tbtn" id="restore-btn">Restore<br>selected</button>
+  <button class="tbtn" id="shout-btn" style="text-transform:uppercase">Shout</button>
+  <button class="tbtn" id="contents-btn"><span style="display:contents">Mark read</span></button>
 
 <script>
   const $ = (id) => document.getElementById(id)
@@ -59,6 +67,9 @@
     $('echo').textContent = 'pw:' + $('password').value
   })
   for (const b of document.querySelectorAll('.btn')) {
+    b.addEventListener('click', (e) => { if (e.isTrusted) $('clicked').textContent = b.id })
+  }
+  for (const b of document.querySelectorAll('.tbtn')) {
     b.addEventListener('click', (e) => { if (e.isTrusted) $('clicked').textContent = b.id })
   }
   $('delete').addEventListener('click', () => { $('confirmed').textContent = String(confirm('Delete it?')) })

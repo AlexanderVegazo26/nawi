@@ -47,6 +47,8 @@ main{max-width:64rem;margin:0 auto}
 h1{font-size:1.5rem;margin:0 0 .25rem}
 h2{font-size:1.1rem;margin:1.5rem 0 .5rem}
 .muted{color:var(--muted)}
+.intent{color:var(--fg);font-style:italic}
+.drift{color:var(--warn);font-weight:600}
 .badge{display:inline-block;padding:0 .5rem;border:1px solid currentColor;border-radius:1rem;font-size:.85rem;font-weight:600}
 .passed{color:var(--ok)}.failed{color:var(--bad)}.skipped,.not_run{color:var(--muted)}
 dl{display:grid;grid-template-columns:max-content 1fr;gap:.15rem 1rem;margin:.5rem 0}
@@ -87,7 +89,14 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
     const before = s.shots?.before !== undefined && s.shots.before === record.steps[index - 1]?.shots?.after ? undefined : s.shots?.before
     const detail: string[] = []
     if (s.error) detail.push(`<pre>${htmlEscape(s.error)}</pre>`)
-    if (s.matched) detail.push(`<div class="muted">Matched locator ${s.matched.index}: ${htmlEscape(describe(s.matched.selector as Record<string, unknown>))}</div>`)
+    if (s.intent !== undefined) detail.push(`<div class="intent">${htmlEscape(s.intent)}</div>`)
+    if (s.matched) {
+      const layer = typeof s.matched.layer === 'string' ? ` by ${htmlEscape(s.matched.layer)}` : ''
+      const drift = s.matched.fallback && s.status === 'passed'
+        ? ' <span class="drift">fallback: a more stable locator found nothing, update the flow</span>'
+        : ''
+      detail.push(`<div class="muted">Matched locator ${s.matched.index}${layer}: ${htmlEscape(describe(s.matched.selector as Record<string, unknown>))}${drift}</div>`)
+    }
     for (const miss of s.misses ?? []) {
       const why = miss.invalid ? `invalid: ${miss.invalid}` : miss.found === 0 ? 'no match' : `${miss.found} matches`
       detail.push(`<div class="muted">Locator ${miss.index} ${htmlEscape(describe(miss.selector as Record<string, unknown>))}: ${htmlEscape(why)}</div>`)
@@ -129,6 +138,16 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
   if (record.final_url) rows.push(['Final page', record.final_url])
 
   const summary = `${t.passed} passed, ${t.failed} failed, ${t.skipped} skipped, ${t.not_run} not run`
+  const fallbackIds = Array.isArray(record.fallback_step_ids) ? record.fallback_step_ids : []
+  const drift =
+    fallbackIds.length > 0
+      ? `<p class="drift">${fallbackIds.length} step${fallbackIds.length === 1 ? '' : 's'} found ${fallbackIds.length === 1 ? 'its' : 'their'} target only by a fallback locator: ${fallbackIds
+          .map((id) => {
+            const i = record.steps.findIndex((s) => s.id === id)
+            return i >= 0 ? `<a href="#step-${i + 1}">${htmlEscape(id)}</a>` : htmlEscape(id)
+          })
+          .join(', ')}. The flow is drifting from the app; update those locators before they fail.</p>`
+      : ''
   return [
     '<!doctype html>',
     '<html lang="en"><head><meta charset="utf-8">',
@@ -140,6 +159,7 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
     `<h1>${htmlEscape(record.flow.name)} <span class="badge ${htmlEscape(record.status)}">${htmlEscape(STATUS_LABEL[record.status] ?? record.status)}</span></h1>`,
     `<p class="muted">${htmlEscape(summary)}${failedIndex >= 0 ? ` · first failure: <a href="#step-${failedIndex + 1}">${htmlEscape(record.steps[failedIndex].id)}</a>` : ''}</p>`,
     record.error ? `<pre>${htmlEscape(record.error)}</pre>` : '',
+    drift,
     `<dl>${rows.map(([k, v]) => `<dt>${htmlEscape(k)}</dt><dd>${htmlEscape(v)}</dd>`).join('')}</dl>`,
     record.opening ? `<h2>While opening the target</h2>${evidence(record.opening)}` : '',
     `<h2>Steps (${record.steps.length})</h2>`,

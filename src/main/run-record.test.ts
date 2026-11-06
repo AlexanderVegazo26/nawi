@@ -324,3 +324,59 @@ describe('writeRunRecord and pruneRuns', () => {
     expect(readdirSync(runs).sort()).toEqual(['.tmp-not-a-run', fresh].sort())
   })
 })
+
+describe('buildRunRecord: matched layer, fallback and intent (AI1)', () => {
+  const DRIFT: FlowRun = {
+    status: 'failed',
+    startedAt: T0,
+    durationMs: 900,
+    failedStepId: 's3',
+    steps: [
+      {
+        id: 's1',
+        action: 'click',
+        status: 'passed',
+        intent: 'Open the invoice list',
+        matched: { index: 0, selector: { testid: 'invoices' }, layer: 'testid', fallback: false }
+      },
+      {
+        id: 's2',
+        action: 'click',
+        status: 'passed',
+        matched: { index: 2, selector: { text: 'Save' }, layer: 'text', fallback: true },
+        misses: [
+          { index: 0, selector: { testid: 'save' }, found: 0 },
+          { index: 1, selector: { role: 'button', name: 'Save draft' }, found: 0 }
+        ]
+      },
+      {
+        id: 's3',
+        action: 'fill',
+        status: 'failed',
+        intent: 'Name the invoice',
+        matched: { index: 1, selector: { css: '#name' }, layer: 'css', fallback: true },
+        misses: [{ index: 0, selector: { id: 'title' }, found: 0 }],
+        error: 'css=#name matched but it is not a text field (div#name)'
+      }
+    ]
+  }
+
+  it('lists every step found only by a fallback locator, in step order, as the run\'s drift signal', () => {
+    const { record: r } = record(DRIFT)
+    expect(r.fallback_step_ids, 'passed steps whose primary locator missed (s1 matched its first locator; s3 failed: its error is the news)').toEqual(['s2'])
+    expect(r.steps[1].matched, 'layer + fallback kept on the step').toEqual({ index: 2, selector: { text: 'Save' }, layer: 'text', fallback: true })
+    expect(r.steps[0].intent).toBe('Open the invoice list')
+  })
+
+  it('leaves fallback_step_ids out when every step matched its first locator', () => {
+    const { record: r } = record({ ...DRIFT, steps: [DRIFT.steps[0]], status: 'passed', failedStepId: undefined })
+    expect('fallback_step_ids' in r, JSON.stringify(r)).toBe(false)
+  })
+
+  it('puts the intent and the matched layer into the JUnit failure text', () => {
+    const { record: r } = record(DRIFT)
+    const xml = toJUnitXml(r)
+    expect(xml, xml).toContain('  intent: Name the invoice\n')
+    expect(xml, xml).toContain('  matched locator 1 (css, fallback) css=#name')
+  })
+})

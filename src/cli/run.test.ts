@@ -145,6 +145,27 @@ describe('nawi run: output and exit code', () => {
     )
   })
 
+  it('warns under a passing step that was found only by a fallback locator (AI1 drift), and not otherwise', () => {
+    const out = renderRun({
+      flow: 'Save',
+      status: 'passed',
+      duration_ms: 50,
+      steps: [
+        { id: 's1', action: 'click', status: 'passed', durationMs: 20, matched: { index: 0, selector: { testid: 'a' }, layer: 'testid', fallback: false } },
+        { id: 's2', action: 'click', status: 'passed', durationMs: 30, matched: { index: 2, selector: { text: 'Save' }, layer: 'text', fallback: true } }
+      ]
+    })
+    expect(out).toBe(
+      [
+        'Save',
+        '  ok   s1 click (20 ms)',
+        '  ok   s2 click (30 ms)',
+        '       fallback: found by locator 2 (text); a more stable locator found nothing, update the flow',
+        'PASSED: 2 passed, 0 failed, 0 not run, 0 skipped in 50 ms'
+      ].join('\n')
+    )
+  })
+
   it('prints up to three console errors and failed requests under a step, then how many more', () => {
     const out = renderRun({
       flow: 'Save',

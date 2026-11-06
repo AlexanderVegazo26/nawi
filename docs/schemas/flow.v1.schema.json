@@ -76,6 +76,11 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
               },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
               "note": {
                 "type": "string"
               },
@@ -144,6 +149,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "css": {
                               "type": "string",
                               "pattern": "\\S"
@@ -204,6 +223,11 @@
               "id": {
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
               },
               "note": {
                 "type": "string"
@@ -273,6 +297,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "css": {
                               "type": "string",
                               "pattern": "\\S"
@@ -333,6 +371,11 @@
               "id": {
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
               },
               "note": {
                 "type": "string"
@@ -402,6 +445,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "css": {
                               "type": "string",
                               "pattern": "\\S"
@@ -466,6 +523,11 @@
               "id": {
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
               },
               "note": {
                 "type": "string"
@@ -535,6 +597,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "css": {
                               "type": "string",
                               "pattern": "\\S"
@@ -600,6 +676,11 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
               },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
               "note": {
                 "type": "string"
               },
@@ -662,6 +743,20 @@
                           },
                           "required": [
                             "role"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
                           ],
                           "additionalProperties": false
                         },
@@ -733,6 +828,11 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
               },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
               "note": {
                 "type": "string"
               },
@@ -795,6 +895,20 @@
                           },
                           "required": [
                             "role"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
                           ],
                           "additionalProperties": false
                         },
@@ -875,6 +989,11 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
               },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
               "note": {
                 "type": "string"
               },
@@ -908,6 +1027,11 @@
               "id": {
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
               },
               "note": {
                 "type": "string"
@@ -971,6 +1095,20 @@
                           },
                           "required": [
                             "role"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
                           ],
                           "additionalProperties": false
                         },
@@ -1042,6 +1180,11 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
               },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
               "note": {
                 "type": "string"
               },
@@ -1104,6 +1247,20 @@
                           },
                           "required": [
                             "role"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
                           ],
                           "additionalProperties": false
                         },
@@ -1189,6 +1346,11 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
               },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
               "note": {
                 "type": "string"
               },
@@ -1251,6 +1413,20 @@
                           },
                           "required": [
                             "role"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "text"
                           ],
                           "additionalProperties": false
                         },

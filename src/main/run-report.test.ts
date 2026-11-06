@@ -183,3 +183,58 @@ describe('report.html, readRunRecord and listRuns', () => {
     expect(await listRuns(join(root, 'nope'))).toEqual([])
   })
 })
+
+describe('toHtmlReport: drift and intent (AI1)', () => {
+  const DRIFTED: FlowRun = {
+    status: 'passed',
+    startedAt: T0,
+    durationMs: 300,
+    steps: [
+      {
+        id: 'open',
+        action: 'click',
+        status: 'passed',
+        intent: 'Open the <invoices> list',
+        matched: { index: 0, selector: { testid: 'invoices' }, layer: 'testid', fallback: false }
+      },
+      {
+        id: 'save',
+        action: 'click',
+        status: 'passed',
+        matched: { index: 1, selector: { text: 'Save' }, layer: 'text', fallback: true },
+        misses: [{ index: 0, selector: { testid: 'save' }, found: 0 }]
+      }
+    ]
+  }
+
+  it('names the layer that matched, flags a fallback on the step and links it from a drift note at the top', () => {
+    const { record, assets } = build(DRIFTED)
+    const html = toHtmlReport(record, assets)
+    expect(html, 'first step matched by its primary locator, no drift mark').toContain('Matched locator 0 by testid: testid=invoices</div>')
+    expect(html, 'second step: layer and fallback mark').toContain('Matched locator 1 by text: text=Save <span class="drift">fallback')
+    expect(html, 'drift note links the drifting step').toContain('1 step found its target only by a fallback locator: <a href="#step-2">save</a>')
+    expect(html, 'intent shown and escaped').toContain('<div class="intent">Open the &lt;invoices&gt; list</div>')
+  })
+
+  it('marks no drift on a failed step even when its target came from a fallback', () => {
+    const failedStep = { ...DRIFTED.steps[1], status: 'failed' as const, error: 'it is not visible' }
+    const { record, assets } = build({ ...DRIFTED, status: 'failed', failedStepId: 'save', steps: [DRIFTED.steps[0], failedStep] })
+    const html = toHtmlReport(record, assets)
+    expect(html).toContain('Matched locator 1 by text: text=Save</div>')
+    expect(html).not.toContain('class="drift"')
+  })
+
+  it('has no drift note when no step needed a fallback', () => {
+    const { record, assets } = build({ ...DRIFTED, steps: [DRIFTED.steps[0]] })
+    expect(toHtmlReport(record, assets)).not.toContain('class="drift"')
+  })
+
+  it('still renders a record written before AI1 (matched without layer) without inventing one', () => {
+    const { record, assets } = build(DRIFTED)
+    const old = { ...record, steps: record.steps.map((s) => (s.matched ? { ...s, matched: { index: s.matched.index, selector: s.matched.selector } } : s)) }
+    delete (old as Partial<typeof old>).fallback_step_ids
+    const html = toHtmlReport(old as typeof record, assets)
+    expect(html).toContain('Matched locator 0: testid=invoices</div>')
+    expect(html).not.toContain('class="drift"')
+  })
+})

@@ -343,7 +343,9 @@ alone.
   form of a recorded process: a target (browser URL or desktop app), `vars`, and
   steps (`click`, `fill`, `press`, `select`, `hover`, `scroll`, `navigate`,
   `wait`, `assert`, `screenshot`), each target carrying several ranked locators
-  plus an optional box and reference crop. `src/shared/flow` parses and
+  in layers (test id, id, role + accessible name, visible `text`, CSS) plus an
+  optional box and reference crop, and each step an optional one-line `intent`
+  (what the step is for, so a changed UI can be judged against it). `src/shared/flow` parses and
   validates it (unknown keys, duplicate step ids and unresolved `${vars.*}` are
   errors reported as `file:line:col path: message`), writes it back with the
   author's comments kept, and publishes a JSON Schema at
@@ -355,7 +357,8 @@ alone.
   turns a capture's harvested input events into flow YAML: clicks, one `fill`
   per field with its final value (`select` for a `<select>`), named keys such as
   Enter (and ArrowUp/ArrowDown in an autocomplete, so Enter picks the same
-  suggestion on replay), each with its ranked selectors. Fields marked secret at capture become
+  suggestion on replay), each with its ranked selectors and an `intent` taken from the step's note
+  (rewrite it to say what the step is for). Fields marked secret at capture become
   `${secret.<name>}` placeholders (their values were never recorded). Scrolls,
   resizes, modifier and editing keys, the click that only focused a field, and
   what was entered in fields a flow can't fill (file pickers, sliders, color
@@ -363,7 +366,9 @@ alone.
   YAML and writes nothing. Converter: `src/shared/flow/from-recording.ts`.
 - **Flow replay engine** (`src/main/replay`) — runs a flow in a Chromium page
   over raw CDP. Each step's locators are tried in order: the first one matching
-  exactly one element wins (one matching several is ambiguous and skipped). It
+  exactly one element wins (one matching several is ambiguous and skipped). A
+  `text` locator matches the innermost visible element whose rendered text, with
+  whitespace folded, is exactly that text. It
   waits for the element to be visible, enabled and not covered, up to the step's
   `timeout_ms` (default 5 s), then acts with real input events (click, hover,
   fill, select by value or label, key chords such as `Control+a`, scroll,
@@ -374,7 +379,9 @@ alone.
   dismissed and recorded on the step. `${env.*}` and
   `${secret.*}` are resolved before the first step, and a missing one stops the
   run before anything happens. Each step gets a result: status, timing, which
-  locator matched and what the earlier ones found, and a reason when it fails.
+  locator matched, its layer and whether it was a fallback (a more stable
+  locator found nothing: the flow is drifting from the app even though the step
+  passed), what the earlier ones found, and a reason when it fails.
   Typed values are never put in the result, and secret values are scrubbed from
   messages (also when percent-encoded or whitespace-folded). The first failure stops the run. Only the top document is searched
   (no iframes or shadow roots yet).
@@ -395,14 +402,15 @@ alone.
 - **Run records** — every run, passed or failed (also one that stopped before a
   browser started), is saved in the app's data folder as `runs/<run-id>/`:
   `run.json` (format version 1: the flow's name, path and SHA-256, start time,
-  duration, status, per step the status, start time, duration, the locator that
-  matched and the ones that missed, the error and any dialogs, the page URL
+  duration, status, per step the status, start time, duration, its `intent`, the locator that
+  matched (with its layer and a `fallback` flag) and the ones that missed, the error and any dialogs, the page URL
   after the step, the console errors it caused (`console.error`, uncaught
   exceptions, browser errors) and the requests it sent that failed (HTTP 400+
   or no response; cancelled ones are left out), at most 20 of each per step
   with a count of the rest (a run waits up to half a second after its last
   step for the requests that step sent); the same for opening the target, the
-  final URL;
+  final URL; `fallback_step_ids`, the passed steps found only by a fallback locator
+  (also listed at the top of `report.html` and under the step in `nawi run`);
   the app, OS and browser versions and the page's viewport), `junit.xml` (one
   test case per step, for CI test reporters; console errors and failed
   requests go in the failure text, or `<system-err>` for a passing step), `steps/NNN-<step-id>.png` for each

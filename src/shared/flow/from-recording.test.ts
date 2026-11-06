@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { flowFromRecording, scrubStartUrl, toFlowSelector, type FlowFromRecordingOptions } from './from-recording'
+import { flowFromRecording, intentOf, scrubStartUrl, toFlowSelector, type FlowFromRecordingOptions } from './from-recording'
 import { formatFlowErrors, parseFlow, stringifyFlow } from './yaml'
 
 const OPTIONS: FlowFromRecordingOptions = {
@@ -82,6 +82,7 @@ describe('flowFromRecording: a recorded login', () => {
     expect(result.flow.steps, `steps were:\n${stringifyFlow(result.flow)}`).toEqual([
       {
         id: 's1',
+        intent: 'Fill "Email"',
         action: 'fill',
         target: {
           selectors: [
@@ -96,6 +97,7 @@ describe('flowFromRecording: a recorded login', () => {
       },
       {
         id: 's2',
+        intent: 'Fill the textbox (secret, supplied at run time)',
         action: 'fill',
         target: { selectors: [{ id: 'password' }, { css: '#password > input' }] },
         value: '${secret.password}',
@@ -103,6 +105,7 @@ describe('flowFromRecording: a recorded login', () => {
       },
       {
         id: 's3',
+        intent: 'Press Enter in the textbox',
         action: 'press',
         target: { selectors: [{ id: 'password' }, { css: '#password > input' }] },
         key: 'Enter',
@@ -110,6 +113,7 @@ describe('flowFromRecording: a recorded login', () => {
       },
       {
         id: 's4',
+        intent: 'Click "Sign in"',
         action: 'click',
         target: { selectors: [{ role: 'button', name: 'Sign in' }], bbox: [10, 20, 100, 32] },
         note: 'Click "Sign in"'
@@ -178,6 +182,7 @@ describe('flowFromRecording: other controls', () => {
     expect(flow.steps).toEqual([
       {
         id: 's1',
+        intent: 'Choose an option in "Country"',
         action: 'select',
         target: { selectors: [{ id: 'country' }, { css: '#country > select' }] },
         value: 'cl',
@@ -214,11 +219,11 @@ describe('flowFromRecording: other controls', () => {
       OPTIONS
     )
     expect(flow.steps, `steps were:\n${stringifyFlow(flow)}`).toEqual([
-      { id: 's1', action: 'fill', target: CITY_TARGET, value: 'San', note: 'Fill "City"' },
-      { id: 's2', action: 'press', target: CITY_TARGET, key: 'ArrowDown', note: 'Press ArrowDown in "City"' },
-      { id: 's3', action: 'press', target: CITY_TARGET, key: 'ArrowDown', note: 'Press ArrowDown in "City"' },
-      { id: 's4', action: 'press', target: CITY_TARGET, key: 'ArrowUp', note: 'Press ArrowUp in "City"' },
-      { id: 's5', action: 'press', target: CITY_TARGET, key: 'Enter', note: 'Press Enter in "City"' }
+      { id: 's1', intent: 'Fill "City"', action: 'fill', target: CITY_TARGET, value: 'San', note: 'Fill "City"' },
+      { id: 's2', intent: 'Press ArrowDown in "City"', action: 'press', target: CITY_TARGET, key: 'ArrowDown', note: 'Press ArrowDown in "City"' },
+      { id: 's3', intent: 'Press ArrowDown in "City"', action: 'press', target: CITY_TARGET, key: 'ArrowDown', note: 'Press ArrowDown in "City"' },
+      { id: 's4', intent: 'Press ArrowUp in "City"', action: 'press', target: CITY_TARGET, key: 'ArrowUp', note: 'Press ArrowUp in "City"' },
+      { id: 's5', intent: 'Press Enter in "City"', action: 'press', target: CITY_TARGET, key: 'Enter', note: 'Press Enter in "City"' }
     ])
     expect(skipped, 'only the focusing click is noise here').toEqual({ focus_click: 1 })
   })
@@ -301,7 +306,7 @@ describe('flowFromRecording: other controls', () => {
 
   it('keeps a key pressed outside any field as a press without a target', () => {
     const { flow } = flowFromRecording([{ t_ms: 1, type: 'keydown', target: null, key: 'Escape', value_redacted: false }], OPTIONS)
-    expect(flow.steps).toEqual([{ id: 's1', action: 'press', key: 'Escape', note: 'Press Escape' }])
+    expect(flow.steps).toEqual([{ id: 's1', intent: 'Press Escape', action: 'press', key: 'Escape', note: 'Press Escape' }])
   })
 
   it('starts a new fill when the user comes back to a field after doing something else', () => {
@@ -570,6 +575,49 @@ describe('flowFromRecording: properties', () => {
         }
       }),
       { numRuns: 300, seed: 20261101 }
+    )
+  })
+})
+
+describe('intentOf: the intent export_flow writes on each recorded step (AI1)', () => {
+  it('uses the note, folded to one line', () => {
+    expect(intentOf({ action: 'click', note: 'Click "Save\n  draft"' })).toBe('Click "Save draft"')
+  })
+
+  it('caps a long note at the schema limit (300) and marks the cut', () => {
+    const out = intentOf({ action: 'click', note: `Click "${'n'.repeat(400)}"` })
+    expect(out.length, out).toBe(300)
+    expect(out.endsWith('...'), out).toBe(true)
+  })
+
+  it('never copies a note that contains the typed value (an unlabeled field named by its own text)', () => {
+    expect(intentOf({ action: 'fill', value: 'my diagnosis', note: 'Fill "my diagnosis"' })).toBe('Fill (recorded; say what this step is for)')
+    expect(intentOf({ action: 'fill', value: '${secret.pw}', note: 'Fill the textbox (secret, supplied at run time)' })).toBe(
+      'Fill the textbox (secret, supplied at run time)'
+    )
+    expect(intentOf({ action: 'select', value: 'de', note: 'Choose an option in "Country code"' }), 'values under 3 chars are not checked').toBe(
+      'Choose an option in "Country code"'
+    )
+  })
+
+  it('writes a placeholder naming the action when there is no note', () => {
+    expect(intentOf({ action: 'press' })).toBe('Press (recorded; say what this step is for)')
+    expect(intentOf({ action: 'click', note: ' \t ' })).toBe('Click (recorded; say what this step is for)')
+  })
+
+  it('every step of a converted recording carries an intent the flow schema accepts', () => {
+    fc.assert(
+      fc.property(fc.array(fc.string({ maxLength: 400 }), { minLength: 1, maxLength: 5 }), (names) => {
+        const events = names.map((n, i) => ({
+          t_ms: i * 10,
+          type: 'click',
+          target: { role: 'button', accessible_name: n, selectors: [{ strategy: 'testid', value: `[data-testid="b${i}"]` }] }
+        }))
+        const { flow } = flowFromRecording(events, { name: 'x', target: { kind: 'browser', url: 'https://app.example/' } })
+        const back = parseFlow(stringifyFlow(flow))
+        expect(back.ok, back.ok ? '' : formatFlowErrors(back.errors)).toBe(true)
+        for (const step of flow.steps) expect(step.intent, JSON.stringify(step)).toMatch(/\S/)
+      })
     )
   })
 })

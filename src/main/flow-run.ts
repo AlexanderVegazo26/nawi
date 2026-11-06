@@ -15,7 +15,7 @@ import {
 import { CdpClient } from './cdp/client'
 import { attachToEndpoint, launchDebugBrowser, parseEndpoint, type LaunchOptions } from './cdp/launcher'
 import { ToolError } from './mcp/errors'
-import { replayFlow, type FlowRun, type ReplayClient, type ReplayOptions, type StepRun, type StepScreenshots } from './replay/replay'
+import { replayFlow, withIntent, type FlowRun, type ReplayClient, type ReplayOptions, type StepRun, type StepScreenshots } from './replay/replay'
 import type { StepEvidence } from './replay/evidence'
 import {
   buildRunRecord,
@@ -425,7 +425,7 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       startedAt: now(),
       durationMs: 0,
       error,
-      steps: flow.steps.map((s) => ({ id: s.id, action: s.action, status: s.disabled ? 'skipped' : 'not_run' }))
+      steps: flow.steps.map((s) => ({ ...withIntent(s), status: s.disabled ? 'skipped' : 'not_run' }))
     })
 
   // Missing inputs fail the run before a browser is started for nothing.

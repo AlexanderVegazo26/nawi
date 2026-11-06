@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { FLOW_ACTIONS, type Flow, type FlowStep, type Selector } from './schema'
+import { FLOW_ACTIONS, LOCATOR_LAYERS, locatorLayer, type Flow, type FlowStep, type Selector } from './schema'
 import { formatFlowDocument, formatFlowErrors, parseFlow, stringifyFlow, type FlowError } from './yaml'
 
 const LOGIN = `# login flow
@@ -199,6 +199,42 @@ describe('flow files — validation errors carry path and line:col', () => {
     expect(r.ok, r.ok ? '' : formatFlowErrors(r.errors)).toBe(true)
   })
 
+  it('accepts an intent and a text locator layer (AI1) and keeps them through a round trip', () => {
+    const text = loginWith('  - id: s1\n', '  - id: s1\n    intent: Sign in with the test account\n').replace(
+      '{ role: textbox, name: Email } ]',
+      '{ role: textbox, name: Email }, { text: Email address } ]'
+    )
+    const r = parseFlow(text)
+    expect(r.ok, r.ok ? '' : formatFlowErrors(r.errors)).toBe(true)
+    if (!r.ok) return
+    expect(r.flow.steps[0].intent).toBe('Sign in with the test account')
+    expect(r.flow.steps[0]).toMatchObject({ target: { selectors: [{ testid: 'login-email' }, { role: 'textbox', name: 'Email' }, { text: 'Email address' }] } })
+    const again = parseFlow(stringifyFlow(r.flow))
+    expect(again.ok && again.flow, 'stringify -> parse keeps intent and the text layer').toEqual(r.flow)
+  })
+
+  it('rejects a blank, multi-line or over-long intent at the step', () => {
+    const blank = onlyError(loginWith('  - id: s1\n', '  - id: s1\n    intent: " "\n'))
+    expect(blank).toMatchObject({ path: 'steps[0].intent' })
+    expect(blank.message).toMatch(/empty or blank/)
+    const multi = onlyError(loginWith('  - id: s1\n', '  - id: s1\n    intent: "first line\\nsecond line"\n'))
+    expect(multi).toMatchObject({ path: 'steps[0].intent' })
+    expect(multi.message).toMatch(/one line/)
+    const long = onlyError(loginWith('  - id: s1\n', `  - id: s1\n    intent: ${'x'.repeat(301)}\n`))
+    expect(long).toMatchObject({ path: 'steps[0].intent' })
+    expect(long.message).toMatch(/300/)
+  })
+
+  it('rejects a blank text locator', () => {
+    const e = onlyError(loginWith('{ testid: login-email }', '{ text: "  " }'))
+    expect(e).toMatchObject({ path: 'steps[0].target.selectors[0].text' })
+  })
+
+  it('locatorLayer names each locator kind, in the ranked order LOCATOR_LAYERS lists', () => {
+    const layers = ([{ testid: 'a' }, { id: 'b' }, { role: 'button', name: 'Go' }, { text: 'Go' }, { css: '.go' }] as Selector[]).map(locatorLayer)
+    expect(layers).toEqual([...LOCATOR_LAYERS])
+  })
+
   it('rejects a blank selector value', () => {
     const e = onlyError(loginWith('{ testid: login-email }', '{ testid: " " }'))
     expect(e).toMatchObject({ path: 'steps[0].target.selectors[0].testid', line: 11, col: 30 })
@@ -276,8 +312,11 @@ const selector: fc.Arbitrary<Selector> = fc.oneof(
   visible.map((v) => ({ testid: v })),
   visible.map((v) => ({ id: v })),
   fc.record({ role: visible, name: tricky }, { requiredKeys: ['role'] }),
+  visible.map((v) => ({ text: v })),
   visible.map((v) => ({ css: v }))
 )
+/** One-line intent: any visible text without control characters (line breaks are refused by the schema). */
+const intentArb = visible.filter((s) => !/[\u0000-\u001f\u007f]/.test(s))
 
 const px = fc.double({ noNaN: true, noDefaultInfinity: true, min: -1e6, max: 1e6 })
 const size = fc.double({ noNaN: true, noDefaultInfinity: true, min: 0, max: 1e6 })
@@ -292,7 +331,7 @@ const target = fc.record(
 
 function stepFor(id: string, action: (typeof FLOW_ACTIONS)[number]): fc.Arbitrary<FlowStep> {
   const common = fc.record(
-    { note: tricky, disabled: fc.boolean(), timeout_ms: fc.integer({ min: 1, max: 600_000 }) },
+    { intent: intentArb, note: tricky, disabled: fc.boolean(), timeout_ms: fc.integer({ min: 1, max: 600_000 }) },
     { requiredKeys: [] }
   )
   const value = fc.oneof(tricky.filter((s) => !s.includes('${')), fc.constant('${vars.v0}'), fc.constant('pre ${secret.pw} post'))

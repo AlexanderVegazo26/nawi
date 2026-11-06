@@ -95,7 +95,7 @@ steps:
     expect(statuses(run)).toEqual(['s1:passed', 's2:passed', 's3:passed', 's4:passed', 's5:passed'])
     expect(await read(`document.getElementById('echo').textContent`), 'the secret reached the field').toBe(`pw:${PASSWORD}`)
     expect(JSON.stringify(run), 'the run record never carries the secret').not.toContain(PASSWORD)
-    expect(run.steps[0].matched).toEqual({ index: 0, selector: { testid: 'login-email' } })
+    expect(run.steps[0].matched).toEqual({ index: 0, selector: { testid: 'login-email' }, layer: 'testid', fallback: false })
   })
 
   it('falls back to the next locator when the first is gone, and records the miss', async () => {
@@ -103,9 +103,60 @@ steps:
       flow([{ id: 'c', action: 'click', target: { selectors: [{ testid: 'renamed' }, { id: 'a-btn' }] } }])
     )
     expect(run.status, why(run)).toBe('passed')
-    expect(run.steps[0].matched).toEqual({ index: 1, selector: { id: 'a-btn' } })
+    expect(run.steps[0].matched, 'the id locator resolved it, as a fallback (AI1 drift signal)').toEqual({
+      index: 1,
+      selector: { id: 'a-btn' },
+      layer: 'id',
+      fallback: true
+    })
     expect(run.steps[0].misses).toEqual([{ index: 0, selector: { testid: 'renamed' }, found: 0 }])
     expect(await read(`document.getElementById('clicked').textContent`), 'a trusted click reached #a-btn').toBe('a-btn')
+  })
+
+  it('resolves a text locator to the innermost visible element showing exactly that text (whitespace folded)', async () => {
+    const run = await replay(
+      flow([
+        {
+          id: 'c',
+          intent: 'Archive every message in the list',
+          action: 'click',
+          target: { selectors: [{ testid: 'archive-renamed' }, { text: 'Archive all' }, { id: 'archive-btn' }] }
+        }
+      ])
+    )
+    expect(run.status, why(run)).toBe('passed')
+    expect(run.steps[0].matched, 'text layer found the button, not its span/div wrappers or the hidden copy').toEqual({
+      index: 1,
+      selector: { text: 'Archive all' },
+      layer: 'text',
+      fallback: true
+    })
+    expect(run.steps[0].intent, 'the step carries its intent into the run').toBe('Archive every message in the list')
+    expect(await read(`document.getElementById('clicked').textContent`), 'a trusted click reached #archive-btn').toBe('archive-btn')
+  })
+
+  it('matches a text locator on what is rendered: <br> as a space, text-transform applied, display:contents children', async () => {
+    for (const [text, id] of [
+      ['Restore selected', 'restore-btn'],
+      ['SHOUT', 'shout-btn'],
+      ['Mark read', 'contents-btn']
+    ]) {
+      const run = await replay(flow([{ id: 'c', action: 'click', target: { selectors: [{ text }] } }]))
+      expect(run.status, `text "${text}" should click #${id}: ${why(run)}`).toBe('passed')
+      expect(await read(`document.getElementById('clicked').textContent`), `text "${text}"`).toBe(id)
+    }
+  })
+
+  it('treats a text locator as exact: a partial text matches nothing and falls through to the next layer', async () => {
+    const run = await replay(
+      flow([{ id: 'c', action: 'click', target: { selectors: [{ text: 'Archive' }, { text: 'Next pag' }, { css: '#a-btn' }] } }])
+    )
+    expect(run.status, why(run)).toBe('passed')
+    expect(run.steps[0].misses).toEqual([
+      { index: 0, selector: { text: 'Archive' }, found: 0 },
+      { index: 1, selector: { text: 'Next pag' }, found: 0 }
+    ])
+    expect(run.steps[0].matched).toMatchObject({ index: 2, layer: 'css', fallback: true })
   })
 
   it('skips an ambiguous locator (2 matches) instead of clicking the first match', async () => {
@@ -114,6 +165,11 @@ steps:
     )
     expect(run.status, why(run)).toBe('passed')
     expect(run.steps[0].misses).toEqual([{ index: 0, selector: { css: '.btn' }, found: 2 }])
+    expect(run.steps[0].matched, 'an ambiguous earlier locator is not drift (recordings keep never-unique candidates)').toMatchObject({
+      index: 1,
+      layer: 'role',
+      fallback: false
+    })
     expect(await read(`document.getElementById('clicked').textContent`)).toBe('b-btn')
   })
 
@@ -136,9 +192,9 @@ steps:
   it('fails the first broken step with what every locator found, stops there, and skips disabled steps', async () => {
     const run = await replay(
       flow([
-        { id: 'off', action: 'click', disabled: true, target: { selectors: [{ id: 'nope' }] } },
+        { id: 'off', action: 'click', intent: 'Not today', disabled: true, target: { selectors: [{ id: 'nope' }] } },
         { id: 'broken', action: 'click', timeout_ms: 300, target: { selectors: [{ testid: 'gone' }, { css: '.btn' }] } },
-        { id: 'after', action: 'click', target: { selectors: [{ id: 'a-btn' }] } }
+        { id: 'after', action: 'click', intent: 'Pick A, typed as ${secret.pw}', target: { selectors: [{ id: 'a-btn' }] } }
       ])
     )
     expect(run.status).toBe('failed')
@@ -148,6 +204,11 @@ steps:
       'no locator matched exactly one element within 300 ms — testid=gone: no element; css=.btn: 2 elements (ambiguous)'
     )
     expect(await read(`document.getElementById('clicked').textContent`), 'the step after the failure never ran').toBe('')
+    expect(run.steps.map((st) => st.intent), 'skipped and not_run steps keep their intent').toEqual([
+      'Not today',
+      undefined,
+      'Pick A, typed as ${secret.pw}'
+    ])
   })
 
   it('fails fast (no waiting out the timeout) when the element can never take the action', async () => {
