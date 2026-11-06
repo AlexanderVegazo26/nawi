@@ -4,7 +4,8 @@ import { RUN_ID_RE } from '../run-record'
 import { defaultHost, runMobileDoctor, type DoctorHost, type MobileDoctorReport } from './doctor'
 import { frontPackage, PERMISSION_PACKAGES } from './blockers'
 import type { UiScreen } from './hierarchy'
-import { readScreen, runningAvdName } from './open'
+import { KEYBOARD_SHOWN_LINE, readScreen, runningAvdName } from './open'
+import { decodePng, type RgbImage } from './png'
 import { PACKAGE_RE, TARGET_RE } from './profile'
 import { captureScreen, execBinary, type BinaryExec } from './screen'
 import { parseDensity, studyScreen, type ScreenStudy } from './study'
@@ -13,7 +14,7 @@ import { secretRedactor } from '../../shared/flow/interpolate'
 /**
  * Roadmap M3 (second slice, M3b): study the screen a device shows right now. Reads it the way mobile_open does
  * (`uiautomator dump`), measures with the device's density (`wm density`), takes a screenshot (`screencap`), and
- * hands the dump to studyScreen (M3a). Nothing is installed, launched, tapped or booted: the device must already be
+ * hands the dump and the decoded screenshot to studyScreen (M3a; contrast from the screenshot, M3b2). Nothing is installed, launched, tapped or booted: the device must already be
  * connected (a phone, or an emulator mobile_open started), so a study never changes what it looks at.
  *
  * Secret values the caller typed into the app (a sign-in) are scrubbed from everything the study reports. A
@@ -154,39 +155,55 @@ export async function studyLiveScreen(req: LiveStudyRequest, host: StudyHost = d
   const density = await host.exec(adb, ['-s', serial, 'shell', 'wm density'], SHELL_TIMEOUT_MS)
   const densityDpi = density.code === 0 ? parseDensity(density.stdout) : null
   const pkg = req.package ?? appPackage(screen)
-  let study = studyScreen(screen, { package: pkg ?? frontPackage(screen.nodes), densityDpi })
+  const shot = await takeScreenshot(host, adb, serial, screen, secrets)
+  let image: RgbImage | null = null
+  let keyboardShown = false
+  let noScreenshotReason = shot.ok ? null : `there is no screenshot (${shot.error})`
+  if (pkg === null) {
+    noScreenshotReason = "only Android's own windows are on screen"
+  } else if (shot.ok) {
+    const decoded = decodePng(shot.frame.png)
+    if (decoded.ok) {
+      image = decoded.image
+      // uiautomator leaves the keyboard's window out of the dump: ask the input method service instead.
+      const ime = await host.exec(adb, ['-s', serial, 'shell', KEYBOARD_SHOWN_LINE], SHELL_TIMEOUT_MS)
+      keyboardShown = ime.code === 0 && /mInputShown=true/.test(ime.stdout)
+    } else noScreenshotReason = `the screenshot could not be read (${decoded.error})`
+  }
+  let study = studyScreen(screen, { package: pkg ?? frontPackage(screen.nodes), densityDpi, screenshot: image, noScreenshotReason, keyboardShown })
   if (pkg === null) {
     // Only Android's own windows: nothing on screen is the app's to fix.
     study = { ...study, findings: [], notes: [...study.notes, 'Only Android\'s own windows are on screen (a permission prompt, the notification shade): nothing was judged. Get past it (mobile_open with learn_onboarding taps it), then study again.'] }
   }
   result.study = scrubStudy(study, secrets)
   result.ok = true
-
-  const secretOnScreen = 'not taken: a secret value typed into the app is on the screen, and a screenshot cannot be scrubbed'
-  if (secrets.length > 0 && showsSecret(screen, secrets)) {
-    result.screenshot_error = secretOnScreen
-    return result
-  }
-  const frame = await captureScreen(adb, serial, host.execBinary)
-  if (!frame.ok) {
-    result.screenshot_error = redact(`${frame.error.replace(/\.$/, '')}; \`adb -s ${serial} exec-out screencap -p > screen.png\` shows why`)
-    return result
-  }
-  if (secrets.length > 0) {
-    // The screen may have changed since the dump (a "show password" tap, the next page): read it again after the
-    // screenshot and keep the picture only if a secret is on neither read.
-    const after = await readScreen(host, adb, serial)
-    if ('skipped' in after) {
-      result.screenshot_error = 'not kept: secrets were given and the screen could not be read again after the screenshot to check it shows none'
-      return result
-    }
-    if (showsSecret(after, secrets)) {
-      result.screenshot_error = secretOnScreen
-      return result
-    }
-  }
-  result.screenshot = { png: frame.png, width: frame.width, height: frame.height }
+  if (shot.ok) result.screenshot = { png: shot.frame.png, width: shot.frame.width, height: shot.frame.height }
+  else result.screenshot_error = redact(shot.error)
   return result
+}
+
+/**
+ * The screenshot to keep, or why there is none. With secrets, none is taken while one shows in the dump, and the
+ * screen is read again after it (a "show password" tap, the next page) so the picture is kept only if a secret is
+ * on neither read.
+ */
+async function takeScreenshot(
+  host: StudyHost,
+  adb: string,
+  serial: string,
+  screen: UiScreen,
+  secrets: ReadonlyArray<readonly [string, string]>
+): Promise<{ ok: true; frame: { png: Uint8Array; width: number; height: number } } | { ok: false; error: string }> {
+  const secretOnScreen = 'not taken: a secret value typed into the app is on the screen, and a screenshot cannot be scrubbed'
+  if (secrets.length > 0 && showsSecret(screen, secrets)) return { ok: false, error: secretOnScreen }
+  const frame = await captureScreen(adb, serial, host.execBinary)
+  if (!frame.ok) return { ok: false, error: `${frame.error.replace(/\.$/, '')}; \`adb -s ${serial} exec-out screencap -p > screen.png\` shows why` }
+  if (secrets.length > 0) {
+    const after = await readScreen(host, adb, serial)
+    if ('skipped' in after) return { ok: false, error: 'not kept: secrets were given and the screen could not be read again after the screenshot to check it shows none' }
+    if (showsSecret(after, secrets)) return { ok: false, error: secretOnScreen }
+  }
+  return { ok: true, frame }
 }
 
 /** How many saved studies to keep (oldest go first), like the saved runs. */

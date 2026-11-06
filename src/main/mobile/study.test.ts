@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseUiDump } from './hierarchy'
-import { type FindingKind, MIN_TOUCH_DP, parseDensity, type ScreenStudy, studyScreen } from './study'
+import { canvas, type Colour } from './fixtures/make-png'
+import { type FindingKind, MAX_CONTRAST_TEXTS, MIN_TOUCH_DP, parseDensity, type ScreenStudy, studyScreen } from './study'
 
 /**
  * Roadmap M3a: what one screen dump says about an app. The fixtures in fixtures/ui-dumps are uiautomator dumps
@@ -36,7 +37,7 @@ describe('studyScreen on the fixture screens', () => {
   it('finds nothing wrong on the clean screen and lists every control with an id-based locator', () => {
     const s = study('study-clean.txt', 'com.example.clean')
     expect(s.findings, 'findings on study-clean.txt').toEqual([])
-    expect(s.notes, 'only contrast is left unchecked').toEqual(['Contrast is not checked yet: it needs the screenshot (a later M3 slice).'])
+    expect(s.notes, 'only contrast is left unchecked (no screenshot given)').toEqual(['Contrast was not checked: there is no screenshot of the screen.'])
     expect(s.package).toBe('com.example.clean')
     expect(s.screen_id).toMatch(/^s-[0-9a-f]{12}$/)
     const controls = s.elements.filter((e) => (e.clickable || e.checkable) && !e.in_collection)
@@ -295,5 +296,102 @@ describe('password fields', () => {
     const field = s.elements.find((e) => e.password)
     expect(field?.label).toBe('Password')
     expect([field?.text, field?.locator, field?.locator_basis], 'no text, and not found by it').toEqual(['', null, 'index'])
+  })
+})
+
+describe('contrast from a screenshot (M3b2)', () => {
+  const WHITE: Colour = [255, 255, 255]
+  /** A text node at row k (150 px rows from y=100), and its fake glyphs painted on the screenshot in `colour`. */
+  const rowBounds = (k: number) => ({ left: 40, top: 100 + k * 150, right: 1040, bottom: 230 + k * 150 })
+  const b = (k: number) => {
+    const r = rowBounds(k)
+    return `[${r.left},${r.top}][${r.right},${r.bottom}]`
+  }
+  function shot(rows: Array<Colour | null>, bg: Colour = WHITE) {
+    const img = canvas(1080, 2400, bg)
+    rows.forEach((c, k) => {
+      if (c) img.text(rowBounds(k).left, rowBounds(k).top, rowBounds(k).right, rowBounds(k).bottom, c, [200, 200, 200])
+    })
+    return img
+  }
+  const lowContrast = (s: ScreenStudy) => s.findings.filter((f) => f.kind === 'low_contrast').map((f) => [f.element, f.severity, f.summary])
+
+  it('reports text under 3:1 as an error and under 4.5:1 as a warning, with the measured colours, and passes 4.5:1+', () => {
+    const inner = [
+      node({ text: 'Title', 'resource-id': id('title'), bounds: b(0) }),
+      node({ text: 'Subtitle', 'resource-id': id('subtitle'), bounds: b(1) }),
+      node({ text: 'Fine print', 'resource-id': id('fine'), bounds: b(2) }),
+      node({ text: 'Just enough', 'resource-id': id('enough'), bounds: b(3) })
+    ].join('')
+    const s = studyScreen(screen(inner), { package: PKG, densityDpi: PIXEL_6_DPI, screenshot: shot([[0x21, 0x21, 0x21], [0x77, 0x77, 0x77], [0xaa, 0xaa, 0xaa], [0x76, 0x76, 0x76]]) })
+    expect(lowContrast(s), 'low_contrast findings (element, severity, summary)').toEqual([
+      [2, 'warning', '"Subtitle" (TextView) has a contrast of 4.47:1 (#777777 on #ffffff), under the 4.5:1 minimum for normal text (enough only for large text: 18 sp, or 14 sp bold; the dump does not give the text size).'],
+      [3, 'error', '"Fine print" (TextView) has a contrast of 2.32:1 (#aaaaaa on #ffffff), under the 3:1 minimum even for large text.']
+    ])
+    expect(s.findings.find((f) => f.kind === 'low_contrast')?.fix).toBe('Darken the text or lighten its background (or the reverse) until they reach 4.5:1.')
+    expect(s.notes.filter((n) => /ontrast/.test(n)), 'every text measured: no contrast note').toEqual([])
+  })
+
+  it('skips disabled text (exempt in WCAG), password fields, other packages, and text without pixels, with a note for the last', () => {
+    const inner = [
+      node({ text: 'Unavailable', 'resource-id': id('off'), enabled: false, bounds: b(0) }),
+      node({ class: 'android.widget.EditText', text: '••••', password: true, 'resource-id': id('pw'), clickable: true, bounds: b(1) }),
+      node({ text: 'Not ours', package: 'com.other', bounds: b(2) }),
+      node({ text: 'Invisible', 'resource-id': id('ghost'), bounds: b(3) })
+    ].join('')
+    const grey: Colour = [0xbb, 0xbb, 0xbb]
+    const s = studyScreen(screen(inner), { package: PKG, densityDpi: PIXEL_6_DPI, screenshot: shot([grey, grey, grey, null]) })
+    expect(lowContrast(s)).toEqual([])
+    expect(s.notes).toContain("Contrast was not measured for 1 text: too small, on a busy background (an image or a gradient), or with no text pixels found (none drawn, or drawn in nearly the background's colour: check those by eye).")
+  })
+
+  it('skips the texts of a window with another window on top (a permission dialog, or the app\'s own dialog behind its scrim)', () => {
+    const behindText = node({ text: 'Behind', 'resource-id': id('behind'), bounds: '[40,1300][1040,1430]' }) + node({ text: 'Above', 'resource-id': id('above'), bounds: b(0) })
+    const app = node({ class: 'android.widget.FrameLayout', bounds: '[0,0][1080,2400]' }, behindText)
+    const grey = shot([[0xaa, 0xaa, 0xaa]])
+    grey.text(40, 1300, 1040, 1430, [0xaa, 0xaa, 0xaa])
+    const study = (windows: string) => studyScreen(parseUiDump(`<hierarchy rotation="0">${windows}</hierarchy>`), { package: PKG, densityDpi: PIXEL_6_DPI, screenshot: grey })
+
+    const prompt = study(app + `<node class="android.widget.FrameLayout" package="com.android.permissioncontroller" enabled="true" bounds="[0,1200][1080,2400]"/>`)
+    expect(lowContrast(prompt), 'the app window holds the prompt: nothing of it is judged').toEqual([])
+    expect(prompt.notes).toContain('Contrast was not measured for 2 texts under another window (a dialog, a sheet or a system prompt).')
+
+    const ownDialog = node({ class: 'android.widget.FrameLayout', bounds: '[80,900][1000,1500]' }, node({ text: 'Delete?', 'resource-id': id('dlg_title'), bounds: '[120,940][960,1080]' }))
+    const own = studyScreen(parseUiDump(`<hierarchy rotation="0">${app}${ownDialog}</hierarchy>`), { package: PKG, densityDpi: PIXEL_6_DPI, screenshot: (() => {
+      const img = shot([[0xaa, 0xaa, 0xaa]])
+      img.text(120, 940, 960, 1080, [0x77, 0x77, 0x77])
+      return img
+    })() })
+    expect(lowContrast(own).map(([e, sev]) => [e, sev]), 'only the dialog (on top) is judged').toEqual([[4, 'warning']])
+
+    const statusBar = `<node class="android.widget.FrameLayout" package="com.android.systemui" enabled="true" bounds="[0,0][1080,80]"/>`
+    expect(lowContrast(study(app + statusBar)).map(([e]) => e), 'the status bar inside the app window covers nothing').toEqual([1, 2])
+  })
+
+  it('does not judge a screenshot that does not match the dump (rotated or a different screen)', () => {
+    const landscape = canvas(2400, 1080, WHITE)
+    const s = studyScreen(screen(node({ text: 'Title', 'resource-id': id('title'), bounds: b(0) })), { package: PKG, screenshot: landscape })
+    expect(lowContrast(s)).toEqual([])
+    expect(s.notes).toContain('Contrast was not checked: the screenshot is 2400x1080 px but the screen dump reaches 1080x2400 (the screen rotated or changed between them).')
+  })
+
+  it('says why contrast was not checked when there is no screenshot', () => {
+    const s = studyScreen(screen(node({ text: 'Title', bounds: b(0) })), { package: PKG, noScreenshotReason: 'there is no screenshot (not taken: a secret value is on the screen).' })
+    expect(s.notes).toContain('Contrast was not checked: there is no screenshot (not taken: a secret value is on the screen).')
+  })
+
+  it(`measures at most ${MAX_CONTRAST_TEXTS} texts, so a dump of thousands of full-screen texts stays fast`, () => {
+    // 3,000 full-screen texts: ~0.35 s. Without the sampling grid it reads 500 x 2.6 million pixels (~3.7 s, fails the
+    // 2 s bound); without the cap it measures all 3,000 (fails the count).
+    const many = Array.from({ length: 3000 }, (_, k) => `<node text="t${k}" class="android.widget.TextView" package="${PKG}" enabled="true" bounds="[0,0][1080,2400]"/>`).join('')
+    const dump = parseUiDump(`<hierarchy rotation="0"><node class="android.widget.FrameLayout" package="${PKG}" enabled="true" bounds="[0,0][1080,2400]">${many}</node></hierarchy>`)
+    const img = canvas(1080, 2400, WHITE)
+    img.text(0, 0, 1080, 2400, [0xaa, 0xaa, 0xaa])
+    const started = performance.now()
+    const s = studyScreen(dump, { package: PKG, screenshot: img })
+    const ms = performance.now() - started
+    expect(ms, `studyScreen took ${Math.round(ms)} ms for 3,000 full-screen texts`).toBeLessThan(2000)
+    expect(lowContrast(s).length, 'one finding per measured text').toBe(MAX_CONTRAST_TEXTS)
+    expect(s.notes).toContain(`Contrast was measured for the first ${MAX_CONTRAST_TEXTS} of 3000 texts only.`)
   })
 })

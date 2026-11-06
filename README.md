@@ -572,7 +572,11 @@ alone.
   position) and a stable screen id (`s-<12 hex>`: the same screen keeps its id
   while its content changes), plus findings with one fix each: unlabeled
   controls, touch targets under 48 dp, a view id shared by unrelated views,
-  controls without a view id, and locators that rest only on text or position.
+  controls without a view id, locators that rest only on text or position,
+  and text drawn with too little contrast on the screenshot (under 4.5:1 is a
+  warning, under 3:1 an error: the dump has no text size, so large text is
+  not told apart; busy backgrounds and text under a dialog are skipped with a
+  note; the PNG is decoded in-house, `src/main/mobile/png.ts` + `contrast.ts`).
   Only the app's own views are judged (the first app window on screen, never
   Android's permission prompt or status bar; or `--package`).
   Nothing is installed, tapped or booted: start the app with `mobile_open`
@@ -693,7 +697,7 @@ CDP selectors and the MCP projection/revision model.
 - **Mobile: install, launch and watch, not yet drive.** An APK dropped on the
   window (or `mobile_open`) is installed and launched on a device or an existing
   virtual device and its screen is shown live and can be studied (`mobile_study`:
-  one screen at a time; no contrast check or exploration of other screens yet), but there is no inspector or
+  one screen at a time; no exploration of other screens yet), but there is no inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is

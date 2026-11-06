@@ -1087,7 +1087,8 @@ const mobileStudy = defineTool({
     'hint, label (what a screen reader says), bounds, clickable/long_clickable/checkable/focusable/scrollable/enabled, ' +
     'locator: the shortest {resource_id|content_desc|text} that finds only it, null when none does, ' +
     'locator_basis resource_id/content_desc/text/index, in_collection), findings ({kind missing_label / ' +
-    'small_touch_target (under 48 dp) / duplicate_resource_id / missing_resource_id / fragile_locator, severity, ' +
+    'small_touch_target (under 48 dp) / duplicate_resource_id / missing_resource_id / fragile_locator / low_contrast ' +
+    '(text under 4.5:1 against its background on the screenshot: error under 3:1, warning from 3:1), severity, ' +
     'element, summary, fix}), notes (what could not be checked), and screenshot: the PNG\'s path, or null with ' +
     `screenshot_error saying why. At most ${MAX_STUDY_ELEMENTS} elements and ${MAX_STUDY_FINDINGS} findings are returned ` +
     '(elements_total / findings_total say how many there are; study.json in study_dir has them all; save_error when it ' +

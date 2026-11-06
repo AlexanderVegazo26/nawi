@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import type { MobileScreenFrame } from '@shared/mobile'
+import { PNG_SIGNATURE } from './png'
 
 /**
  * Roadmap M1d: one frame of a device's screen, for the live view next to the open progress. `adb exec-out
@@ -24,7 +25,6 @@ export const SCREENCAP_TIMEOUT_MS = 10_000
 /** A 4K RGBA screen as an uncompressed PNG is ~33 MB; anything bigger is not a screenshot. */
 export const MAX_FRAME_BYTES = 48 * 1024 * 1024
 
-const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
 export const execBinary: BinaryExec = (file, args, timeoutMs) =>
   new Promise((resolve) => {

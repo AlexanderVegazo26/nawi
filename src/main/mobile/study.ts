@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
 import { frontPackage, labelOf, type UiLocator } from './blockers'
+import { colorHex, formatRatio, measureTextContrast, MIN_RATIO, MIN_RATIO_LARGE } from './contrast'
 import type { UiBounds, UiNode, UiScreen } from './hierarchy'
+import type { RgbImage } from './png'
 
 /**
  * Roadmap M3 (first slice, M3a): study one screen of an Android app from its `uiautomator dump`
  * (src/main/mobile/hierarchy.ts). Offline and pure, so fixture dumps pin every rule. Reading a live device with a
- * screenshot is study-live.ts (M3b, mobile_study); contrast and the safe exploration that builds a screen graph are
- * later M3 slices that call this.
+ * screenshot is study-live.ts (M3b, mobile_study); the safe exploration that builds a screen graph is a later M3
+ * slice that calls this.
  *
  * - Inventory: every element a test or a person can act on or read (clickable, long-clickable, checkable,
  *   focusable, scrollable, or carrying text / a content description / a hint), with the shortest locator that finds
@@ -18,13 +20,14 @@ import type { UiBounds, UiNode, UiScreen } from './hierarchy'
  * - Findings, each with one fix: an unlabeled control (missing_label), a touch target under 48 dp
  *   (small_touch_target), a view id shared by unrelated views (duplicate_resource_id), a control without a view id
  *   (missing_resource_id; one screen-level finding when the screen has no view ids at all, as in Flutter or
- *   Compose apps), and a control that only its text or its position finds (fragile_locator).
+ *   Compose apps), a control that only its text or its position finds (fragile_locator), and, given a screenshot of
+ *   the same screen, a text drawn with too little contrast against its background (low_contrast, M3b2: contrast.ts).
  *
  * The dump comes from the app under test: nothing here runs or resolves what it reads, and a password field's text
  * never leaves this module.
  */
 
-export type FindingKind = 'missing_label' | 'small_touch_target' | 'duplicate_resource_id' | 'missing_resource_id' | 'fragile_locator'
+export type FindingKind = 'missing_label' | 'small_touch_target' | 'duplicate_resource_id' | 'missing_resource_id' | 'fragile_locator' | 'low_contrast'
 export type FindingSeverity = 'error' | 'warning' | 'info'
 
 /** What the element's locator rests on: a unique view id is the sturdiest, its position (no locator) the weakest. */
@@ -32,6 +35,9 @@ export type LocatorBasis = 'resource_id' | 'content_desc' | 'text' | 'index'
 
 /** Android's minimum touch target (Material, Android accessibility guidelines and the Play pre-launch report). */
 export const MIN_TOUCH_DP = 48
+
+/** At most this many texts get their contrast measured (each reads up to 200,000 pixels; a dump can hold 10,000). */
+export const MAX_CONTRAST_TEXTS = 500
 
 /** Containers whose children repeat (rows, cells, pages): their rows share view ids by design. */
 const COLLECTION_RE = /(?:^|\.)(?:RecyclerView|ListView|GridView|ExpandableListView|ViewPager2?)$/
@@ -98,6 +104,15 @@ export interface StudyOptions {
   package?: string | null
   /** From `wm density` (see parseDensity); without it touch targets are not measured. */
   densityDpi?: number | null
+  /** A screenshot of the same screen (png.ts decodePng); without it contrast is not checked (see notes). */
+  screenshot?: RgbImage | null
+  /** Why there is no screenshot, for the note (e.g. "a secret value is on the screen"). */
+  noScreenshotReason?: string | null
+  /**
+   * The on-screen keyboard was up when the screenshot was taken (`dumpsys input_method`): the dump has no window for
+   * it, so where it covers the app is unknown and contrast is not checked.
+   */
+  keyboardShown?: boolean
 }
 
 /**
@@ -256,6 +271,74 @@ function describe(n: UiNode, label: string): string {
   return label ? `"${label.length > 60 ? `${label.slice(0, 57)}...` : label}" (${shortClass(n.class)})` : `the ${shortClass(n.class)} at ${boundsText(n.bounds)}`
 }
 
+const intersects = (a: UiBounds, b: UiBounds): boolean => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+
+const area = (b: UiBounds): number => (b.right - b.left) * (b.bottom - b.top)
+const inside = (a: UiBounds, b: UiBounds): boolean => a.left >= b.left && a.top >= b.top && a.right <= b.right && a.bottom <= b.bottom
+
+/**
+ * low_contrast findings for the app's visible, enabled texts (disabled text is exempt in WCAG), measured on the
+ * screenshot. Skipped, with a note: a text under a window of another package (a permission prompt, the notification
+ * shade), and every text of a window that holds a smaller window (the app's own dialog, sheet or popup sits on top
+ * of it, usually behind a dimming scrim). The status bar is the one window inside others that covers nothing.
+ */
+function contrastFindings(nodes: UiNode[], image: RgbImage, keyboard: boolean, ours: (n: UiNode) => boolean, labels: Map<number, string>, notes: string[]): StudyFinding[] {
+  const roots = nodes.filter((n) => n.parent === null && visible(n.bounds)).map((n) => ({ n, b: n.bounds as UiBounds }))
+  const rootOf: number[] = []
+  for (const n of nodes) rootOf.push(n.parent === null ? n.i : rootOf[n.parent])
+  const behind = new Set(
+    roots.filter((r) => roots.some((q) => q !== r && q.n.package !== 'com.android.systemui' && inside(q.b, r.b) && area(q.b) < area(r.b))).map((r) => r.n.i)
+  )
+  const width = Math.max(0, ...roots.map((r) => r.b.right))
+  const height = Math.max(0, ...roots.map((r) => r.b.bottom))
+  if (keyboard) {
+    notes.push('Contrast was not checked: the on-screen keyboard is up and the screen dump does not say where it is (hide it, then study again).')
+    return []
+  }
+  if (width > image.width || height > image.height) {
+    notes.push(`Contrast was not checked: the screenshot is ${image.width}x${image.height} px but the screen dump reaches ${width}x${height} (the screen rotated or changed between them).`)
+    return []
+  }
+  const texts = nodes.filter((n) => ours(n) && n.enabled && !n.password && n.text.trim() !== '' && visible(n.bounds))
+  const findings: StudyFinding[] = []
+  let covered = 0
+  let unmeasured = 0
+  const measured = texts.slice(0, MAX_CONTRAST_TEXTS)
+  for (const n of measured) {
+    const b = n.bounds as UiBounds
+    if (behind.has(rootOf[n.i]) || roots.some((r) => !ours(r.n) && r.n.package !== '' && intersects(r.b, b))) {
+      covered++
+      continue
+    }
+    const m = measureTextContrast(image, b)
+    if (!m.ok) {
+      unmeasured++
+      continue
+    }
+    const { ratio, text, background } = m.contrast
+    if (ratio >= MIN_RATIO) continue
+    const colours = `${colorHex(text)} on ${colorHex(background)}`
+    findings.push({
+      kind: 'low_contrast',
+      severity: ratio < MIN_RATIO_LARGE ? 'error' : 'warning',
+      element: n.i,
+      summary:
+        ratio < MIN_RATIO_LARGE
+          ? `${describe(n, labels.get(n.i) ?? '')} has a contrast of ${formatRatio(ratio)} (${colours}), under the ${MIN_RATIO_LARGE}:1 minimum even for large text.`
+          : `${describe(n, labels.get(n.i) ?? '')} has a contrast of ${formatRatio(ratio)} (${colours}), under the ${MIN_RATIO}:1 minimum for normal text (enough only for large text: 18 sp, or 14 sp bold; the dump does not give the text size).`,
+      fix: `Darken the text or lighten its background (or the reverse) until they reach ${MIN_RATIO}:1.`
+    })
+  }
+  if (covered > 0) notes.push(`Contrast was not measured for ${covered} text${covered === 1 ? '' : 's'} under another window (a dialog, a sheet or a system prompt).`)
+  if (unmeasured > 0) {
+    notes.push(
+      `Contrast was not measured for ${unmeasured} text${unmeasured === 1 ? '' : 's'}: too small, on a busy background (an image or a gradient), or with no text pixels found (none drawn, or drawn in nearly the background's colour: check those by eye).`
+    )
+  }
+  if (texts.length > measured.length) notes.push(`Contrast was measured for the first ${MAX_CONTRAST_TEXTS} of ${texts.length} texts only.`)
+  return findings
+}
+
 export function studyScreen(screen: UiScreen, opts: StudyOptions = {}): ScreenStudy {
   const { nodes } = screen
   const pkg = opts.package ?? null
@@ -402,7 +485,11 @@ export function studyScreen(screen: UiScreen, opts: StudyOptions = {}): ScreenSt
     })
   }
 
-  notes.push('Contrast is not checked yet: it needs the screenshot (a later M3 slice).')
+  if (opts.screenshot) {
+    findings.push(...contrastFindings(nodes, opts.screenshot, opts.keyboardShown === true, ours, labels, notes))
+  } else {
+    notes.push(`Contrast was not checked: ${opts.noScreenshotReason?.replace(/\.$/, '') || 'there is no screenshot of the screen'}.`)
+  }
   return {
     screen_id: screenId(screen, inCollection),
     package: frontPackage(nodes),

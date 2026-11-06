@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ExecResult } from './doctor'
 import type { BinaryExecResult } from './screen'
+import { canvas, encodePng } from './fixtures/make-png'
 import { parseUiDump } from './hierarchy'
+import { decodePng, type RgbImage } from './png'
 import { studyScreen } from './study'
 import { scrubStudy, studyLiveScreen, writeStudy, type LiveStudyResult, type StudyHost } from './study-live'
 
@@ -32,7 +34,16 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
-/** A PNG header (signature + IHDR) is all pngSize reads. */
+/** A blank white 1080x2400 screenshot, as screencap sends it (8-bit RGBA), and the pixels it decodes to. */
+const WHITE_SCREEN = canvas(1080, 2400, [255, 255, 255])
+const WHITE_PNG = encodePng(WHITE_SCREEN, { alpha: true })
+const pixels = (png: Uint8Array): RgbImage => {
+  const r = decodePng(png)
+  if (!r.ok) throw new Error(`test PNG does not decode: ${r.error}`)
+  return r.image
+}
+
+/** A PNG header (signature + IHDR) only: pngSize reads it, but it has no pixels to decode. */
 function png(width: number, height: number): Uint8Array {
   const b = new Uint8Array(33)
   b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
@@ -70,6 +81,8 @@ interface Sim {
   dumps?: ExecResult[]
   density?: ExecResult
   screencap?: BinaryExecResult
+  /** The on-screen keyboard is up (dumpsys input_method). */
+  keyboard?: boolean
 }
 
 const ok = (stdout = ''): ExecResult => ({ code: 0, stdout, stderr: '' })
@@ -102,11 +115,12 @@ function simHost(sim: Sim): StudyHost {
         return sim.dump ?? ok(fixture('study-defects.txt'))
       }
       if (line === 'wm density') return sim.density ?? ok('Physical density: 420\n')
+      if (line.startsWith('dumpsys input_method')) return ok(`mInputShown=${sim.keyboard === true}\n`)
       return failed(`unexpected shell ${line}`)
     },
     execBinary: async (file, args) => {
       calls.push([file.replace(sdkDir, '<sdk>'), ...args])
-      return sim.screencap ?? { code: 0, stdout: png(1080, 2400), stderr: '' }
+      return sim.screencap ?? { code: 0, stdout: WHITE_PNG, stderr: '' }
     }
   }
 }
@@ -119,8 +133,9 @@ describe('studyLiveScreen', () => {
     const r = await studyLiveScreen({}, simHost({ devices: [{ serial: 'R5CT1234' }] }))
     expect(r.ok, `study failed: ${r.error} / ${r.fix}`).toBe(true)
     expect(r.target, 'a phone is named by its serial').toEqual({ kind: 'device', name: 'R5CT1234', serial: 'R5CT1234', api: 34 })
-    const offline = studyScreen(parseUiDump(fixture('study-defects.txt')), { package: 'com.example.defects', densityDpi: 420 })
-    expect(r.study, 'same study as studyScreen on the dump, with the app in front as the package and wm density').toEqual(offline)
+    const offline = studyScreen(parseUiDump(fixture('study-defects.txt')), { package: 'com.example.defects', densityDpi: 420, screenshot: pixels(WHITE_PNG) })
+    expect(r.study, 'same study as studyScreen on the dump, with the app in front as the package, wm density and the decoded screenshot').toEqual(offline)
+    expect(r.study?.notes.filter((n) => n.startsWith('Contrast was not checked')), 'contrast checked on the screenshot').toEqual([])
     expect(r.study?.findings.some((f) => f.kind === 'small_touch_target'), 'density measured, so touch targets are checked').toBe(true)
     expect(r.screenshot, 'screenshot size from the PNG header').toMatchObject({ width: 1080, height: 2400 })
     expect(r.screenshot_error).toBeNull()
@@ -129,7 +144,7 @@ describe('studyLiveScreen', () => {
   it('only reads the device: no install, tap, key, launch, settings change or boot', async () => {
     await studyLiveScreen({}, simHost({ devices: [{ serial: 'emulator-5554', avd: 'Pixel_8' }] }))
     const sent = deviceCommands()
-    expect(sent.filter((c) => !/^(shell getprop ro\.build|shell uiautomator dump |shell wm density$|emu avd name$|exec-out screencap -p$)/.test(c)), `unexpected adb commands in ${JSON.stringify(sent)}`).toEqual([])
+    expect(sent.filter((c) => !/^(shell getprop ro\.build|shell uiautomator dump |shell wm density$|emu avd name$|exec-out screencap -p$|shell dumpsys input_method \| grep -m 1 mInputShown$)/.test(c)), `unexpected adb commands in ${JSON.stringify(sent)}`).toEqual([])
     expect(sent.some((c) => c.startsWith('shell uiautomator dump')), 'reads the screen').toBe(true)
     expect(sent, 'takes the screenshot with exec-out (binary-safe)').toContain('exec-out screencap -p')
   })
@@ -182,6 +197,33 @@ describe('studyLiveScreen', () => {
     expect(partial.screenshot_error, 'why there is no screenshot, with the command to try').toMatch(/screencap did not return an image.*exec-out screencap -p/)
   })
 
+  it('reports a low-contrast text from the screenshot it takes (M3b2)', async () => {
+    const shot = canvas(1080, 2400, [255, 255, 255])
+    // The "Sign in" button of formDump, at [40,800][1040,960]: light grey text on white.
+    shot.text(40, 800, 1040, 960, [0xaa, 0xaa, 0xaa])
+    const r = await studyLiveScreen({}, simHost({ devices: [{ serial: 'A1' }], dump: ok(formDump('com.example.shop', '')), screencap: { code: 0, stdout: encodePng(shot, { alpha: true }), stderr: '' } }))
+    const low = r.study?.findings.filter((f) => f.kind === 'low_contrast')
+    expect(low?.map((f) => [f.severity, f.summary]), 'low_contrast findings').toEqual([
+      ['error', '"Sign in" (Button) has a contrast of 2.32:1 (#aaaaaa on #ffffff), under the 3:1 minimum even for large text.']
+    ])
+    expect(r.screenshot, 'the screenshot is still returned').toMatchObject({ width: 1080, height: 2400 })
+  })
+
+  it('does not check contrast while the on-screen keyboard is up (the dump has no window for it)', async () => {
+    const shot = canvas(1080, 2400, [255, 255, 255])
+    shot.text(40, 800, 1040, 960, [0xaa, 0xaa, 0xaa])
+    const r = await studyLiveScreen({}, simHost({ devices: [{ serial: 'A1' }], dump: ok(formDump('com.example.shop', '')), keyboard: true, screencap: { code: 0, stdout: encodePng(shot, { alpha: true }), stderr: '' } }))
+    expect(r.study?.findings.filter((f) => f.kind === 'low_contrast'), 'the keyboard may cover the text').toEqual([])
+    expect(r.study?.notes).toContain('Contrast was not checked: the on-screen keyboard is up and the screen dump does not say where it is (hide it, then study again).')
+  })
+
+  it('keeps a screenshot it cannot decode, and says contrast was not checked and why', async () => {
+    const r = await studyLiveScreen({}, simHost({ devices: [{ serial: 'A1' }], screencap: { code: 0, stdout: png(1080, 2400), stderr: '' } }))
+    expect(r.ok).toBe(true)
+    expect(r.screenshot, 'the file is still saved for a person to look at').toMatchObject({ width: 1080, height: 2400 })
+    expect(r.study?.notes.find((n) => n.startsWith('Contrast was not checked'))).toMatch(/^Contrast was not checked: the screenshot could not be read \(.+\)\.$/)
+  })
+
   it('judges the package it is given instead of the app in front', async () => {
     const r = await studyLiveScreen({ package: 'com.other.app' }, simHost({ devices: [{ serial: 'A1' }] }))
     expect(r.study?.findings, 'none of the defects fixture views belong to com.other.app').toEqual([])
@@ -196,6 +238,7 @@ describe('studyLiveScreen', () => {
     expect(email?.text, 'the field text shows the placeholder').toBe('${secret.email}')
     expect(r.screenshot, 'pixels cannot be scrubbed').toBeNull()
     expect(r.screenshot_error).toMatch(/secret value .* is on the screen/)
+    expect(r.study?.notes, 'contrast needs the screenshot').toContain('Contrast was not checked: there is no screenshot (not taken: a secret value typed into the app is on the screen, and a screenshot cannot be scrubbed).')
     expect(deviceCommands(), 'screencap is never run while a secret is on screen').not.toContain('exec-out screencap -p')
   })
 
@@ -232,6 +275,8 @@ describe('studyLiveScreen', () => {
     expect(r.ok).toBe(true)
     expect(r.study?.findings, 'Android\'s own dialog is not the app\'s to fix').toEqual([])
     expect(r.study?.notes.at(-1)).toMatch(/Only Android's own windows are on screen/)
+    expect(r.study?.notes, 'no contrast measured on Android\'s windows either').toContain("Contrast was not checked: only Android's own windows are on screen.")
+    expect(deviceCommands().some((c) => c.includes('input_method')), 'no keyboard check when nothing is measured').toBe(false)
     expect(r.study?.elements.length, 'its elements are still listed (to tap past it)').toBeGreaterThan(0)
   })
 
