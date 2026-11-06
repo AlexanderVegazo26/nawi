@@ -254,6 +254,80 @@ describeWithBrowser('CDP client against a real Chromium (launched by our own lau
     })
   })
 
+  describe('accessible name from an aria-labelledby id list, against a live DOM', () => {
+    // Built in the page per test and removed after, so the fixture-wide counts other specs assert stay put.
+    const LABELLED_DOM = `
+      <span id="ln-verb">Ship</span><span id="ln-object">to home</span>
+      <span id="ln-secret">Card <span data-nawi-secret>4111-1111</span></span>
+      <button id="ln-two" aria-labelledby="ln-verb  ln-object">x</button>
+      <button id="ln-missing" aria-labelledby="ln-nope ln-verb">x</button>
+      <button id="ln-secret-btn" aria-labelledby="ln-verb ln-secret">Pay</button>`
+
+    const withLabelledDom = async <T>(run: () => Promise<T>): Promise<T> => {
+      await client.send(
+        'Runtime.evaluate',
+        { expression: `(() => { const box = document.createElement('div'); box.id = 'ln-box';
+            box.innerHTML = ${JSON.stringify(LABELLED_DOM)}; document.body.appendChild(box) })()` },
+        pageSessionId
+      )
+      try {
+        return await run()
+      } finally {
+        await client.send('Runtime.evaluate', { expression: `document.getElementById('ln-box')?.remove()` }, pageSessionId)
+      }
+    }
+
+    const probeNameOf = async (target: string): Promise<{ name: string; roleName: string | null }> => {
+      const result = await client.send<{ result: { value: { name: string; roleName: string | null } } }>(
+        'Runtime.evaluate',
+        {
+          expression: `(() => { const el = document.querySelector(${JSON.stringify(target)});
+            const c = window.__nawiProbe.describeSelectors(el).find((c) => c.strategy === 'role-name');
+            return { name: window.__nawiProbe.accessibleName(el), roleName: c ? c.name : null } })()`,
+          returnByValue: true
+        },
+        pageSessionId
+      )
+      return result.result.value
+    }
+
+    const chromiumNameOf = async (target: string): Promise<string> => {
+      const doc = await client.send<{ root: { nodeId: number } }>('DOM.getDocument', { depth: 0 }, pageSessionId)
+      const { nodeId } = await client.send<{ nodeId: number }>(
+        'DOM.querySelector',
+        { nodeId: doc.root.nodeId, selector: target },
+        pageSessionId
+      )
+      const ax = await client.send<{ nodes: Array<{ name?: { value?: string } }> }>(
+        'Accessibility.getPartialAXTree',
+        { nodeId, fetchRelatives: false },
+        pageSessionId
+      )
+      return ax.nodes[0]?.name?.value ?? ''
+    }
+
+    it('joins the text of every referenced element in order, as Chromium names it', async () => {
+      await withLabelledDom(async () => {
+        for (const target of ['#ln-two', '#ln-missing']) {
+          const chromium = await chromiumNameOf(target)
+          const probe = await probeNameOf(target)
+          expect(probe.name, `probe name for ${target} vs Chromium's accessibility tree`).toBe(chromium)
+          expect(probe.roleName, `role+name candidate for ${target}`).toBe(chromium)
+        }
+        expect(await chromiumNameOf('#ln-two'), 'fixture sanity: Chromium joins both labels').toBe('Ship to home')
+        expect(await chromiumNameOf('#ln-missing'), 'fixture sanity: Chromium skips the missing id').toBe('Ship')
+      })
+    })
+
+    it('gives no name when any referenced element carries a secret (FR-SEC.2)', async () => {
+      await withLabelledDom(async () => {
+        const probe = await probeNameOf('#ln-secret-btn')
+        expect(JSON.stringify(probe).includes('4111'), `secret text leaked into the name: ${JSON.stringify(probe)}`).toBe(false)
+        expect(probe.name, 'no name rather than a partial name stitched around a secret').toBe('')
+      })
+    })
+  })
+
   describe('FR-SEC.2 — secret values never cross the CDP wire', () => {
     it('marks password, one-time-code, and inherited secret targets', async () => {
       const marking = await markAndResolveSecrets(client, pageSessionId)

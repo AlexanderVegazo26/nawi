@@ -109,8 +109,20 @@
     if (label) return label.trim()
     var labelledBy = el.getAttribute && el.getAttribute('aria-labelledby')
     if (labelledBy) {
-      var ref = document.getElementById(labelledBy)
-      if (ref) return shownText(ref)
+      // An id list, joined in order; ids with no element are skipped. Any referenced
+      // element carrying a secret gives no name at all, not one stitched around it (FR-SEC.2).
+      var ids = labelledBy.trim().split(/\s+/)
+      var parts = []
+      var found = false
+      for (var i = 0; i < ids.length; i++) {
+        var ref = ids[i] ? document.getElementById(ids[i]) : null
+        if (!ref) continue
+        found = true
+        if (isSecret(ref) || containsSecret(ref)) return ''
+        var part = shownText(ref)
+        if (part) parts.push(part)
+      }
+      if (found) return parts.join(' ')
     }
     if (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') {
       if (el.labels && el.labels.length) return shownText(el.labels[0])
