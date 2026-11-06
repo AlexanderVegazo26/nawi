@@ -35,7 +35,7 @@ import {
 } from '../mobile/profile'
 import { realpath } from 'node:fs/promises'
 import { DEFAULT_KEEP_STUDIES, studyLiveScreen, writeStudy } from '../mobile/study-live'
-import { DEFAULT_KEEP_EXPLORATIONS, MAX_NEVER_PRESS_WORDS, NEVER_PRESS_WORD_RE, exploreLiveApp, writeExploration } from '../mobile/explore-live'
+import { DEFAULT_KEEP_EXPLORATIONS, MAX_NEVER_PRESS_WORDS, NEVER_PRESS_WORD_RE, discardExploration, exploreLiveApp, screenshotSpool, writeExploration } from '../mobile/explore-live'
 import { DEFAULT_MAX_DEPTH, DEFAULT_MAX_SCREENS, DEFAULT_MAX_TAPS, DEFAULT_TIME_BUDGET_MS } from '../mobile/explore'
 
 /**
@@ -1201,9 +1201,13 @@ const mobileExplore = defineTool({
     const off = settings.onSettingsChanged((next) => {
       if (next.agentAccessPaused) stop.abort(agentAccessPaused())
     })
+    // The exploration whose screenshots are spooled to its temp folder but not saved yet (dropped in finally).
+    let spooled: string | null = null
     try {
       if ((await settings.getSettings()).agentAccessPaused) throw agentAccessPaused()
       const takenAt = Date.now()
+      const id = newRunId(takenAt)
+      spooled = id
       const live = await exploreLiveApp({
         target: args.target ?? null,
         package: args.package ?? null,
@@ -1214,6 +1218,8 @@ const mobileExplore = defineTool({
         neverPress: args.never_press,
         secrets: args.secrets,
         signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
+        // Each screenshot goes to disk as it is taken, not into memory until the run ends.
+        storeScreenshot: screenshotSpool(explorationsDir(), id),
         onScreen: ctx.progress
           ? (s, found) => ctx.progress?.({ progress: found, total: args.max_screens, message: `${s.screen_id}: depth ${s.depth}, ${s.study.findings.length} findings` })
           : undefined
@@ -1222,11 +1228,11 @@ const mobileExplore = defineTool({
       if (!live.ok || !x || live.package === null) {
         return { ok: false, error: live.error, fix: live.fix, target: live.target, package: live.package, exploration_id: null, exploration_dir: null, stopped: x?.stopped ?? null, notes: x?.notes ?? [] }
       }
-      const id = newRunId(takenAt)
       let saved: { dir: string; screenshots: Map<string, string> } | null = null
       let saveError: string | null = null
       try {
         saved = await writeExploration(explorationsDir(), id, { target: live.target, package: live.package, density_dpi: live.density_dpi, taken_at: new Date(takenAt).toISOString(), exploration: x })
+        spooled = null // the temp folder is now the saved exploration
         await pruneRuns(explorationsDir(), DEFAULT_KEEP_EXPLORATIONS).catch(() => [])
       } catch (err) {
         // The graph itself is the answer; only the saved copy (and the screenshots, which live in it) is lost.
@@ -1257,7 +1263,7 @@ const mobileExplore = defineTool({
             findings: s.study.findings.slice(0, MAX_EXPLORE_FINDINGS_PER_SCREEN).map((f) => ({ kind: f.kind, severity: f.severity, summary: f.summary, fix: f.fix })),
             screenshot,
             // Why there is no screenshot: withheld or failed on the device, else lost with the folder (save_error).
-            screenshot_error: screenshot ? null : (s.screenshot_error ?? (s.screenshot ? 'not saved: see save_error' : null))
+            screenshot_error: screenshot ? null : (s.screenshot_error ?? (s.screenshot || s.screenshot_file ? 'not saved: see save_error' : null))
           }
         }),
         screens_total: x.screens.length,
@@ -1269,6 +1275,7 @@ const mobileExplore = defineTool({
       }
     } finally {
       off()
+      if (spooled !== null) await discardExploration(explorationsDir(), spooled).catch(() => undefined)
     }
   }
 })

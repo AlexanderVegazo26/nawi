@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { RUN_ID_RE } from '../run-record'
 import { runMobileDoctor } from './doctor'
-import { exploreApp, type ExploreHost, type ExploreResult, type ExploreScreen } from './explore'
+import { exploreApp, type ExploreHost, type ExploreRequest, type ExploreResult, type ExploreScreen } from './explore'
 import { defaultOpenHost, readScreen } from './open'
 import { PACKAGE_RE, TARGET_RE } from './profile'
 import { parseDensity } from './study'
@@ -42,6 +42,8 @@ export interface LiveExploreRequest {
   secrets?: Readonly<Record<string, string>>
   signal?: AbortSignal
   onScreen?: (screen: ExploreScreen, found: number) => void
+  /** Where each screenshot goes as soon as it is taken (screenshotSpool); default: kept in memory. */
+  storeScreenshot?: ExploreRequest['storeScreenshot']
 }
 
 export interface LiveExploreResult {
@@ -112,7 +114,8 @@ export async function exploreLiveApp(req: LiveExploreRequest, host: ExploreLiveH
       neverPress,
       secrets: req.secrets,
       signal: req.signal,
-      onScreen: req.onScreen
+      onScreen: req.onScreen,
+      storeScreenshot: req.storeScreenshot
     },
     host
   )
@@ -159,25 +162,54 @@ export interface SavedExploration {
   exploration: ExploreResult
 }
 
+/** The folder an exploration is assembled in before writeExploration renames it to `<root>/<id>`. */
+function explorationTemp(root: string, id: string): string {
+  if (!RUN_ID_RE.test(id)) throw new Error(`not an exploration id: ${JSON.stringify(id)}`)
+  return join(root, `.tmp-${id}`)
+}
+
 /**
- * Save an exploration as `<root>/<id>/graph.json` + `<screen_id>.png` per screen with a screenshot, written to a
- * temp folder and renamed so a folder that exists is complete. Returns the folder and each screenshot's path.
+ * A storeScreenshot for exploreApp that writes each PNG into the exploration's temp folder as the screen is found,
+ * so the run holds no screenshots in memory; writeExploration then keeps them, discardExploration drops them.
+ */
+export function screenshotSpool(root: string, id: string): (screenId: string, png: Uint8Array) => Promise<string> {
+  const temp = explorationTemp(root, id)
+  return async (screenId, png) => {
+    if (!SCREEN_ID_RE.test(screenId)) throw new Error(`not a screen id: ${JSON.stringify(screenId)}`)
+    await fs.mkdir(temp, { recursive: true })
+    const file = join(temp, `${screenId}.png`)
+    await fs.writeFile(file, png)
+    return file
+  }
+}
+
+/** Remove what screenshotSpool wrote for an exploration that will not be saved. */
+export async function discardExploration(root: string, id: string): Promise<void> {
+  await fs.rm(explorationTemp(root, id), { recursive: true, force: true })
+}
+
+/**
+ * Save an exploration as `<root>/<id>/graph.json` + `<screen_id>.png` per screen with a screenshot (in memory, or
+ * already in the temp folder from screenshotSpool), written to a temp folder and renamed so a folder that exists is
+ * complete. Returns the folder and each screenshot's path.
  */
 export async function writeExploration(root: string, id: string, saved: SavedExploration): Promise<{ dir: string; screenshots: Map<string, string> }> {
-  if (!RUN_ID_RE.test(id)) throw new Error(`not an exploration id: ${JSON.stringify(id)}`)
+  const temp = explorationTemp(root, id)
   const bad = saved.exploration.screens.find((s) => !SCREEN_ID_RE.test(s.screen_id))
   if (bad) throw new Error(`not a screen id: ${JSON.stringify(bad.screen_id)}`)
   await fs.mkdir(root, { recursive: true })
   const dir = join(root, id)
-  const temp = join(root, `.tmp-${id}`)
   const screenshots = new Map<string, string>()
   const { exploration, ...facts } = saved
   try {
-    await fs.mkdir(temp)
+    await fs.mkdir(temp, { recursive: true })
     for (const s of exploration.screens) {
-      if (!s.screenshot) continue
-      await fs.writeFile(join(temp, `${s.screen_id}.png`), s.screenshot)
-      screenshots.set(s.screen_id, join(dir, `${s.screen_id}.png`))
+      const name = `${s.screen_id}.png`
+      if (s.screenshot) await fs.writeFile(join(temp, name), s.screenshot)
+      else if (s.screenshot_file === join(temp, name)) await fs.access(s.screenshot_file)
+      else if (s.screenshot_file) await fs.copyFile(s.screenshot_file, join(temp, name))
+      else continue
+      screenshots.set(s.screen_id, join(dir, name))
     }
     const graph = {
       exploration_id: id,
@@ -186,7 +218,7 @@ export async function writeExploration(root: string, id: string, saved: SavedExp
       stopped: exploration.stopped,
       taps: exploration.taps,
       notes: exploration.notes,
-      screens: exploration.screens.map(({ screenshot, ...s }) => ({ ...s, screenshot: screenshot ? `${s.screen_id}.png` : null })),
+      screens: exploration.screens.map(({ screenshot, screenshot_file, ...s }) => ({ ...s, screenshot: screenshot || screenshot_file ? `${s.screen_id}.png` : null })),
       edges: exploration.edges,
       skipped: exploration.skipped
     }

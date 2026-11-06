@@ -6,7 +6,7 @@ import type { ExecResult } from './doctor'
 import { canvas, encodePng } from './fixtures/make-png'
 import { parseUiDump } from './hierarchy'
 import { screenIdOf } from './study'
-import { exploreLiveApp, writeExploration, type ExploreLiveHost, type LiveExploreRequest } from './explore-live'
+import { discardExploration, exploreLiveApp, screenshotSpool, writeExploration, type ExploreLiveHost, type LiveExploreRequest } from './explore-live'
 import type { ExploreResult } from './explore'
 
 /**
@@ -262,6 +262,7 @@ describe('writeExploration', () => {
     path: [],
     study: { screen_id: id, package: PKG, rotation: 0, density_dpi: 420, elements: [], findings: [], notes: [] },
     screenshot: png,
+    screenshot_file: null,
     screenshot_error: png ? null : 'not taken'
   })
 
@@ -283,6 +284,44 @@ describe('writeExploration', () => {
       ]
     })
     expect(readdirSync(dir), 'no temp folder left behind').toEqual([ID])
+  })
+
+  it('keeps the screenshots screenshotSpool already wrote to disk, and copies one stored elsewhere', async () => {
+    const dir = join(root, 'explorations')
+    const spool = screenshotSpool(dir, ID)
+    const spooled = await spool('s-0123456789ab', WHITE_PNG)
+    expect(spooled, 'spooled into the temp folder').toBe(join(dir, `.tmp-${ID}`, 's-0123456789ab.png'))
+    const elsewhere = join(root, 'elsewhere.png')
+    writeFileSync(elsewhere, WHITE_PNG)
+    const fromDisk = (id: string, file: string) => ({ ...screen(id, null), screenshot_file: file, screenshot_error: null })
+    const saved = await writeExploration(dir, ID, { target: null, package: PKG, density_dpi: 420, taken_at: '', exploration: graph([fromDisk('s-0123456789ab', spooled), fromDisk('s-ba9876543210', elsewhere)]) })
+    expect(readdirSync(saved.dir).sort(), 'folder contents').toEqual(['graph.json', 's-0123456789ab.png', 's-ba9876543210.png'])
+    for (const id of ['s-0123456789ab', 's-ba9876543210']) expect(readFileSync(join(saved.dir, `${id}.png`)), `${id}.png bytes`).toEqual(Buffer.from(WHITE_PNG))
+    expect([...saved.screenshots.keys()]).toEqual(['s-0123456789ab', 's-ba9876543210'])
+    const json = JSON.parse(readFileSync(join(saved.dir, 'graph.json'), 'utf8'))
+    expect(json.screens.map((s: Record<string, unknown>) => [s.screenshot, 'screenshot_file' in s]), 'file names, no absolute paths').toEqual([
+      ['s-0123456789ab.png', false],
+      ['s-ba9876543210.png', false]
+    ])
+    expect(readdirSync(dir), 'no temp folder left behind').toEqual([ID])
+  })
+
+  it('fails and leaves no temp folder when a spooled screenshot is gone', async () => {
+    const dir = join(root, 'explorations')
+    const spooled = await screenshotSpool(dir, ID)('s-0123456789ab', WHITE_PNG)
+    rmSync(spooled)
+    await expect(writeExploration(dir, ID, { target: null, package: PKG, density_dpi: null, taken_at: '', exploration: graph([{ ...screen('s-0123456789ab', null), screenshot_file: spooled }]) })).rejects.toThrow(/ENOENT/)
+    expect(readdirSync(dir), 'nothing left').toEqual([])
+  })
+
+  it('discardExploration removes what the spool wrote; the spool refuses ids that could leave the folder', async () => {
+    const dir = join(root, 'explorations')
+    await screenshotSpool(dir, ID)('s-0123456789ab', WHITE_PNG)
+    await discardExploration(dir, ID)
+    expect(readdirSync(dir), 'temp folder removed').toEqual([])
+    await expect(screenshotSpool(dir, ID)('../../x', WHITE_PNG)).rejects.toThrow(/not a screen id/)
+    expect(() => screenshotSpool(dir, '../escape'), 'exploration id').toThrow(/not an exploration id/)
+    expect(readdirSync(dir), 'nothing written').toEqual([])
   })
 
   it.each([

@@ -405,6 +405,35 @@ describe('exploreApp (roadmap M3c): screen graph of a fixture app', () => {
     expect([r.stopped, d.tapped]).toEqual(['cancelled', ['home:Settings']])
   })
 
+  it('hands each screenshot to storeScreenshot as the screen is found and keeps no bytes in the result', async () => {
+    const stored: string[] = []
+    const r = await exploreApp(
+      {
+        ...REQ,
+        storeScreenshot: async (screenId, png) => {
+          expect(png, `PNG handed over for ${screenId}`).toEqual(WHITE_PNG)
+          stored.push(screenId)
+          return `/spool/${screenId}.png`
+        }
+      },
+      device().host
+    )
+    expect(stored, 'one store per screen, in the order found').toEqual(r.screens.map((s) => s.screen_id))
+    for (const s of r.screens) {
+      expect([s.screenshot, s.screenshot_file, s.screenshot_error], `screenshot of ${s.screen_id}`).toEqual([null, `/spool/${s.screen_id}.png`, null])
+    }
+    // The screenshot still reached the study before it was handed over: contrast was measured.
+    expect(r.screens[0].study.notes.filter((n) => /screenshot/i.test(n)), 'notes about a missing screenshot').toEqual([])
+  })
+
+  it('keeps exploring when a screenshot cannot be stored, and says why it has none', async () => {
+    const r = await exploreApp({ ...REQ, storeScreenshot: async () => Promise.reject(new Error('ENOSPC: no space left on device')) }, device().host)
+    expect(r.stopped).toBe('done')
+    expect(r.screens.length, 'every screen still explored').toBeGreaterThan(1)
+    expect([r.screens[0].screenshot, r.screens[0].screenshot_file], 'no bytes, no file').toEqual([null, null])
+    expect(r.screens[0].screenshot_error).toBe('not saved (ENOSPC: no space left on device)')
+  })
+
   it('explores without screenshots when screencap fails, and says why', async () => {
     const r = await exploreApp(REQ, device(undefined, { screencapFails: true }).host)
     expect(r.stopped).toBe('done')

@@ -53,10 +53,15 @@ vi.mock('../mobile/study-live', async (importOriginal) => ({
 // The live exploration (adb) is tested against a simulated device in mobile/explore-live.test.ts; here it returns a result.
 const exploreCalls: Record<string, unknown>[] = []
 let exploreResult: Record<string, unknown> = {}
+/** What the simulated run does with the request before it returns (e.g. stores screenshots), once. */
+let exploreRun: ((req: Record<string, unknown>) => Promise<void>) | null = null
 vi.mock('../mobile/explore-live', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../mobile/explore-live')>()),
   exploreLiveApp: async (req: Record<string, unknown>) => {
     exploreCalls.push(req)
+    const run = exploreRun
+    exploreRun = null
+    await run?.(req)
     return exploreResult
   }
 }))
@@ -483,6 +488,7 @@ describe('mobile_explore', () => {
     path: labels.map((label) => ({ locator: { text: label }, label })),
     study: { screen_id: id, package: 'dev.nawi.sample', rotation: 0, density_dpi: 420, elements: [{ i: 0 }, { i: 1 }], findings: Array.from({ length: findings }, (_, k) => finding(k)), notes: [] },
     screenshot: png,
+    screenshot_file: null as string | null,
     screenshot_error: png ? null : 'not taken: a secret value typed into the app is on the screen, and a screenshot cannot be scrubbed'
   })
   const graph = {
@@ -528,6 +534,48 @@ describe('mobile_explore', () => {
     const saved = JSON.parse(readFileSync(join(r.exploration_dir as string, 'graph.json'), 'utf8'))
     expect(saved, 'graph.json keeps every finding and the full study').toMatchObject({ exploration_id: r.exploration_id, target, package: 'dev.nawi.sample', start: 's-000000000001' })
     expect(saved.screens[0].study.findings.length).toBe(12)
+  })
+
+  type Store = (screenId: string, png: Uint8Array) => Promise<string>
+  const temps = () => (existsSync(join(home, 'explorations')) ? readdirSync(join(home, 'explorations')).filter((n) => n.startsWith('.tmp-')) : [])
+
+  it('streams each screenshot to disk while exploring (not held in memory) and saves it with the graph', async () => {
+    let spooledAt: string | null = null
+    exploreRun = async (req) => {
+      spooledAt = await (req.storeScreenshot as Store)('s-000000000001', PNG)
+      expect(readFileSync(spooledAt), 'the PNG is on disk while the run is still going').toEqual(Buffer.from(PNG))
+    }
+    exploreResult = done({ ...graph, screens: [{ ...graph.screens[0], screenshot: null, get screenshot_file() { return spooledAt } }, graph.screens[1]] })
+    const r = await exploreTool({})
+    expect(spooledAt, 'spooled into the temp folder of this exploration').toBe(join(home, 'explorations', `.tmp-${r.exploration_id as string}`, 's-000000000001.png'))
+    const screens = r.screens as Array<Record<string, unknown>>
+    expect(screens[0], 'the saved screenshot').toMatchObject({ screenshot: join(r.exploration_dir as string, 's-000000000001.png'), screenshot_error: null })
+    expect(readFileSync(screens[0].screenshot as string), 'the PNG bytes').toEqual(Buffer.from(PNG))
+    expect(JSON.parse(readFileSync(join(r.exploration_dir as string, 'graph.json'), 'utf8')).screens[0].screenshot).toBe('s-000000000001.png')
+    expect(temps(), 'no temp folder left behind').toEqual([])
+  })
+
+  it.each([
+    ['the exploration fails', () => (exploreResult = { ok: false, error: 'lost', fix: 'retry', target, package: 'dev.nawi.sample', density_dpi: 420, exploration: null })],
+    [
+      'the run throws',
+      () => {
+        const run = exploreRun
+        exploreRun = async (req) => {
+          await run?.(req)
+          throw new Error('adb vanished')
+        }
+      }
+    ]
+  ])('drops the screenshots already streamed to disk when %s', async (why, arrange) => {
+    exploreRun = async (req) => {
+      await (req.storeScreenshot as Store)('s-000000000001', PNG)
+      expect(temps().length, 'spooled').toBe(1)
+    }
+    arrange()
+    if (why === 'the run throws') await expect(exploreTool({})).rejects.toThrow()
+    else expect(await exploreTool({})).toMatchObject({ ok: false, exploration_id: null })
+    expect(temps(), 'temp folder removed').toEqual([])
   })
 
   it('caps screens, edges and skipped controls, and says how many there are', async () => {

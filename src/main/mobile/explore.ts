@@ -63,6 +63,11 @@ export interface ExploreRequest {
   signal?: AbortSignal
   /** Called once per new screen, after it is studied (progress for a run that can take minutes). */
   onScreen?: (screen: ExploreScreen, found: number) => void
+  /**
+   * Store each screenshot as soon as its screen is studied and return where it went, so a long run does not hold
+   * every PNG in memory (200 screens x 1-3 MB). Without it the bytes stay in `screenshot`.
+   */
+  storeScreenshot?: (screenId: string, png: Uint8Array) => Promise<string>
 }
 
 export interface ExploreTap {
@@ -77,7 +82,10 @@ export interface ExploreScreen {
   /** The taps that first reached it from the start screen. */
   path: ExploreTap[]
   study: ScreenStudy
+  /** The PNG, when it was not handed to storeScreenshot. */
   screenshot: Uint8Array | null
+  /** Where storeScreenshot put the PNG (then `screenshot` is null). */
+  screenshot_file: string | null
   /** Why there is no screenshot (null when there is one, or none was asked for). */
   screenshot_error: string | null
 }
@@ -323,7 +331,16 @@ export async function exploreApp(req: ExploreRequest, host: ExploreHost): Promis
     }
     const reason = req.screenshots === false ? 'no screenshots were asked for' : error && `there is no screenshot (${error})`
     const study = scrubStudy(studyScreen(screen, { package: pkg, densityDpi: req.densityDpi ?? null, screenshot: image, noScreenshotReason: reason }), secrets)
-    const entry: ExploreScreen = { screen_id: study.screen_id, depth, path, study, screenshot: png, screenshot_error: error }
+    let file: string | null = null
+    if (png && req.storeScreenshot) {
+      try {
+        file = await req.storeScreenshot(study.screen_id, png)
+      } catch (err) {
+        error = `not saved (${err instanceof Error ? err.message : String(err)})`
+      }
+      png = null
+    }
+    const entry: ExploreScreen = { screen_id: study.screen_id, depth, path, study, screenshot: png, screenshot_file: file, screenshot_error: error }
     known.set(study.screen_id, entry)
     result.screens.push(entry)
     req.onScreen?.(entry, result.screens.length)
