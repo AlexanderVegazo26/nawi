@@ -404,7 +404,10 @@ alone.
   visual anchor: a close, unique match resolves to the control under its centre;
   a crop that matches in two places is ambiguous and fails the step instead of
   guessing. Crops are read only from inside the flow's folder (no symlinks out,
-  at most 8 MiB). `assert` steps don't use it yet. It
+  at most 8 MiB). `assert` steps check the element found the same way, so an
+  assertion on a drifted locator still checks the element its crop shows, and
+  `visible: false` holds only while the crop is not on screen (seen in two
+  places, or unreadable, it never confirms the element is gone). It
   waits for the element to be visible, enabled and not covered, up to the step's
   `timeout_ms` (default 5 s), then acts with real input events (click, hover,
   fill, select by value or label, key chords such as `Control+a`, scroll,
@@ -781,8 +784,7 @@ CDP selectors and the MCP projection/revision model.
   `export_flow` only has input events to work with on captures whose sidecar
   carries them (for example DC-4 sidecars written by another tool). Wiring the
   harvest into browser recordings, run records and the flow editor land as
-  separate slices. `assert` steps don't use a target's reference crop (`image`) yet:
-  only click/fill/select/press/hover/scroll/wait/screenshot fall back to it.
+  separate slices.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a
   recording cannot be trimmed, shortened or re-exported without leaving the app.

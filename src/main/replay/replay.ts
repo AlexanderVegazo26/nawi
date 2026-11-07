@@ -633,7 +633,7 @@ class StepRunner {
     } finally {
       this.session.clearLimit()
     }
-    // Set by waitFor while the step ran (TS can't see that through the awaits).
+    // Set by anchoredPoll (waitFor, assert) while the step ran (TS can't see that through the awaits).
     const visual = this.visual as AnchorTry | undefined
     if (answer && selectors.length > 0) {
       if (answer.found && answer.index >= 0 && answer.index < selectors.length) {
@@ -655,15 +655,11 @@ class StepRunner {
   }
 
   /**
-   * Wait for a page answer that `ready` accepts; on timeout, fail with the
-   * last answer. `ask` gets the locators to resolve: the step's own, or, when
-   * none of them finds exactly one element and the step has a reference crop
-   * (`image`), those plus the point where the crop was last found on screen
-   * (visual-anchor layer). The screen is looked at again at most every
-   * VISUAL_EVERY_MS; in between, every poll asks the page about the last
-   * match, so an anchored element that is still covered or disabled keeps
-   * reporting that, not the locators' miss. The answer carries the locator
-   * list it came from (`locators`), for follow-up calls on the same element.
+   * Poll the step's target (anchoredPoll: its locators, then its reference
+   * crop) until `ready` accepts the answer; fail at the deadline with the last
+   * answer, or at once when the element can never take the action. The answer
+   * carries the locator list it came from (`locators`), for follow-up calls on
+   * the same element.
    */
   private async waitFor(
     deadline: number,
@@ -674,26 +670,43 @@ class StepRunner {
     image?: string
   ): Promise<PageAnswer> {
     let last: PageAnswer | null = null
-    let nextLook = -Infinity
-    let anchored: PageLocator[] | undefined
-    /** The answer, if it settles the wait: ready, or (thrown) never going to be. */
-    const settle = (a: PageAnswer, locators: PageLocator[]): PageAnswer | undefined => {
-      a.locators = locators
+    const poll = this.anchoredPoll(selectors, ask, image)
+    const ok = await until(deadline, this.now, async () => {
+      const a = await poll()
+      last = a
+      if (!a) return undefined
+      // Ready, or (thrown) never going to be.
       if (a.found && a.permanent) {
         throw new StepFailure(`${describeLocator(locatorAt(selectors, a.index, image))} matched but ${a.blocked}`, a)
       }
       return ready(a) ? a : undefined
-    }
-    const ok = await until(deadline, this.now, async () => {
+    })
+    if (ok) return ok
+    throw new StepFailure(notFoundMessage(last, selectors, timeoutMs, this.visual), last)
+  }
+
+  /**
+   * One step's page lookups with the visual-anchor layer (roadmap AI1), for
+   * steps that poll (waitFor, assert). Each call asks about the step's own
+   * locators; when none of them finds exactly one element and the step has a
+   * reference crop, it looks for the crop on screen (at most every
+   * VISUAL_EVERY_MS) and, when found, asks again through the point it was
+   * found at. Between looks it keeps asking about the element that point
+   * resolved to (pinned), so a match that is covered or disabled keeps
+   * reporting that. The answer carries the locator list it came from
+   * (`locators`); null = the page helpers are not installed yet.
+   */
+  private anchoredPoll(
+    selectors: Selector[],
+    ask: (locators: PageLocator[]) => Promise<PageAnswer | null>,
+    image: string | undefined
+  ): () => Promise<PageAnswer | null> {
+    let nextLook = -Infinity
+    let anchored: PageLocator[] | undefined
+    return async () => {
       const own = await ask(selectors)
-      if (!own) {
-        last = own
-        return undefined
-      }
-      if (own.found || image === undefined || this.anchorsGaveUp) {
-        last = own
-        return settle(own, selectors)
-      }
+      if (own) own.locators = selectors
+      if (!own || own.found || image === undefined || this.anchorsGaveUp) return own
       // Every locator missed: look at the screen again when due (wall clock: the run's clock may be a test's fake).
       if (performance.now() >= nextLook) {
         nextLook = performance.now() + VISUAL_EVERY_MS
@@ -701,20 +714,17 @@ class StepRunner {
         this.visual = { image, result }
         anchored = result.found === 1 ? [...selectors, { __anchor: [result.x, result.y], pin: ++anchorPins }] : undefined
       }
-      last = own
-      if (!anchored) return undefined
+      if (!anchored) return own
       const viaAnchor = await ask(anchored)
       // Only the anchor's own answer counts: a locator that appeared meanwhile is picked up by the next poll.
       if (!viaAnchor || !viaAnchor.found || viaAnchor.index !== selectors.length) {
         if (this.visual?.result.found === 1) this.visual.noElement = true
-        return undefined
+        return own
       }
       if (this.visual) this.visual.noElement = false
-      last = viaAnchor
-      return settle(viaAnchor, anchored)
-    })
-    if (ok) return ok
-    throw new StepFailure(notFoundMessage(last, selectors, timeoutMs, this.visual), last)
+      viaAnchor.locators = anchored
+      return viaAnchor
+    }
   }
 
   /** The crop at `path`, decoded once per run; `invalid` says why it can't be used. */
@@ -949,6 +959,9 @@ class StepRunner {
       return JSON.stringify(scrubbed.length > max ? `${scrubbed.slice(0, max)}…` : scrubbed)
     }
     const sel = step.target?.selectors ?? []
+    // The element is looked up like any step's target, crop included: an assert whose locators drifted checks
+    // the element its reference crop shows (and a `visible: false` holds only while the crop is not on screen).
+    const lookup = this.anchoredPoll(sel, (l) => s.call('state', l), step.target?.image)
 
     let problems: string[] = []
     let last: PageAnswer | null = null
@@ -964,13 +977,16 @@ class StepRunner {
         if (url !== wantUrl) problems.push(`expected URL ${shown(wantUrl, 500)}, got ${shown(url, 500)}`)
       }
       if (step.target) {
-        last = await s.call('state', sel)
+        last = await lookup()
         if (!last) {
           problems.push('the page was not ready')
         } else if (!last.found) {
           // An element that is not there is "not visible"; everything else needs it.
           if (expect.visible !== false || expect.enabled !== undefined || wantText !== undefined) {
-            problems.push(notFoundMessage(last, sel, timeoutMs))
+            problems.push(notFoundMessage(last, sel, timeoutMs, this.visual))
+          } else {
+            const shows = this.cropStillShows(step.target.image)
+            if (shows) problems.push(`expected the element to be hidden, but ${shows}`)
           }
         } else {
           if (expect.visible !== undefined && last.visible !== expect.visible) {
@@ -988,6 +1004,25 @@ class StepRunner {
     })
     if (!passed) throw new StepFailure(`assertion failed after ${timeoutMs} ms: ${problems.join('; ')}`, last)
     return last
+  }
+
+  /**
+   * Why a target no locator found may still be on screen (for `visible:
+   * false`): its reference crop was last seen there (once, without an element
+   * the point resolves to, or in several places), or the crop could not be
+   * looked for at all (unreadable, or page captures gave up). Undefined when
+   * the step has no crop or the last look did not find it.
+   */
+  private cropStillShows(image: string | undefined): string | undefined {
+    if (image === undefined) return undefined
+    const what = `its reference crop image=${image}`
+    if (this.anchorsGaveUp) return `${what} could not be looked for (the page could not be captured in time earlier in this run)`
+    const r = this.visual?.result
+    if (!r) return `${what} was not looked for yet`
+    if ('invalid' in r && r.invalid !== undefined) return `${what} could not be looked for (${r.invalid})`
+    if (r.found === 1) return `${what} is still on screen at (${r.x}, ${r.y})`
+    if (r.found > 1) return `${what} is still on screen in ${r.found}+ places`
+    return undefined
   }
 
   async navigate(url: string, timeoutMs: number, inStep = false): Promise<void> {

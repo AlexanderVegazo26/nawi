@@ -735,6 +735,97 @@ steps:
       expect(bad.steps[0].error, why(bad)).toMatch(/image=x\.png: invalid \(not a usable PNG \(not a PNG\)\)/)
     })
 
+    it('asserts on the element its crop shows once every locator is gone (text, visible, enabled), and records the visual layer', async () => {
+      const save = await cropOf('save')
+      const run = await replay(
+        flow(
+          [
+            {
+              id: 'check',
+              action: 'assert',
+              timeout_ms: 2_000,
+              target: { selectors: [{ id: 'renamed-save' }, { css: '.gone' }], image: 'save.png' },
+              expect: { visible: true, enabled: true, text: 'Save' }
+            }
+          ],
+          ANCHOR
+        ),
+        { loadAsset: assets({ 'save.png': save }) }
+      )
+      expect(run.status, why(run)).toBe('passed')
+      expect(run.steps[0].matched, why(run)).toMatchObject({ index: 2, selector: { image: 'save.png' }, layer: 'visual', fallback: true })
+      expect(run.steps[0].matched?.score, 'the crop matches its own page almost exactly').toBeGreaterThan(0.99)
+      expect(run.steps[0].misses, 'both drifted locators are reported as misses').toEqual([
+        { index: 0, selector: { id: 'renamed-save' }, found: 0 },
+        { index: 1, selector: { css: '.gone' }, found: 0 }
+      ])
+      // Text through the crop is the matched element's, not any text near the point.
+      const wrong = await replay(
+        flow(
+          [{ id: 'check', action: 'assert', timeout_ms: 600, target: { selectors: [{ id: 'renamed-save' }], image: 'save.png' }, expect: { text: 'Delete' } }],
+          ANCHOR
+        ),
+        { loadAsset: assets({ 'save.png': save }) }
+      )
+      expect(wrong.status, why(wrong)).toBe('failed')
+      expect(wrong.steps[0].error).toMatch(/^assertion failed after 600 ms: expected text containing "Delete", got "Save"$/)
+      expect(wrong.steps[0].matched, why(wrong)).toMatchObject({ layer: 'visual' })
+    })
+
+    it('holds a visible: false assertion only while the element\'s crop is off screen, even when its locators drifted', async () => {
+      const save = await cropOf('save')
+      const hidden = (timeout_ms: number): Flow =>
+        flow(
+          [{ id: 'gone', action: 'assert', timeout_ms, target: { selectors: [{ id: 'renamed-save' }], image: 'save.png' }, expect: { visible: false } }],
+          ANCHOR
+        )
+      const shown = await replay(hidden(700), { loadAsset: assets({ 'save.png': save }) })
+      expect(shown.status, `the button is on screen, so "hidden" must not pass on a drifted locator: ${why(shown)}`).toBe('failed')
+      expect(shown.steps[0].error).toMatch(/expected the element to be hidden, it is visible/)
+      expect(shown.steps[0].matched, why(shown)).toMatchObject({ layer: 'visual' })
+
+      await read(`document.getElementById('save').style.display = 'none'`)
+      const off = await replay(hidden(2_000), { loadAsset: assets({ 'save.png': save }), openTarget: false })
+      expect(off.status, why(off)).toBe('passed')
+      expect(off.steps[0].matched, 'nothing matched: neither the locator nor the crop').toBeUndefined()
+      expect(off.steps[0].misses?.[1], why(off)).toMatchObject({ index: 1, selector: { image: 'save.png' }, found: 0 })
+    })
+
+    it('never passes visible: false on a crop it saw in two places or could not use', async () => {
+      const opened = await replay(flow([{ id: 'open', action: 'wait', target: { selectors: [{ id: 'save' }] } }], ANCHOR))
+      expect(opened.status, why(opened)).toBe('passed')
+      const twin = await cropOfBox(100, 500, 120, 40)
+      const hidden = (image: string): Flow =>
+        flow([{ id: 'gone', action: 'assert', timeout_ms: 600, target: { selectors: [{ testid: 'twin' }], image }, expect: { visible: false } }], ANCHOR)
+      const loadAsset = assets({ 'twin.png': twin })
+
+      const ambiguous = await replay(hidden('twin.png'), { loadAsset })
+      expect(ambiguous.status, `both twins are on screen: ${why(ambiguous)}`).toBe('failed')
+      expect(ambiguous.steps[0].error).toMatch(
+        /^assertion failed after 600 ms: expected the element to be hidden, but its reference crop image=twin\.png is still on screen in 2\+ places$/
+      )
+
+      const unusable = await replay(hidden('missing.png'), { loadAsset })
+      expect(unusable.status, `a crop that can't be read can't show the element is gone: ${why(unusable)}`).toBe('failed')
+      expect(unusable.steps[0].error).toMatch(/but its reference crop image=missing\.png could not be looked for \(could not read it: missing\.png does not exist next to the flow\)$/)
+    })
+
+    it('fails an assertion on a gone element with the crop\'s miss next to the locators\'', async () => {
+      const save = await cropOf('save')
+      await read(`document.getElementById('save').remove()`)
+      const run = await replay(
+        flow(
+          [{ id: 'there', action: 'assert', timeout_ms: 600, target: { selectors: [{ id: 'renamed-save' }], image: 'save.png' }, expect: { visible: true } }],
+          ANCHOR
+        ),
+        { loadAsset: assets({ 'save.png': save }), openTarget: false }
+      )
+      expect(run.status, why(run)).toBe('failed')
+      expect(run.steps[0].error).toMatch(
+        /^assertion failed after 600 ms: no locator matched exactly one element within 600 ms — id=renamed-save: no element; image=save\.png: no close match/
+      )
+    })
+
     /** A viewport region as a PNG, through the page's own screenshot (for elements no locator can single out). */
     const cropOfBox = async (x: number, y: number, width: number, height: number): Promise<Uint8Array> => {
       const shot = await client.send<{ data: string }>(
