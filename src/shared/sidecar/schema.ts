@@ -91,7 +91,8 @@ function leaves<C extends z.core.$ZodObjectConfig>(o: ObjectMaker<C>) {
       text: z.string().nullable(),
       bounds: bounds4.nullable(),
       selectors: z.array(selectorCandidate),
-      input_type: z.string().optional()
+      input_type: z.string().optional(),
+      image: relPath.optional()
     }).nullable(),
     value_redacted: z.boolean()
   })

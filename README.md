@@ -364,8 +364,25 @@ alone.
   `${secret.<name>}` placeholders (their values were never recorded). Scrolls,
   resizes, modifier and editing keys, the click that only focused a field, and
   what was entered in fields a flow can't fill (file pickers, sliders, color
-  pickers) are left out and counted in the reply, with warnings to review. It returns the
+  pickers) are left out and counted in the reply, with warnings to review. Each step
+  that recorded its element's box gets it as `bbox`. It returns the
   YAML and writes nothing. Converter: `src/shared/flow/from-recording.ts`.
+- **Reference crops at record time** (`src/main/harvest`, sidecar schema 1.2) — every
+  harvested input event carries its element's box (`bounds`, CSS px of the top
+  viewport). When the user presses the primary button on an element, the harvest
+  takes a lossless screenshot of the viewport and keeps only that element, one
+  image pixel per CSS pixel (the scale the replayer's visual anchor matches at), as
+  `input_crops/<n>.png` in the revision; the click's target names it (`image`). No
+  crop is kept for anything secret: not of a secret field or an element holding
+  one, and not when a secret field, a secret-marked element or a frame whose
+  content can't be read overlaps the box. Elements inside frames, smaller than
+  8 px or larger than 640 px a side, or partly off screen get none. At most 300
+  crops (32 MiB) per recording; the oldest go first. If the page changed under the
+  screenshot (a press handler showed something over the box or moved it), the crop
+  is dropped. A crop shows the control as pressed (hover/active styles), which the
+  replayer's tolerance absorbs for mild styles only. `seal()` passes crops through
+  unscanned (listed in its report) and annotating a capture carries them into the
+  new revision. `export_flow` doesn't copy crops next to the flow yet (next slice).
 - **Flow replay engine** (`src/main/replay`) — runs a flow in a Chromium page
   over raw CDP. Each step's locators are tried in order: the first one matching
   exactly one element wins (one matching several is ambiguous and skipped). A

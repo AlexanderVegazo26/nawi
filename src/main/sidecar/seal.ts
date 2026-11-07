@@ -206,6 +206,11 @@ export interface SealReport {
   tierAFailures: TierAFailure[]
   filesScanned: number
   bytesScanned: number
+  /**
+   * Binary files passed through unscanned under the one binary policy below
+   * (reference crops). Listed so nothing goes through unnoticed.
+   */
+  binaryPassed: string[]
   /** Rules from settings that would not compile. Reported, never silently dropped. */
   invalidRules: Array<{ id: string; error: string }>
 }
@@ -386,6 +391,15 @@ export function targetForPath(path: string): RedactionTarget | null {
  * seal()
  * ------------------------------------------------------------------ */
 
+/** Where the harvest writes reference crops (`FILE_PATHS.crops`), and the only binary seal() lets through. */
+export const REFERENCE_CROP_PATH = /^input_crops\/\d{6}\.png$/
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+/** A reference crop: a PNG (by its signature, not its name alone) at an `input_crops/NNNNNN.png` path. */
+export function isReferenceCrop(path: string, contents: Uint8Array): boolean {
+  return REFERENCE_CROP_PATH.test(path) && contents.length > PNG_MAGIC.length && PNG_MAGIC.every((b, i) => contents[i] === b)
+}
+
 /**
  * The only way to produce a `SealedSidecar`.
  *
@@ -396,8 +410,12 @@ export function targetForPath(path: string): RedactionTarget | null {
  *
  * Throws on binary file contents rather than passing them through unscanned: a
  * silent pass-through is exactly the quiet failure this module exists to
- * prevent. The state layer is all text in M1a; a pixel export will need a
- * deliberate decision here, not an accident.
+ * prevent. The one deliberate exception is the reference crop
+ * (`isReferenceCrop`): a PNG of a pressed element, which Tier B's text scan
+ * can't read. Its FR-SEC.2 guarantee is enforced where the pixels are chosen
+ * (the page probe's `cropBox` refuses any box with a secret in or over it),
+ * and every crop passed through is listed in `report.binaryPassed`. Any other
+ * binary still throws.
  */
 export function seal(
   draft: SidecarDraft,
@@ -413,7 +431,13 @@ export function seal(
   // Files first, so the sidecar's `redactions[]` can name every layer touched.
   const sealedFiles: RevisionFile[] = []
   let bytesScanned = 0
+  const binaryPassed: string[] = []
   for (const file of files) {
+    if (typeof file.contents !== 'string' && isReferenceCrop(file.path, file.contents)) {
+      sealedFiles.push({ path: file.path, contents: file.contents })
+      binaryPassed.push(file.path)
+      continue
+    }
     if (typeof file.contents !== 'string') {
       throw new Error(
         `seal(): ${file.path} has binary contents. Tier B can only scan text, and passing ` +
@@ -477,8 +501,9 @@ export function seal(
     report: {
       hits,
       tierAFailures,
-      filesScanned: files.length,
+      filesScanned: files.length - binaryPassed.length,
       bytesScanned,
+      binaryPassed,
       invalidRules
     }
   }

@@ -651,3 +651,34 @@ describe('intentOf: the intent export_flow writes on each recorded step (AI1)', 
     )
   })
 })
+
+describe('sidecar 1.2 input events (recorded boxes and reference crops, roadmap AI1)', () => {
+  it('turns a recorded click box into the step bbox and still parses an event that names a crop', () => {
+    const { flow } = flowFromRecording(
+      [
+        {
+          t_ms: 5,
+          type: 'click',
+          coordinates: { x: 80, y: 36 },
+          target: {
+            role: 'button',
+            accessible_name: 'Save changes',
+            text: null,
+            bounds: [20, 20, 120, 32],
+            selectors: [{ strategy: 'id', value: '#save', stability: 0.9 }],
+            image: 'input_crops/000000.png'
+          },
+          value_redacted: false
+        }
+      ],
+      OPTIONS
+    )
+    expect(flow.steps, 'one click step with the box').toHaveLength(1)
+    expect(flow.steps[0], 'bbox from bounds; the crop is a revision file, not a flow asset, until the export writes it next to the flow').toMatchObject({
+      action: 'click',
+      target: { selectors: [{ id: 'save' }], bbox: [20, 20, 120, 32] }
+    })
+    expect((flow.steps[0] as { target: Record<string, unknown> }).target).not.toHaveProperty('image')
+    expect(parseFlow(stringifyFlow(flow)).ok, 'the exported flow is valid').toBe(true)
+  })
+})

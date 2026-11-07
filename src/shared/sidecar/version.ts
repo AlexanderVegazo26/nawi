@@ -13,9 +13,10 @@
 
 /**
  * The version this build writes. Minor history: 1.1 adds the `text` selector
- * strategy (visible-text candidates, roadmap AI1).
+ * strategy (visible-text candidates, roadmap AI1); 1.2 adds the input
+ * target's `image` (a reference crop) and fills its `bounds`.
  */
-export const SCHEMA_VERSION = '1.1'
+export const SCHEMA_VERSION = '1.2'
 
 export interface SemVer {
   major: number

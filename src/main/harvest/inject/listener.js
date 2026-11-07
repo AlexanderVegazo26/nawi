@@ -65,10 +65,118 @@
     emit(described)
   }
 
+  /**
+   * Reference crops (roadmap AI1): on a primary-button press the element's box
+   * goes to the main side, which screenshots the viewport right away, so the
+   * crop shows the control as it looked before the click acted. The click that
+   * follows on the same element carries the shot's id; a click without a
+   * press (keyboard activation) or on another element has none. The probe
+   * decides whether a crop is allowed at all (FR-SEC.2, see `cropBox`).
+   * Ids are a per-document random token plus a counter: a reload starts
+   * counting again, and its ids must not meet the last page's.
+   */
+  var shotDoc = (function () {
+    var out = ''
+    try {
+      var bytes = new Uint8Array(8)
+      crypto.getRandomValues(bytes)
+      for (var i = 0; i < bytes.length; i++) out += (bytes[i] + 256).toString(16).slice(1)
+    } catch (e) {
+      out = (Math.random().toString(36).slice(2) + Date.now().toString(36)).slice(0, 24)
+    }
+    return out
+  })()
+  var shotSeq = 0
+  var pendingShot = null
+  /** The last few shots, so the main side can ask after its screenshot whether the page still allows that crop. */
+  var recentShots = []
+
+  /**
+   * True when the shot `id` is one of the last few and the probe still allows
+   * a crop of its element at the same box (within half a pixel): nothing secret
+   * appeared over it and it didn't move while the screenshot was taken.
+   */
+  window.__nawiListener.recheck = function (id) {
+    for (var i = 0; i < recentShots.length; i++) {
+      var shot = recentShots[i]
+      if (shot.id !== id) continue
+      var probe = window.__nawiProbe
+      if (!probe || typeof probe.cropBox !== 'function') return false
+      var box = null
+      try {
+        box = probe.cropBox(shot.target)
+      } catch (e) {
+        return false
+      }
+      if (!box) return false
+      for (var k = 0; k < 4; k++) if (Math.abs(box[k] - shot.box[k]) > 0.5) return false
+      return true
+    }
+    return false
+  }
+
+  document.addEventListener(
+    'pointerdown',
+    function (e) {
+      pendingShot = null
+      if (e.button !== 0 || e.isPrimary === false) return
+      var probe = window.__nawiProbe
+      if (!probe || typeof probe.cropBox !== 'function' || !e.target || e.target.nodeType !== 1) return
+      var box = null
+      try {
+        box = probe.cropBox(e.target)
+      } catch (err) {
+        box = null
+      }
+      if (!box) return
+      shotSeq += 1
+      pendingShot = { id: shotDoc + ':' + shotSeq, target: e.target, box: box }
+      recentShots.push(pendingShot)
+      if (recentShots.length > 8) recentShots.shift()
+      emit({
+        kind: 'shot',
+        id: pendingShot.id,
+        box: box,
+        viewport: [window.innerWidth, window.innerHeight],
+        at: performance.timeOrigin + performance.now()
+      })
+    },
+    true
+  )
+
+  // The click a press produces is dispatched in the same task as its release.
+  // A press that ends without one (dragged off, released outside, cancelled)
+  // must not lend its shot to a later click, e.g. a keyboard activation.
+  document.addEventListener(
+    'pointerup',
+    function () {
+      var shot = pendingShot
+      if (!shot) return
+      setTimeout(function () {
+        if (pendingShot === shot) pendingShot = null
+      }, 0)
+    },
+    true
+  )
+  document.addEventListener(
+    'pointercancel',
+    function () {
+      pendingShot = null
+    },
+    true
+  )
+
   document.addEventListener(
     'click',
     function (e) {
-      send(e.target, 'click', { x: e.clientX, y: e.clientY })
+      var described = describe(e.target, 'click')
+      var shot = pendingShot
+      pendingShot = null
+      if (!described) return
+      described.at = performance.timeOrigin + performance.now()
+      described.coordinates = { x: e.clientX, y: e.clientY }
+      if (shot && shot.target === e.target) described.shot = shot.id
+      emit(described)
     },
     true
   )

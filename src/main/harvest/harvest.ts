@@ -67,6 +67,7 @@ import { HarBuilder } from './har'
 import { RingBuffer } from './ring'
 import { buildAxTree, filterSecretsFromSnapshot, type CapturedSnapshot } from './snapshot'
 import listenerSource from './inject/listener.js?raw'
+import { cropFromShot, parseShotRequest } from './crop'
 
 /** Just enough of `CdpClient` to keep this module testable without a socket. */
 export interface HarvestClient {
@@ -107,8 +108,22 @@ export const FILE_PATHS = Object.freeze({
   ax: 'ax/tree.json',
   har: 'network.har',
   console: 'console.ndjson',
-  input: 'input_events.ndjson'
+  input: 'input_events.ndjson',
+  /** Reference crops, `input_crops/<n>.png`, one per click that got one (roadmap AI1). */
+  crops: 'input_crops'
 })
+
+/**
+ * Bounds on reference crops kept for one recording. Past either, the oldest
+ * crop is dropped (its click keeps its event, without `image`), so a page
+ * clicked thousands of times can't grow memory without limit.
+ */
+export const MAX_CROPS = 300
+export const MAX_CROP_BYTES = 32 * 1024 * 1024
+/** A viewport screenshot that takes longer than this gives no crop (a hidden or minimised page can stall it). */
+export const SHOT_TIMEOUT_MS = 2_000
+/** A shot id as the listener makes it: a per-document random token and a counter. */
+const SHOT_ID = /^[a-z0-9]{8,32}:[0-9]{1,9}$/
 
 /**
  * FR-SEC.2's acceptance names `{type: "input", …}`, but DC-4's `InputEventType`
@@ -190,6 +205,14 @@ function toSelectorCandidates(descriptors: unknown): SelectorCandidate[] {
   return out
 }
 
+/** The probe's `[x, y, width, height]` box (CSS px, page-supplied), or null when it is missing or implausible. */
+function toBounds(raw: unknown): InputTarget['bounds'] {
+  if (!Array.isArray(raw) || raw.length !== 4) return null
+  if (!raw.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1_000_000)) return null
+  const [x, y, w, h] = raw as number[]
+  return w >= 0 && h >= 0 ? [x, y, w, h] : null
+}
+
 interface RawConsole {
   /** Browser epoch ms. */
   at: number
@@ -234,6 +257,12 @@ export class Harvester {
   private domCaptureTMs = 0
   private axCaptureTMs = 0
   private stopped = false
+  /** Reference crops by the page's shot id, oldest first; null = the shot gave no crop. */
+  private readonly crops = new Map<string, Promise<Uint8Array | null>>()
+  /** Sizes of the crops in `crops` that have arrived, for MAX_CROP_BYTES. */
+  private readonly cropSizes = new Map<string, number>()
+  private cropBytes = 0
+  private shotInFlight = false
   /** Per-session, unguessable before injection. See `randomToken`. */
   readonly bindingName = `__nawiEmit_${randomToken()}`
   readonly bindingNonce = randomToken()
@@ -348,6 +377,10 @@ export class Harvester {
         // `randomToken` for what this does and does not prove.
         if (parsed.nonce !== this.bindingNonce) return
         delete parsed.nonce
+        if (parsed.kind === 'shot') {
+          this.takeShot(parsed)
+          return
+        }
         const at = parsed.at
         if (typeof at !== 'number') return
         this.input.push(clock.nowTMs(), { at, payload: parsed })
@@ -405,6 +438,74 @@ export class Harvester {
         // missing body, never as a thrown harvest.
       })
     this.bodyFetches.push(promise)
+  }
+
+  /**
+   * A press on an element the probe allowed a crop of: screenshot the viewport
+   * now (lossless) and keep the element's box from it. One shot at a time; a
+   * press while one is still being taken gets none, as does one that fails or
+   * takes longer than SHOT_TIMEOUT_MS. Never throws (it runs on the CDP read
+   * loop).
+   */
+  private takeShot(message: Record<string, unknown>): void {
+    const id = message.id
+    if (this.stopped || typeof id !== 'string' || !SHOT_ID.test(id)) return
+    // An id seen before (a page with a seeded RNG and a frozen clock, reloaded) names this press now: the older crop
+    // must not reach its click, also when this press gets no shot of its own.
+    this.dropCrop(id)
+    if (this.shotInFlight) return
+    const request = parseShotRequest(message.box, message.viewport)
+    if (!request) return
+    const { client, sessionId } = this.options
+    this.shotInFlight = true
+    let late = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<null>(
+      (done) =>
+        (timer = setTimeout(() => {
+          late = true
+          done(null)
+        }, SHOT_TIMEOUT_MS))
+    )
+    const shot = (async (): Promise<Uint8Array | null> => {
+      const got = await client.send<{ data?: unknown }>('Page.captureScreenshot', { format: 'png' }, sessionId)
+      if (late || typeof got?.data !== 'string') return null
+      // FR-SEC.2: the page may have changed between the press and the shot (a handler revealed a secret over the
+      // box, or moved it). Only a crop the probe still allows at the same box is kept.
+      const still = await client.send<{ result?: { value?: unknown } }>(
+        'Runtime.evaluate',
+        { expression: `(() => { const l = window.__nawiListener; return !!(l && typeof l.recheck === 'function' && l.recheck(${JSON.stringify(id)})) })()`, returnByValue: true },
+        sessionId
+      )
+      if (late || still?.result?.value !== true) return null
+      return cropFromShot(Buffer.from(got.data, 'base64'), request.viewport, request.box)
+    })().catch(() => null)
+    const crop = Promise.race([shot, timeout]).finally(() => {
+      clearTimeout(timer)
+      this.shotInFlight = false
+    })
+    this.crops.set(id, crop)
+    this.trimCrops()
+    void crop.then((bytes) => {
+      if (!bytes || this.crops.get(id) !== crop) return
+      this.cropSizes.set(id, bytes.length)
+      this.cropBytes += bytes.length
+      this.trimCrops()
+    })
+  }
+
+  /** Drops the oldest crops beyond MAX_CROPS / MAX_CROP_BYTES. */
+  private trimCrops(): void {
+    for (const id of this.crops.keys()) {
+      if (this.crops.size <= MAX_CROPS && this.cropBytes <= MAX_CROP_BYTES) return
+      this.dropCrop(id)
+    }
+  }
+
+  private dropCrop(id: string): void {
+    this.crops.delete(id)
+    this.cropBytes -= this.cropSizes.get(id) ?? 0
+    this.cropSizes.delete(id)
   }
 
   /** FR-STA.3: stop rolling the preamble window; from here everything is kept. */
@@ -475,6 +576,8 @@ export class Harvester {
     for (const off of this.unsubscribes) off()
     this.unsubscribes.length = 0
     await Promise.allSettled(this.bodyFetches)
+    const crops = new Map<string, Uint8Array | null>()
+    for (const [id, crop] of this.crops) crops.set(id, await crop)
 
     const { draft, clock } = this.options
     const files: RevisionFile[] = []
@@ -523,13 +626,23 @@ export class Harvester {
 
     // ---- FR-STA.4 input events -------------------------------------------
     const inputLines: string[] = []
+    let cropFiles = 0
     for (const entry of this.input.values()) {
       const tMs = clock.browserToTMs(entry.at)
       if (tMs === null) {
         dropped.input++
         continue
       }
-      inputLines.push(JSON.stringify(this.toInputEvent(tMs, entry.payload)))
+      const event = this.toInputEvent(tMs, entry.payload)
+      const shot = entry.payload.shot
+      const crop = event.type === 'click' && event.target && typeof shot === 'string' ? crops.get(shot) : undefined
+      if (crop && event.target) {
+        const path = `${FILE_PATHS.crops}/${String(cropFiles).padStart(6, '0')}.png`
+        cropFiles++
+        files.push({ path, contents: crop })
+        event.target.image = path
+      }
+      inputLines.push(JSON.stringify(event))
     }
     files.push({
       path: FILE_PATHS.input,
@@ -582,7 +695,7 @@ export class Harvester {
             role,
             accessible_name: name,
             text: redacted ? null : typeof payload.value === 'string' ? payload.value : null,
-            bounds: null,
+            bounds: toBounds(payload.bounds),
             selectors,
             ...(inputType !== undefined ? { input_type: inputType } : {})
           }

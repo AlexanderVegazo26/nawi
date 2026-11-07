@@ -135,4 +135,26 @@ describe('carrying a state layer into a new revision (DC-6)', () => {
     }
     expect(await carryForwardFiles(dir, inline)).toEqual([])
   })
+
+  it('carries the reference crops input_events.ndjson names (roadmap AI1), and nothing else from their folder', async () => {
+    await fs.mkdir(join(dir, 'input_crops'))
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7])
+    await fs.writeFile(join(dir, 'input_crops', '000000.png'), png)
+    await fs.writeFile(join(dir, 'input_crops', '000001.png'), png)
+    await fs.writeFile(join(dir, 'input_crops', 'notes.txt'), 'x')
+    await fs.symlink(join(dir, 'console.ndjson'), join(dir, 'input_crops', '000002.png'))
+    const files = await carryForwardFiles(dir, harvested())
+    const crops = files.filter((f) => f.path.startsWith('input_crops/'))
+    expect(crops.map((f) => f.path), 'crop files carried').toEqual(['input_crops/000000.png', 'input_crops/000001.png'])
+    expect(Buffer.from(crops[0].contents as Uint8Array), 'byte-exact').toEqual(png)
+  })
+
+  it('carries no crops when the input events are not a side file', async () => {
+    await fs.mkdir(join(dir, 'input_crops'))
+    await fs.writeFile(join(dir, 'input_crops', '000000.png'), 'x')
+    const sidecar = harvested()
+    sidecar.state_layer.input_events = null
+    const files = await carryForwardFiles(dir, sidecar)
+    expect(files.filter((f) => f.path.startsWith('input_crops/'))).toEqual([])
+  })
 })

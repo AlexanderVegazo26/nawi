@@ -250,4 +250,24 @@ describe('seal() — binary contents', () => {
     const file: RevisionFile = { path: 'dom/snapshot.json', contents: new Uint8Array([1, 2, 3]) }
     expect(() => seal(draftWithAllSources(), [file])).toThrow(/binary contents/)
   })
+
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])
+
+  it('passes a reference crop (a PNG at input_crops/NNNNNN.png) through byte-exact and lists it in the report', () => {
+    const crop: RevisionFile = { path: 'input_crops/000003.png', contents: PNG }
+    const text: RevisionFile = { path: 'console.ndjson', contents: '{"message":"hi"}\n' }
+    const sealed = seal(draftWithAllSources(), [crop, text])
+    expect(sealed.files.find((f) => f.path === crop.path)?.contents, 'crop bytes unchanged').toBe(PNG)
+    expect(sealed.report.binaryPassed, 'every unscanned file is named').toEqual(['input_crops/000003.png'])
+    expect(sealed.report.filesScanned, 'only the text file was scanned').toBe(1)
+  })
+
+  it.each([
+    ['a PNG anywhere else', 'dom/crop.png', PNG],
+    ['a crop path holding something that is not a PNG', 'input_crops/000000.png', new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9])],
+    ['a crop path that climbs out', 'input_crops/../x.png', PNG],
+    ['a crop name that is not six digits', 'input_crops/1.png', PNG]
+  ])('still throws on %s', (_label, path, contents) => {
+    expect(() => seal(draftWithAllSources(), [{ path, contents }]), path).toThrow(/binary contents/)
+  })
 })

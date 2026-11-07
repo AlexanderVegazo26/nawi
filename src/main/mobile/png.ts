@@ -1,4 +1,4 @@
-import { crc32, inflateSync } from 'node:zlib'
+import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 /**
  * A PNG decoder for the screenshots a device returns (`screencap -p`: 8-bit RGBA, not interlaced), so the screen
@@ -181,4 +181,42 @@ export function decodePng(bytes: Uint8Array): PngResult {
     }
   }
   return { ok: true, image: { width, height, rgb } }
+}
+
+function pngChunk(type: string, body: Uint8Array): Buffer {
+  const head = Buffer.alloc(8)
+  head.writeUInt32BE(body.length, 0)
+  head.write(type, 4, 'latin1')
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), body])), 0)
+  return Buffer.concat([head, body, crc])
+}
+
+/**
+ * An 8-bit RGB PNG of `image` (lossless, every row with the Sub filter, which suits flat UI pixels), e.g. a
+ * reference crop the replayer later reads back with decodePng.
+ */
+export function encodePng(image: RgbImage): Uint8Array {
+  const { width, height, rgb } = image
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || rgb.length !== width * height * 3) {
+    throw new RangeError(`encodePng: ${width}x${height} image with ${rgb.length} bytes of RGB`)
+  }
+  const rowBytes = width * 3
+  const raw = Buffer.alloc(height * (rowBytes + 1))
+  for (let y = 0; y < height; y++) {
+    const o = y * (rowBytes + 1)
+    const row = y * rowBytes
+    raw[o] = 1
+    for (let i = 0; i < rowBytes; i++) raw[o + 1 + i] = (rgb[row + i] - (i >= 3 ? rgb[row + i - 3] : 0)) & 0xff
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header.set([8, 2, 0, 0, 0], 8)
+  return Buffer.concat([
+    Buffer.from(PNG_SIGNATURE),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', new Uint8Array())
+  ])
 }

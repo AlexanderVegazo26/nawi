@@ -139,6 +139,13 @@ export interface InputTarget {
    * written before it existed.
    */
   input_type?: string
+  /**
+   * Schema 1.2: a reference crop of the element as it looked when pressed
+   * (PNG, one px per CSS px), relative to the revision directory
+   * (`input_crops/000000.png`). Clicks only, and only when the crop is free of
+   * secrets (FR-SEC.2); the visual-anchor locator layer (roadmap AI1).
+   */
+  image?: string
 }
 
 export type InputEventType = 'click' | 'keydown' | 'scroll' | 'navigate' | 'resize'

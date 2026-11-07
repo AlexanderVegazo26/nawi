@@ -78,7 +78,7 @@ describe('draft → sidecar', () => {
 
     expect(parseSidecarStrict(sidecar).ok).toBe(true)
     expect(sidecar.supersedes).toBe('v1')
-    expect(sidecar.schema_version).toBe('1.1')
+    expect(sidecar.schema_version).toBe('1.2')
 
     // A later mutation of the draft must not reach a sidecar already handed off.
     d.state_layer.agent_trace.push({

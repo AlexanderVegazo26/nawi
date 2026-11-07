@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reference crops</title>
+<style>
+  html, body { margin: 0; background: #f4f4f4; font: 14px/1.2 sans-serif; }
+  button { position: absolute; width: 120px; height: 32px; border: 0; border-radius: 4px; color: #fff; font: bold 14px sans-serif; }
+  #save { left: 20px; top: 20px; background: #1d4ed8; }
+  #pay { left: 160px; top: 20px; background: #047857; text-align: right; padding-right: 8px; }
+  #pw { position: absolute; left: 300px; top: 20px; width: 140px; height: 28px; }
+  #covered { left: 20px; top: 80px; background: #9333ea; }
+  #over-pw { position: absolute; left: 100px; top: 84px; width: 80px; height: 24px; }
+  #by-frame { left: 20px; top: 140px; background: #b45309; }
+  #sandboxed { position: absolute; left: 110px; top: 136px; width: 120px; height: 40px; border: 0; }
+  #region { position: absolute; left: 20px; top: 200px; width: 700px; height: 300px; background: #e5e7eb; }
+  #framed { position: absolute; left: 500px; top: 80px; width: 200px; height: 80px; border: 0; }
+  #reveal { left: 460px; top: 20px; background: #be123c; }
+  #revealed { position: absolute; left: 470px; top: 24px; width: 60px; height: 20px; background: #fff; color: #000; display: none; }
+  #near-child { left: 300px; top: 140px; background: #0f766e; }
+  #secret-host { position: absolute; left: 600px; top: 540px; width: 10px; height: 10px; }
+  #secret-child { position: absolute; left: -280px; top: -396px; width: 60px; height: 20px; background: #fff; color: #000; }
+  #kbd { left: 600px; top: 20px; background: #4338ca; }
+</style>
+</head>
+<body>
+  <button id="save">Save changes</button>
+  <button id="pay">Pay <span data-nawi-secret>4242</span></button>
+  <input id="pw" type="password" aria-label="Password">
+  <button id="covered">Covered</button>
+  <input id="over-pw" type="password" aria-label="PIN">
+  <button id="by-frame">By frame</button>
+  <iframe id="sandboxed" sandbox srcdoc="<p>other origin</p>"></iframe>
+  <div id="region" role="region" aria-label="Big area"></div>
+  <iframe id="framed" srcdoc="<button id='inner' style='width:120px;height:30px'>Inner</button>"></iframe>
+  <button id="reveal" onpointerdown="document.getElementById('revealed').style.display = 'block'">Reveal</button>
+  <div id="revealed" data-nawi-secret>code</div>
+  <button id="near-child">Near child</button>
+  <div id="secret-host" data-nawi-secret><span id="secret-child">key</span></div>
+  <button id="kbd">Keyboard</button>
+</body>
+</html>

@@ -512,13 +512,128 @@
    * constructed, so there is no moment at which the secret exists inside a
    * message object.
    */
+  /**
+   * Reference crops (roadmap AI1 visual anchor). Sides outside these bounds
+   * (CSS px) get no crop: a smaller one can't tell controls apart (the
+   * replayer's MIN_ANCHOR_SIDE), a larger one is a region, not a control.
+   */
+  var CROP_MIN_SIDE = 8
+  var CROP_MAX_SIDE = 640
+  /** Elements walked looking for a secret under the crop; a larger page gets no crop (fail closed). */
+  var CROP_SCAN_MAX_ELEMENTS = 20000
+
+  function round1(n) {
+    return Math.round(n * 10) / 10
+  }
+
+  function isTopFrame() {
+    try {
+      return window.top === window
+    } catch (e) {
+      return false
+    }
+  }
+
+  /**
+   * The element's border box in the top viewport, CSS px `[x, y, width, height]`
+   * (the recorded `bounds`, a flow step's `bbox`), or null: no layout box, or
+   * inside a frame, whose own viewport is not the one a replay looks at.
+   */
+  function boxOf(el) {
+    if (!el || el.nodeType !== 1 || !el.isConnected || el.ownerDocument !== document || !isTopFrame()) return null
+    var r = el.getBoundingClientRect()
+    if (!(r.width > 0 && r.height > 0 && isFinite(r.left) && isFinite(r.top))) return null
+    return [round1(r.left), round1(r.top), round1(r.width), round1(r.height)]
+  }
+
+  /** Where `d` sits in the top viewport: its own rect, or the outermost frame element's when it lives in a frame; null if unknown. */
+  function topRect(d) {
+    var node = d
+    for (var i = 0; i < 20 && node && node.ownerDocument !== document; i++) {
+      var frame = null
+      try {
+        var view = node.ownerDocument && node.ownerDocument.defaultView
+        frame = view ? view.frameElement : null
+      } catch (e) {
+        frame = null
+      }
+      node = frame
+    }
+    return node && node.ownerDocument === document ? node.getBoundingClientRect() : null
+  }
+
+  function overlaps(box, r) {
+    return r.width > 0 && r.height > 0 && r.left < box[0] + box[2] && r.right > box[0] && r.top < box[1] + box[3] && r.bottom > box[1]
+  }
+
+  /**
+   * The box a reference crop of `el` may be cut from, or null. The crop is
+   * pixels of the viewport, so FR-SEC.2 is enforced on what is drawn there,
+   * not only on `el`: no crop of a secret or of anything holding one, and none
+   * when any element whose box overlaps it is secret (a secret field, or
+   * anything inside a secret-marked subtree, marked yet or not), or is a
+   * frame whose content can't be read (cross-origin, `<object>`, `<embed>`).
+   * A secret whose place can't be worked out, or a page too large to check,
+   * also means no crop. Only fully visible boxes within the size bounds
+   * qualify. The harvester asks again after its screenshot (`cropBox` with
+   * the same answer) and drops the crop if the page changed under it.
+   */
+  function cropBox(el) {
+    var box = boxOf(el)
+    if (!box) return null
+    if (box[2] < CROP_MIN_SIDE || box[3] < CROP_MIN_SIDE || box[2] > CROP_MAX_SIDE || box[3] > CROP_MAX_SIDE) return null
+    if (box[0] < 0 || box[1] < 0 || box[0] + box[2] > window.innerWidth || box[1] + box[3] > window.innerHeight) return null
+    if (isSecret(el) || containsSecret(el)) return null
+    var seen = 0
+    var blocked = false
+    eachElement(
+      document,
+      function (d) {
+        if (blocked) return
+        if (++seen > CROP_SCAN_MAX_ELEMENTS) {
+          blocked = true
+          return
+        }
+        var r = topRect(d)
+        if (r === null) {
+          // Inside a frame whose place in the top viewport is unknown.
+          if (d.hasAttribute(MARKER) || isSecretElement(d)) blocked = true
+          return
+        }
+        if (!overlaps(box, r)) return
+        if (isSecret(d)) {
+          blocked = true
+          return
+        }
+        var tag = d.tagName
+        // Plugin content is never walked.
+        if (tag === 'OBJECT' || tag === 'EMBED') {
+          blocked = true
+          return
+        }
+        if (tag !== 'IFRAME' && tag !== 'FRAME') return
+        // Same-origin frame documents are walked by eachElement itself; any other frame is unknown pixels.
+        var doc = null
+        try {
+          doc = d.contentDocument
+        } catch (e) {
+          doc = null
+        }
+        if (!doc) blocked = true
+      },
+      0
+    )
+    return blocked ? null : box
+  }
+
   function describeInput(el, type) {
     var secret = isSecret(el)
     var event = {
       type: type || 'input',
       target_role: roleOf(el) || null,
       target_name: secret ? null : accessibleName(el) || null,
-      selectors: describeSelectors(el)
+      selectors: describeSelectors(el),
+      bounds: boxOf(el)
     }
     // The browser-normalized type (`el.type`: an unknown attribute reads as
     // "text"), so a consumer can tell a file picker or a slider from a text
@@ -544,6 +659,8 @@
     /** The `{ text }` locator rule, shared with the replayer. */
     textMatches: textMatches,
     describeInput: describeInput,
+    /** A reference crop's box for an element about to be clicked, or null (see cropBox). */
+    cropBox: cropBox,
     isSecret: isSecret,
     isSecretElement: isSecretElement,
     markSecrets: markSecrets,

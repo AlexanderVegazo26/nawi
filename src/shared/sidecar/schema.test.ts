@@ -70,6 +70,29 @@ describe('DC-4 — schema round-trip', () => {
     expect(SidecarLoose.safeParse(withTarget({ input_type: 'file' })).success).toBe(true)
     expect(SidecarLoose.safeParse(withTarget({ input_type: 3 })).success, 'input_type must be a string').toBe(false)
   })
+
+  it('accepts an inline input event target with a reference crop path and bounds (1.2), and rejects a non-string image', () => {
+    const sidecar = validSidecar()
+    const withTarget = (extra: Record<string, unknown>) => ({
+      ...sidecar,
+      state_layer: {
+        ...sidecar.state_layer,
+        input_events: [
+          {
+            t_ms: 1,
+            type: 'click',
+            coordinates: { x: 20, y: 15 },
+            target: { role: 'button', accessible_name: 'Save', text: null, bounds: [10, 5, 80.5, 24], selectors: [], ...extra },
+            value_redacted: false
+          }
+        ]
+      }
+    })
+    expect(SidecarLoose.safeParse(withTarget({})).success, 'a click without a crop').toBe(true)
+    expect(SidecarLoose.safeParse(withTarget({ image: 'input_crops/000000.png' })).success, 'a click with a crop').toBe(true)
+    expect(SidecarLoose.safeParse(withTarget({ image: 7 })).success, 'image must be a string').toBe(false)
+    expect(SidecarLoose.safeParse(withTarget({ image: '' })).success, 'image must not be empty').toBe(false)
+  })
 })
 
 describe('DC-6 — unknown fields are preserved, not stripped', () => {
@@ -173,10 +196,11 @@ describe('DC-6 — semver compatibility', () => {
     expect(isReadable('2.0')).toBe(false)
   })
 
-  it('this build writes 1.1 (the text selector strategy) and still reads 1.0 files as fully understood', () => {
-    expect(SCHEMA_VERSION).toBe('1.1')
-    expect(validSidecar().schema_version).toBe('1.1')
-    expect(checkCompatibility('1.0').status, 'a 1.0 sidecar is a subset of 1.1').toBe('compatible')
-    expect(checkCompatibility('1.1', '1.0').status, 'a 1.0 reader sees a 1.1 file as newer, not as its own').toBe('forward_compatible')
+  it('this build writes 1.2 (input target reference crops) and still reads 1.0 and 1.1 files as fully understood', () => {
+    expect(SCHEMA_VERSION).toBe('1.2')
+    expect(validSidecar().schema_version).toBe('1.2')
+    expect(checkCompatibility('1.0').status, 'a 1.0 sidecar is a subset of 1.2').toBe('compatible')
+    expect(checkCompatibility('1.1').status, 'a 1.1 sidecar is a subset of 1.2').toBe('compatible')
+    expect(checkCompatibility('1.2', '1.1').status, 'a 1.1 reader sees a 1.2 file as newer, not as its own').toBe('forward_compatible')
   })
 })

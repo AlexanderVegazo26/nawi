@@ -73,5 +73,35 @@ export async function carryForwardFiles(
     })
     out.push({ path, contents: new Uint8Array(contents) })
   }
+  out.push(...(await carryCrops(currentRevisionDir, sidecar)))
+  return out
+}
+
+/** Where the harvest writes reference crops (harvest `FILE_PATHS.crops`). */
+const CROPS_DIR = 'input_crops'
+const CROP_NAME = /^\d{6}\.png$/
+
+/**
+ * Reference crops (roadmap AI1) are named from inside input_events.ndjson
+ * (`target.image`), not from the sidecar, so they travel with that file: every
+ * `input_crops/NNNNNN.png` regular file of the revision is copied when its
+ * input events are. A revision without crops has no such directory. Symlinks
+ * and anything else in the directory are left behind.
+ */
+async function carryCrops(currentRevisionDir: string, sidecar: SidecarRead): Promise<RevisionFile[]> {
+  const events = sidecar.state_layer.input_events
+  if (events === null || !isNdjsonRef(events)) return []
+  const entries = await fs.readdir(join(currentRevisionDir, CROPS_DIR), { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return []
+    throw new Error(`cannot carry ${CROPS_DIR}/ forward into a new revision: ${err.message}`)
+  })
+  const out: RevisionFile[] = []
+  for (const entry of entries.filter((e) => e.isFile() && CROP_NAME.test(e.name)).sort((a, b) => a.name.localeCompare(b.name))) {
+    const path = `${CROPS_DIR}/${entry.name}`
+    const contents = await fs.readFile(join(currentRevisionDir, path)).catch((err: unknown) => {
+      throw new Error(`cannot carry ${path} forward into a new revision: ${err instanceof Error ? err.message : String(err)}`)
+    })
+    out.push({ path, contents: new Uint8Array(contents) })
+  }
   return out
 }
