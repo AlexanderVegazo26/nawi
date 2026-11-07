@@ -24,6 +24,7 @@ import { locatorLayer, type Flow, type FlowStep, type LocatorLayer, type Selecto
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
 import { EvidenceCollector, type StepEvidence } from './evidence'
 import { decodePng, type RgbImage } from '../mobile/png'
+import { anchorCandidates } from './anchor-candidates'
 import { anchorMissText, findAnchor, scaleImage, type AnchorResult } from './visual-anchor'
 
 /**
@@ -96,7 +97,19 @@ export interface StepRun extends StepEvidence {
    * be updated before this locator breaks too. An earlier locator that only
    * matched several elements does not count (see `isFallback`).
    */
-  matched?: { index: number; selector: Selector | AnchorLocator; layer: MatchedLayer; fallback: boolean; score?: number }
+  matched?: {
+    index: number
+    selector: Selector | AnchorLocator
+    layer: MatchedLayer
+    fallback: boolean
+    score?: number
+    /**
+     * Visual matches only (roadmap F6c): locators of the element the crop
+     * found, best first, each of which matched exactly that element when it
+     * was found (anchorCandidates). A heal proposal puts them in front.
+     */
+    candidates?: Selector[]
+  }
   /** The step's `intent` from the flow (what it is for), scrubbed. */
   intent?: string
   /** Locators tried before the match (or all of them, when nothing matched). */
@@ -374,6 +387,9 @@ interface AnchorTry {
   result: AnchorResult
   /** The crop was found, but the page had no element at its centre. */
   noElement?: boolean
+  /** The anchor pin `candidates` describes, and that element's locators (anchorCandidates). */
+  candidatesPin?: number
+  candidates?: Selector[]
 }
 
 /** The locator at `index` in a step's layers: a flow locator, or the visual anchor just past them. */
@@ -594,6 +610,8 @@ class StepRunner {
   private visual: AnchorTry | undefined
   /** Set once the viewport could not be captured for the anchor layer in time: later steps don't wait on it again. */
   private anchorsGaveUp = false
+  /** The current step already asked the page for an anchored element's candidates (it may reuse that answer). */
+  private describedThisStep = false
 
   /** Scrubs the run's secret values out of text (for step intents). */
   readonly redact = (text: string): string => this.interp.redact(text)
@@ -615,6 +633,7 @@ class StepRunner {
     if (step.intent !== undefined) record.intent = this.interp.redact(step.intent)
     this.dialogs = []
     this.visual = undefined
+    this.describedThisStep = false
     // `wait` with a target and `ms`: ms is how long to wait for it.
     const waitMs = step.action === 'wait' && step.target && step.ms !== undefined ? step.ms : undefined
     const timeoutMs = step.timeout_ms ?? waitMs ?? this.defaultTimeoutMs
@@ -641,6 +660,7 @@ class StepRunner {
         record.matched = { index: answer.index, selector, layer: locatorLayer(selector), fallback: isFallback(answer) }
       } else if (answer.found && answer.index === selectors.length && image !== undefined && visual?.result.found === 1) {
         record.matched = { index: answer.index, selector: { image }, layer: 'visual', fallback: isFallback(answer), score: visual.result.score }
+        if (visual.candidates && visual.candidates.length > 0) record.matched.candidates = visual.candidates
       }
       // A crop looked for while the page was still loading is not a miss once a locator matched after all.
       const misses = missesOf(answer, selectors, answer.found && answer.index < selectors.length ? undefined : visual)
@@ -721,7 +741,21 @@ class StepRunner {
         if (this.visual?.result.found === 1) this.visual.noElement = true
         return own
       }
-      if (this.visual) this.visual.noElement = false
+      if (this.visual) {
+        this.visual.noElement = false
+        const pin = (anchored[selectors.length] as { pin: number }).pin
+        if (this.visual.candidatesPin !== pin) {
+          // Described per pin, before the step acts on the element (a click may navigate away); the page side
+          // reuses its answer while a new pin resolves to the same element. No answer (the document is being
+          // replaced, a timeout) is asked again on the next poll instead of being recorded as "no locators".
+          const raw = await this.session.call('candidates', pin, this.describedThisStep).catch(() => null)
+          this.describedThisStep = true
+          if (Array.isArray(raw)) {
+            this.visual.candidatesPin = pin
+            this.visual.candidates = anchorCandidates(raw, this.redact)
+          }
+        }
+      }
       viaAnchor.locators = anchored
       return viaAnchor
     }

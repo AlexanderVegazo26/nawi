@@ -644,6 +644,13 @@ steps:
       const matched = run.steps[1].matched
       expect(matched, why(run)).toMatchObject({ index: 2, selector: { image: 'save.png' }, layer: 'visual', fallback: true })
       expect(matched?.score, 'the crop matches its own page almost exactly').toBeGreaterThan(0.99)
+      // F6c: the element the crop found, described before the click, as locators a heal can propose.
+      expect(matched?.candidates, 'the button\'s own unique locators, best first (not its inner <span>)').toEqual([
+        { id: 'save' },
+        { role: 'button', name: 'Save' },
+        { css: 'button#save' }
+      ])
+      expect(run.steps[0].matched?.candidates, 'a locator match records no candidates').toBeUndefined()
       expect(run.steps[1].misses).toEqual([
         { index: 0, selector: { id: 'renamed-save' }, found: 0 },
         { index: 1, selector: { css: '.gone' }, found: 0 }

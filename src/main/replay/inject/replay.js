@@ -71,6 +71,26 @@
     return [el]
   }
 
+  /**
+   * The pinned visual-anchor element's own locator candidates, as the recorder
+   * describes an element (probe.describeSelectors: each with its uniqueness,
+   * measured now), so a heal proposal can name the element the crop found
+   * (roadmap F6c). Null when that pin is no longer the pinned element, the
+   * element left the document, or the probe is not installed. `reuse`: the
+   * same step asked before, so an answer for this same element still holds.
+   */
+  var described = null
+
+  function candidates(pin, reuse) {
+    var p = probe()
+    if (!anchorPin || anchorPin.pin !== pin || !anchorPin.el.isConnected) return null
+    if (!p || typeof p.describeSelectors !== 'function') return null
+    // A step re-looks for its crop while the element is not ready (a new pin each time): describing the
+    // same element again would walk the whole document again, inside the step's timeout.
+    if (!reuse || !described || described.el !== anchorPin.el) described = { el: anchorPin.el, list: p.describeSelectors(anchorPin.el) }
+    return described.list
+  }
+
   /** All elements a selector matches, in document order. */
   function matchesFor(selector) {
     if (selector.__anchor !== undefined) return anchorMatches(selector)
@@ -426,6 +446,7 @@
     focus: focus,
     selectOption: selectOption,
     scroll: scroll,
-    box: box
+    box: box,
+    candidates: candidates
   }
 })()

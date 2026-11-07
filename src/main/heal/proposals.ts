@@ -3,9 +3,9 @@ import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { isMap, isSeq, type Document, type YAMLMap, type YAMLSeq } from 'yaml'
+import { isMap, isSeq, stringify, type Document, type YAMLMap, type YAMLSeq } from 'yaml'
 import { formatFlowDocument, parseFlow } from '../../shared/flow/yaml'
-import { locatorLayer, type Flow, type LocatorLayer, type Selector } from '../../shared/flow/schema'
+import { locatorLayer, SelectorSchema, type Flow, type LocatorLayer, type Selector } from '../../shared/flow/schema'
 import { resolveFlowFile } from '../flow-run'
 import { missReason, type RecordedStep, type RunRecord } from '../run-record'
 import { unifiedDiff } from './diff'
@@ -22,10 +22,16 @@ import { unifiedDiff } from './diff'
  * The patch edits the flow file's own YAML nodes by position (comments and
  * `${vars.x}` placeholders stay as written), and only when the file is still
  * the one the run replayed (same sha256): positions in an edited file could
- * point at other locators. Steps it cannot heal from the record alone are
- * listed with the reason: a match only through the reference crop (the run
- * did not record a locator for the element it found) and steps where nothing
- * matched; later slices propose candidates for those.
+ * point at other locators.
+ *
+ * Roadmap F6c: a step that matched only through its reference crop has no
+ * locator of its own to move up, but the run recorded the found element's own
+ * locators (`matched.candidates`, each unique on the page when it was found).
+ * The proposal puts those in front (`added`) and drops the locators that found
+ * nothing; apply_heal's replay then proves they hold. Steps it cannot heal
+ * from the record alone are listed with the reason: a crop-only match without
+ * candidates (an older run, or the element had no unique locator) and steps
+ * where nothing matched; a later slice proposes candidates for those.
  */
 
 export type FlowStatus = 'current' | 'changed' | 'missing' | 'invalid'
@@ -40,12 +46,22 @@ export interface HealProposal {
   step_id: string
   action: RecordedStep['action']
   intent?: string
-  /** The layer the run matched through, which the proposal moves to the front. */
-  layer: LocatorLayer
+  /**
+   * The layer the run matched through: a locator layer the proposal moves to
+   * the front, or `visual` (the reference crop), whose element's own locators
+   * the proposal adds in front (`added`).
+   */
+  layer: LocatorLayer | 'visual'
   /** The step's locators as the flow file has them now, and as the proposal has them. */
   selectors_before: Selector[]
   selectors_after: Selector[]
   dropped: DroppedLocator[]
+  /**
+   * Locators that are not in the flow yet (visual matches only): the found
+   * element's own, measured unique by the run. Not proven to find it again
+   * until a replay does (apply_heal replays before it writes).
+   */
+  added: Selector[]
   /** Why this is believed: what the run saw, from its record. */
   evidence: {
     matched: NonNullable<RecordedStep['matched']>
@@ -101,23 +117,53 @@ function selectorsNode(doc: Document, stepId: string): YAMLSeq | null {
 const hasPlaceholder = (selector: Selector): boolean => Object.values(selector).some((v) => typeof v === 'string' && v.includes('${'))
 
 /**
- * The new order of a step's locators: the matched one first; those that found
- * nothing (or broke) before it gone, except ones with a placeholder, which one
- * run's values cannot condemn: they stay, after the match. Null when the run
- * gives no reason to change the list.
+ * A step's new locator list: an index keeps the flow's locator at that
+ * position, a selector is a new one (F6c's `added`).
  */
-function healedOrder(step: RecordedStep, selectors: Selector[]): { order: number[]; dropped: number[] } | null {
+type Order = Array<number | Selector>
+
+/**
+ * The new order of a step's locators: the matched one first (for a visual
+ * match, the found element's own locators: `candidates`, reusing a flow
+ * locator that is the same one); those that found nothing (or broke) before
+ * it gone, except ones with a placeholder, which one run's values cannot
+ * condemn: they stay, after the match. Null when the run gives no reason to
+ * change the list.
+ */
+function healedOrder(step: RecordedStep, selectors: Selector[]): { order: Order; dropped: number[]; added: Selector[] } | null {
   const matched = step.matched
-  if (!matched || matched.index >= selectors.length) return null
+  if (!matched) return null
+  const visual = matched.layer === 'visual' && matched.index === selectors.length
+  if (!visual && matched.index >= selectors.length) return null
   const missed = (step.misses ?? []).filter((m) => m.index < matched.index && (m.found === 0 || m.invalid !== undefined)).map((m) => m.index)
-  if (missed.length === 0) return null
-  const dropped = missed.filter((i) => !hasPlaceholder(selectors[i]))
-  const order = [matched.index, ...selectors.map((_, i) => i).filter((i) => i !== matched.index && !dropped.includes(i))]
-  return { order, dropped }
+  if (!visual) {
+    if (missed.length === 0) return null
+    const dropped = missed.filter((i) => !hasPlaceholder(selectors[i]))
+    const order = [matched.index, ...selectors.map((_, i) => i).filter((i) => i !== matched.index && !dropped.includes(i))]
+    return { order, dropped, added: [] }
+  }
+  // A layer the flow fills from a placeholder is the run's value of it, not a locator for every run: leave it out.
+  const templated = new Set(selectors.filter(hasPlaceholder).map(locatorLayer))
+  const candidates = (matched.candidates ?? []).filter((c) => SelectorSchema.safeParse(c).success && !templated.has(locatorLayer(c)) && !hasPlaceholder(c))
+  if (candidates.length === 0) return null
+  const front = candidates.map((c) => {
+    const at = selectors.findIndex((s) => isDeepStrictEqual(s, c))
+    return at === -1 ? c : at
+  })
+  const kept = front.filter((f): f is number => typeof f === 'number')
+  const dropped = missed.filter((i) => !hasPlaceholder(selectors[i]) && !kept.includes(i))
+  const order: Order = [...front, ...selectors.map((_, i) => i).filter((i) => !kept.includes(i) && !dropped.includes(i))]
+  return { order, dropped, added: front.filter((f): f is Selector => typeof f !== 'number') }
 }
 
-function applyOrder(seq: YAMLSeq, order: number[]): void {
-  seq.items = order.map((i) => seq.items[i])
+/** The locator list `order` describes. */
+const orderedSelectors = (selectors: Selector[], order: Order): Selector[] => order.map((o) => (typeof o === 'number' ? selectors[o] : o))
+
+/** A new locator as one line of YAML, in the inline style flows use (`{ css: "#save" }`). */
+const selectorYaml = (selector: Selector): string => stringify(selector, { collectionStyle: 'flow', lineWidth: 0 }).trim()
+
+function applyOrder(doc: Document, seq: YAMLSeq, order: Order): void {
+  seq.items = order.map((o) => (typeof o === 'number' ? seq.items[o] : doc.createNode(o, { flow: true })))
 }
 
 interface TextEdit {
@@ -133,7 +179,7 @@ interface TextEdit {
  * Null when the layout is not one of those (comment lines between items, two
  * items on a line...): the caller then writes the document out instead.
  */
-function reorderEdit(text: string, seq: YAMLSeq, order: number[]): TextEdit | null {
+function reorderEdit(text: string, seq: YAMLSeq, order: Order): TextEdit | null {
   const ranges = seq.items.map((item) => (item as { range?: [number, number, number] | null }).range)
   if (!seq.range || ranges.some((r) => !r)) return null
   const items = ranges as Array<[number, number, number]>
@@ -143,7 +189,8 @@ function reorderEdit(text: string, seq: YAMLSeq, order: number[]): TextEdit | nu
     if (end < seq.range[0]) return null
     const between = text.slice(seq.range[0] + 1, end)
     if (between.includes('#') && /(^|\s)#/.test(between.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ''))) return null
-    return { start: seq.range[0], end: end + 1, text: `[${order.map((i) => text.slice(items[i][0], items[i][1])).join(', ')}]` }
+    const itemText = (o: number | Selector): string => (typeof o === 'number' ? text.slice(items[o][0], items[o][1]) : selectorYaml(o))
+    return { start: seq.range[0], end: end + 1, text: `[${order.map(itemText).join(', ')}]` }
   }
   const lineStart = (at: number): number => text.lastIndexOf('\n', at - 1) + 1
   const lineEnd = (at: number): number => {
@@ -158,7 +205,9 @@ function reorderEdit(text: string, seq: YAMLSeq, order: number[]): TextEdit | nu
   }
   const eol = text.includes('\r\n') ? '\r\n' : '\n'
   const pieces = spans.map(([a, b]) => (text.slice(a, b).endsWith('\n') ? text.slice(a, b) : `${text.slice(a, b)}${eol}`))
-  const joined = order.map((i) => pieces[i]).join('')
+  // A new item takes the first item's "- " prefix (its indent).
+  const prefix = text.slice(spans[0][0], items[0][0])
+  const joined = order.map((o) => (typeof o === 'number' ? pieces[o] : `${prefix}${selectorYaml(o)}${eol}`)).join('')
   const last = spans[spans.length - 1][1]
   return { start: spans[0][0], end: last, text: text.slice(0, last).endsWith('\n') ? joined : joined.slice(0, -eol.length) }
 }
@@ -187,12 +236,12 @@ function hasSelectors(text: string, original: Flow, wanted: Map<string, Selector
  * way the result must parse to the same flow with only those lists changed;
  * null when it does not (a list shared with another step through a YAML alias).
  */
-function patchedText(text: string, doc: Document, flow: Flow, changes: Array<{ stepId: string; order: number[] }>): string | null {
+function patchedText(text: string, doc: Document, flow: Flow, changes: Change[]): string | null {
   const wanted = new Map(
     changes.map(({ stepId, order }) => {
       const step = flow.steps.find((s) => s.id === stepId)!
       const selectors = ('target' in step && step.target ? step.target.selectors : []) as Selector[]
-      return [stepId, order.map((i) => selectors[i])] as const
+      return [stepId, orderedSelectors(selectors, order)] as const
     })
   )
   const edits = changes.map(({ stepId, order }) => reorderEdit(text, selectorsNode(doc, stepId)!, order))
@@ -201,7 +250,7 @@ function patchedText(text: string, doc: Document, flow: Flow, changes: Array<{ s
     if (hasSelectors(spliced, flow, wanted)) return spliced
   }
   const copy = doc.clone()
-  for (const { stepId, order } of changes) applyOrder(selectorsNode(copy, stepId)!, order)
+  for (const { stepId, order } of changes) applyOrder(copy, selectorsNode(copy, stepId)!, order)
   const written = formatFlowDocument(copy)
   return hasSelectors(written, flow, wanted) ? written : null
 }
@@ -237,18 +286,17 @@ export function healedFlow(
 
 type Patch = ((stepIds: string[]) => string | null) & { original: string }
 
+interface Change {
+  stepId: string
+  order: Order
+}
+
 function analyse(record: RunRecord, flowFile: Buffer | string | null, displayName: string): { report: HealReport; patch?: Patch } {
   const base = { run_id: record.run_id, flow: { name: record.flow.name, file: record.flow.file } }
   const candidates = record.steps.filter((s) => s.status === 'passed' && s.matched?.fallback === true)
   const unhealed: Unhealed[] = []
   for (const step of record.steps) {
-    if (step.status === 'passed' && step.matched?.fallback === true && step.matched.layer === 'visual') {
-      unhealed.push({
-        step_id: step.id,
-        status: step.status,
-        reason: 'only its reference crop matched; the run did not record a locator for the element it found, so there is no locator to propose yet'
-      })
-    } else if (step.status === 'failed' && !step.matched && (step.misses?.length ?? 0) > 0) {
+    if (step.status === 'failed' && !step.matched && (step.misses?.length ?? 0) > 0) {
       unhealed.push({ step_id: step.id, status: step.status, reason: 'no locator and no reference crop matched; nothing to propose from this run' })
     }
   }
@@ -280,9 +328,8 @@ function analyse(record: RunRecord, flowFile: Buffer | string | null, displayNam
   if (!parsed.ok) return empty('invalid', 'The flow file no longer parses as a flow.')
 
   const proposals: HealProposal[] = []
-  const changes: Array<{ stepId: string; order: number[] }> = []
+  const changes: Change[] = []
   for (const step of candidates) {
-    if (step.matched?.layer === 'visual') continue
     const flowStep = parsed.flow.steps.find((s) => s.id === step.id)
     const before = flowStep && 'target' in flowStep ? flowStep.target?.selectors : undefined
     const node = selectorsNode(parsed.document, step.id)
@@ -292,13 +339,21 @@ function analyse(record: RunRecord, flowFile: Buffer | string | null, displayNam
     }
     const healed = healedOrder(step, before)
     if (!healed) {
-      unhealed.push({ step_id: step.id, status: step.status, reason: 'the run marked it as a fallback but recorded no locator that found nothing before the match' })
+      const reason =
+        step.matched?.layer === 'visual'
+          ? 'only its reference crop matched, and the run recorded no locator that found that element alone (a run from before Nawi recorded them, or the element has none), so there is no locator to propose yet'
+          : 'the run marked it as a fallback but recorded no locator that found nothing before the match'
+      unhealed.push({ step_id: step.id, status: step.status, reason })
       continue
     }
     const change = { stepId: step.id, order: healed.order }
     const single = patchedText(flowText, parsed.document, parsed.flow, [change])
     if (single === null) {
-      unhealed.push({ step_id: step.id, status: step.status, reason: 'its locator list is shared with another step (a YAML alias), so it cannot be changed for this step alone' })
+      const reason =
+        healed.added.length > 0
+          ? 'the flow with its new locators did not read back as the same flow with only this list changed (the list is shared with another step through a YAML alias, or a new locator does not survive YAML)'
+          : 'its locator list is shared with another step (a YAML alias), so it cannot be changed for this step alone'
+      unhealed.push({ step_id: step.id, status: step.status, reason })
       continue
     }
     changes.push(change)
@@ -307,13 +362,14 @@ function analyse(record: RunRecord, flowFile: Buffer | string | null, displayNam
       step_id: step.id,
       action: step.action,
       ...(step.intent !== undefined ? { intent: step.intent } : {}),
-      layer: locatorLayer(before[matched.index]),
+      layer: matched.layer === 'visual' ? 'visual' : locatorLayer(before[matched.index]),
       selectors_before: before,
-      selectors_after: healed.order.map((i) => before[i]),
+      selectors_after: orderedSelectors(before, healed.order),
       dropped: healed.dropped.map((i) => ({
         selector: before[i],
         reason: missReason((step.misses ?? []).find((m) => m.index === i)!)
       })),
+      added: healed.added,
       evidence: {
         matched,
         misses: step.misses ?? [],

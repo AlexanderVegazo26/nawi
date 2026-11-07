@@ -843,7 +843,7 @@ const getRun = defineTool({
 })
 
 /**
- * Roadmap F6 (first slice): healing proposals from a saved run, as a reviewable YAML patch. Reads only; the flow
+ * Roadmap F6 (F6a, F6c): healing proposals from a saved run, as a reviewable YAML patch. Reads only; the flow
  * file is never written here.
  */
 const getHealProposals = defineTool({
@@ -852,7 +852,9 @@ const getHealProposals = defineTool({
     'Propose fixes for a flow that is drifting from the app, from one saved run (run_id from list_runs): for each ' +
     'step that passed only through a fallback locator, a YAML patch that moves the locator that matched to the front ' +
     'and drops the ones that found nothing, with the evidence (matched and missed locators, URL, before/after ' +
-    'screenshots relative to the run folder). Also lists steps it cannot heal from the record and why. Nothing is ' +
+    'screenshots relative to the run folder). A step found only by its reference crop (layer "visual") gets that ' +
+    "element's own locators added in front instead (added; unverified until replayed). Also lists steps it cannot " +
+    'heal from the record and why. Nothing is ' +
     'written: review the diff, then apply it yourself or with apply_heal (which replays it first). flow_status ' +
     '"changed" means the flow file was edited since the run: run it again first.',
   idempotent: true,

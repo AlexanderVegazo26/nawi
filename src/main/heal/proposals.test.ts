@@ -261,6 +261,118 @@ describe('healProposals', () => {
     expect(report.unhealed[1].reason).toMatch(/nothing to propose/)
   })
 
+  describe('a step matched only by its reference crop, with the found element\'s locators (F6c)', () => {
+    /** Every locator of `save` found nothing; the crop found the button, whose own locators the run recorded. */
+    const anchored = (candidates: RecordedStep['matched'] extends infer M ? (M extends { candidates?: infer C } ? C : never) : never, misses = [0, 1, 3]): RecordedStep => ({
+      ...saveDrifted,
+      matched: { index: 4, selector: { image: 'notes.crops/000002.png' }, layer: 'visual', fallback: true, score: 0.98, candidates },
+      misses: [
+        ...misses.map((index) => ({ index, selector: [{ testid: 'save-note' }, { role: 'button', name: 'Save' }, { css: 'form > button.primary' }, { css: '#save' }][index], found: 0 })),
+        { index: 2, selector: { css: 'form > button.primary' }, found: 2 }
+      ].sort((x, y) => x.index - y.index)
+    })
+
+    it('puts the element\'s own locators in front, drops the ones that found nothing, keeps an ambiguous one', () => {
+      const report = healProposals(record([typeStep, anchored([{ testid: 'store-note' }, { role: 'button', name: 'Store' }]), doneStep]), FLOW)
+      expect(report.unhealed, JSON.stringify(report, null, 1)).toEqual([])
+      expect(report.proposals).toHaveLength(1)
+      const p = report.proposals[0]
+      expect(p.layer, 'matched through the crop').toBe('visual')
+      expect(p.added).toEqual([{ testid: 'store-note' }, { role: 'button', name: 'Store' }])
+      expect(p.selectors_after).toEqual([{ testid: 'store-note' }, { role: 'button', name: 'Store' }, { css: 'form > button.primary' }])
+      expect(p.dropped.map((d) => [d.selector, d.reason])).toEqual([
+        [{ testid: 'save-note' }, 'no match'],
+        [{ role: 'button', name: 'Save' }, 'no match'],
+        [{ css: '#save' }, 'no match']
+      ])
+      expect(p.evidence.matched.score).toBe(0.98)
+    })
+
+    it('writes the new locators in the file\'s own style, touching only that list, and the patch applies and parses', () => {
+      const report = healProposals(record([typeStep, anchored([{ testid: 'store-note' }, { role: 'button', name: 'Store: now' }]), doneStep]), FLOW)
+      const lines = report.diff.split('\n')
+      expect(lines.filter((l) => /^[-+] /.test(l)), report.diff).toEqual([
+        '-        - { testid: save-note } # gone since 2.0',
+        '-        - { role: button, name: Save }',
+        '+        - { testid: store-note }',
+        '+        - { role: button, name: "Store: now" }',
+        '-        - { css: "#save" }'
+      ])
+      const healed = applyPatch(FLOW, report.diff)
+      expect(healed).toContain('# The save button was renamed in 2.0.')
+      const parsed = parseFlow(healed)
+      expect(parsed.ok && parsed.flow.steps[1]).toMatchObject({
+        id: 'save',
+        target: { selectors: [{ testid: 'store-note' }, { role: 'button', name: 'Store: now' }, { css: 'form > button.primary' }] }
+      })
+    })
+
+    it('adds to an inline locator list in place', () => {
+      const flow = FLOW.replace('    target: { selectors: [{ role: status }] }', '    target: { selectors: [{ testid: old-status }, { css: "p.status" }] }')
+      const step: RecordedStep = {
+        ...doneStep,
+        matched: { index: 2, selector: { image: 'a.png' }, layer: 'visual', fallback: true, candidates: [{ id: 'out' }] },
+        misses: [
+          { index: 0, selector: { testid: 'old-status' }, found: 0 },
+          { index: 1, selector: { css: 'p.status' }, found: 0 }
+        ]
+      }
+      const diff = healProposals(record([typeStep, step], flow), flow).diff
+      expect(diff, diff).toContain('-    target: { selectors: [{ testid: old-status }, { css: "p.status" }] }\n+    target: { selectors: [{ id: out }] }\n')
+      expect(diff.match(/^[-+] /gm), 'only that line changes').toHaveLength(2)
+    })
+
+    it('moves a flow locator that is the same as a candidate instead of adding a copy (it missed while the page loaded)', () => {
+      const report = healProposals(record([typeStep, anchored([{ css: '#save' }, { testid: 'store-note' }]), doneStep]), FLOW)
+      const p = report.proposals[0]
+      expect(p.added).toEqual([{ testid: 'store-note' }])
+      expect(p.selectors_after).toEqual([{ css: '#save' }, { testid: 'store-note' }, { css: 'form > button.primary' }])
+      expect(p.dropped.map((d) => d.selector)).toEqual([{ testid: 'save-note' }, { role: 'button', name: 'Save' }])
+    })
+
+    it('keeps a ${...} locator that missed, after the added ones', () => {
+      const flow = FLOW.replace('        - { role: button, name: Save }', '        - { role: button, name: "${vars.label}" }')
+      const step = { ...anchored([{ testid: 'store-note' }]), misses: [0, 1, 3].map((index) => ({ index, selector: { css: 'x' }, found: 0 })) }
+      const p = healProposals(record([typeStep, step, doneStep], flow), flow).proposals[0]
+      expect(p.selectors_after).toEqual([{ testid: 'store-note' }, { role: 'button', name: '${vars.label}' }, { css: 'form > button.primary' }])
+    })
+
+    it('writes a long new locator on one line (no YAML folding), so only the list lines change', () => {
+      const long = { css: 'div.some-long-class-name > section.another-long-class-name > ul.list > li.item > button.primary' }
+      const report = healProposals(record([typeStep, anchored([long]), doneStep]), FLOW)
+      expect(report.diff, report.diff).toContain(`+        - { css: ${long.css} }\n`)
+      expect(report.diff.match(/^[-+] /gm), report.diff).toHaveLength(4)
+    })
+
+    it('leaves out a candidate in a layer the flow fills from a placeholder (it is this run\'s value, not a locator for every run)', () => {
+      const flow = FLOW.replace('        - { role: button, name: Save }', '        - { role: button, name: "${vars.label}" }')
+      const step = { ...anchored([{ role: 'button', name: 'Save' }, { testid: 'store-note' }]), misses: [0, 1, 3].map((index) => ({ index, selector: { css: 'x' }, found: 0 })) }
+      const p = healProposals(record([typeStep, step, doneStep], flow), flow).proposals[0]
+      expect(p.added, 'the role + name the run saw is vars.label of that run').toEqual([{ testid: 'store-note' }])
+    })
+
+    it('says which flow locator moves to the front when every candidate is already in the flow', () => {
+      const text = renderHealReport(healProposals(record([typeStep, anchored([{ css: '#save' }]), doneStep]), FLOW))
+      expect(text).toContain('  save: matched by its reference crop; move {"css":"#save"} to the front; drop {"testid":"save-note"} (no match), {"role":"button","name":"Save"} (no match)')
+    })
+
+    it('leaves the step unhealed when the run recorded no candidate, or only ones that are not locators', () => {
+      for (const candidates of [undefined, [], [{ css: '' }], [{ nth: 3 }]] as unknown[]) {
+        const report = healProposals(record([typeStep, anchored(candidates as never), doneStep]), FLOW)
+        expect(report.proposals, JSON.stringify(candidates)).toEqual([])
+        expect(report.unhealed.map((u) => u.step_id)).toEqual(['save'])
+        expect(report.unhealed[0].reason).toMatch(/only its reference crop matched, and the run recorded no locator/)
+      }
+    })
+
+    it('prints the added locators in nawi heal', () => {
+      const text = renderHealReport(healProposals(record([typeStep, anchored([{ testid: 'store-note' }]), doneStep]), FLOW))
+      expect(text).toContain(
+        '  save: matched by its reference crop; add {"testid":"store-note"} (unverified until replayed); drop {"testid":"save-note"} (no match), {"role":"button","name":"Save"} (no match), {"css":"#save"} (no match)'
+      )
+    })
+  })
+
   it("names the healed run when asked about apply_heal's replay of text that is not in the file", () => {
     const healedRun = '20261107T120000000Z-def456'
     // The replay ran the proposed text (its sha); the file still holds FLOW because the heal was rejected.

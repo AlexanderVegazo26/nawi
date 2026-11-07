@@ -147,7 +147,14 @@ export function renderHealReport(report: HealReport): string {
   }
   for (const p of report.proposals) {
     const dropped = p.dropped.map((d) => `${JSON.stringify(d.selector)} (${d.reason})`).join(', ')
-    lines.push(`  ${p.step_id}: matched by ${p.layer} ${JSON.stringify(p.selectors_before[p.evidence.matched.index])}; drop ${dropped}`)
+    const added = p.added ?? []
+    const how =
+      p.layer !== 'visual'
+        ? `matched by ${p.layer} ${JSON.stringify(p.selectors_before[p.evidence.matched.index])}`
+        : added.length > 0
+          ? `matched by its reference crop; add ${added.map((s) => JSON.stringify(s)).join(', ')} (unverified until replayed)`
+          : `matched by its reference crop; move ${JSON.stringify(p.selectors_after[0])} to the front`
+    lines.push(`  ${p.step_id}: ${how}${dropped ? `; drop ${dropped}` : ''}`)
   }
   for (const u of report.unhealed) lines.push(`  ${u.step_id}: not healed, ${u.reason}`)
   if (report.diff) lines.push('', report.diff.trimEnd())

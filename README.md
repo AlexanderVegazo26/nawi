@@ -493,9 +493,15 @@ alone.
   layout stay as written) and is given only while the file is still the one the
   run replayed (same sha256; otherwise `flow_status: changed`). Nothing is
   written: review the diff and apply it from the flow's folder
-  (`nawi heal <run_id> | git apply`). Steps matched only by
-  their reference crop, and failed steps nothing matched, are listed as not
-  healed with the reason. `apply_heal` / `nawi heal-apply <run_id>` (F6, second
+  (`nawi heal <run_id> | git apply`). A step matched only by its reference
+  crop (F6c) gets the found element's own locators: when the crop finds it, the
+  run records that element's locators that matched it alone (ranked like a
+  recording, no nth-child paths, none holding a secret value, at most 3; run
+  record `matched.candidates`), and the proposal puts them in front (`added`,
+  layer `visual`) and drops the locators that found nothing; they are proven
+  only by a replay, which `apply_heal` runs before it writes. A crop-only match
+  without candidates (a run from an older Nawi, or no unique locator) and
+  failed steps nothing matched are listed as not healed with the reason. `apply_heal` / `nawi heal-apply <run_id>` (F6, second
   part) writes the proposals (all, or `step_ids` / `--step`) into the flow file,
   but only after replaying the proposed flow (saved as a run record marked
   `heal_of: <run_id>`, so it never reads as a run of an edited file): the file
@@ -807,9 +813,8 @@ CDP selectors and the MCP projection/revision model.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from
   `NAWI_SECRET_*` only (no OS keychain or prompt yet). Healing proposals
-  cover locator-layer fallbacks only: no locator is proposed for a step matched only by
-  its reference crop, and failed steps get no candidate from `intent` + the
-  accessibility snapshot yet.
+  cover locator fallbacks and crop-only matches: failed steps get no candidate
+  from `intent` + the accessibility snapshot yet.
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so
   `export_flow` only has input events to work with on captures whose sidecar
