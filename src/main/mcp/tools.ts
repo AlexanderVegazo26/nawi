@@ -642,8 +642,10 @@ const exportGuide = defineTool({
 
 /**
  * Roadmap F2: a recording's input events as a flow file. Derived on demand and
- * written nowhere: a sealed sidecar revision never changes (DC-6), and the flow
- * a person edits belongs next to their other flows, not inside the capture.
+ * never written into the capture: a sealed sidecar revision never changes
+ * (DC-6), and the flow a person edits belongs next to their other flows. With
+ * `output` it is written there, with the steps' reference crops (roadmap AI1)
+ * in a `<name>.crops/` folder next to it.
  */
 const exportFlow = defineTool({
   name: 'export_flow',
@@ -651,13 +653,23 @@ const exportFlow = defineTool({
     'Turn a browser recording\'s captured input events into an editable flow file (*.nawi.yaml, version 1): ' +
     'clicks, filled fields (one step per field, final value), choices in selects and named keys, each with its ' +
     'ranked selectors. Fields the app marked secret become ${secret.<name>} placeholders: their values were never ' +
-    'recorded. Scrolls, resizes and modifier keys are left out and counted. Returns the YAML text and writes nothing.',
+    'recorded. Scrolls, resizes and modifier keys are left out and counted. Returns the YAML text; without output it ' +
+    'writes nothing. With output (an absolute *.nawi.yaml path inside your home folder) it writes the flow there and ' +
+    'each clicked element\'s reference crop next to it (<name>.crops/NNNNNN.png, as target.image), so replay can find ' +
+    'an element by its look when its locators no longer match. An existing file is replaced only with overwrite: true.',
   idempotent: false,
   errors: ['NOT_FOUND', 'UNAVAILABLE'],
   schema: z.object({
     capture_id: z.string().min(1).max(200),
     revision: z.string().max(16).regex(REVISION_RE, 'a revision such as "v1"').optional().describe('e.g. "v1". Defaults to the current revision.'),
-    name: z.string().max(200).optional().describe('Flow name. Defaults to "Recording <created_at>".')
+    name: z.string().max(200).optional().describe('Flow name. Defaults to "Recording <created_at>".'),
+    output: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe('Absolute path of the *.nawi.yaml file to write, inside your home folder; its crops go to <name>.crops/ next to it. Omit to only return the YAML.'),
+    overwrite: z.boolean().default(false).describe('Replace an existing file at output (and the crops of an earlier export there).')
   }),
   async run(args) {
     const item = await requireItem(args.capture_id)
@@ -671,7 +683,16 @@ const exportFlow = defineTool({
       )
     }
     try {
-      return { capture_id: item.id, ...(await flowFromSidecar({ revisionDir: join(item.sidecarDir, revision), sidecar, revision, name: args.name })) }
+      return {
+        capture_id: item.id,
+        ...(await flowFromSidecar({
+          revisionDir: join(item.sidecarDir, revision),
+          sidecar,
+          revision,
+          name: args.name,
+          ...(args.output !== undefined ? { output: args.output, overwrite: args.overwrite } : {})
+        }))
+      }
     } catch (err) {
       if (err instanceof NoInputEventsError) {
         throw new ToolError(

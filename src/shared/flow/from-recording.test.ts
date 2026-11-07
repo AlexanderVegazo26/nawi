@@ -681,4 +681,75 @@ describe('sidecar 1.2 input events (recorded boxes and reference crops, roadmap 
     expect((flow.steps[0] as { target: Record<string, unknown> }).target).not.toHaveProperty('image')
     expect(parseFlow(stringifyFlow(flow)).ok, 'the exported flow is valid').toBe(true)
   })
+
+  /** Maps `input_crops/NNNNNN.png` the way export_flow does, and records what it was asked. */
+  const mapper = () => {
+    const asked: string[] = []
+    const image = (recorded: string): string | undefined => {
+      asked.push(recorded)
+      const m = /^input_crops\/(\d{6})\.png$/.exec(recorded)
+      return m ? `login.crops/${m[1]}.png` : undefined
+    }
+    return { asked, image }
+  }
+  const imageOf = (step: unknown): unknown => (step as { target?: Record<string, unknown> }).target?.image
+
+  it("points a click at its crop through the caller's mapping, and leaves out a crop the mapping refuses", () => {
+    clock = 0
+    const { asked, image } = mapper()
+    const { flow } = flowFromRecording(
+      [ev('click', { ...SUBMIT, image: 'input_crops/000007.png' }), ev('click', { ...TERMS, image: '../../etc/passwd' })],
+      { ...OPTIONS, image }
+    )
+    expect(asked, 'the mapper sees each recorded crop path once').toEqual(['input_crops/000007.png', '../../etc/passwd'])
+    expect(flow.steps.map(imageOf), 'first click: mapped crop; second: refused, so no image').toEqual(['login.crops/000007.png', undefined])
+    const back = parseFlow(stringifyFlow(flow))
+    expect(back.ok, back.ok ? '' : formatFlowErrors(back.errors)).toBe(true)
+  })
+
+  it('gives a fill the crop of the click that focused its field (that click is dropped as noise)', () => {
+    clock = 0
+    const { image } = mapper()
+    const { flow, skipped } = flowFromRecording(
+      [
+        ev('click', { ...EMAIL, image: 'input_crops/000001.png' }),
+        typed(EMAIL, 'al'),
+        // A caret move on the same field: its own crop must not replace the first one.
+        ev('click', { ...EMAIL, image: 'input_crops/000002.png' }),
+        typed(EMAIL, 'alice@example.com'),
+        ev('click', { ...SUBMIT, image: 'input_crops/000003.png' })
+      ],
+      { ...OPTIONS, image }
+    )
+    expect(skipped.focus_click, 'both focus clicks are folded into the fill').toBe(2)
+    expect(flow.steps.map((s) => [s.action, imageOf(s)]), 'fill keeps the first press\'s crop; the button keeps its own').toEqual([
+      ['fill', 'login.crops/000001.png'],
+      ['click', 'login.crops/000003.png']
+    ])
+  })
+
+  it("never keeps a crop on a secret field's fill, also when the field turns secret after the first input", () => {
+    clock = 0
+    const { image } = mapper()
+    const { flow } = flowFromRecording(
+      [
+        ev('click', { ...PASSWORD, image: 'input_crops/000004.png' }),
+        secret(PASSWORD),
+        ev('click', { ...EMAIL, image: 'input_crops/000005.png' }),
+        typed(EMAIL, 'a'),
+        secret(EMAIL)
+      ],
+      { ...OPTIONS, image }
+    )
+    expect(flow.steps.map((s) => [s.action, imageOf(s)]), 'a field that is or becomes secret has no image').toEqual([
+      ['fill', undefined],
+      ['fill', undefined]
+    ])
+  })
+
+  it('writes no image at all without a mapping (a YAML-only export has nowhere to put crops)', () => {
+    clock = 0
+    const { flow } = flowFromRecording([ev('click', { ...SUBMIT, image: 'input_crops/000007.png' })], OPTIONS)
+    expect(imageOf(flow.steps[0])).toBeUndefined()
+  })
 })

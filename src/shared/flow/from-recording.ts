@@ -144,6 +144,14 @@ export interface FlowFromRecordingOptions {
   name: string
   target: FlowTarget
   description?: string
+  /**
+   * Reference crops (roadmap AI1): maps the crop a recorded click names
+   * (`target.image`, a path inside the capture's revision) to the path the
+   * flow should point at, relative to the flow file, or undefined to leave it
+   * out. Without it no step gets an `image`: a flow returned as text only has
+   * nowhere for its crops to live.
+   */
+  image?: (recorded: string) => string | undefined
 }
 
 export interface FlowFromRecordingResult {
@@ -167,6 +175,8 @@ const TargetIn = z.object({
   accessible_name: z.string().nullish(),
   text: z.string().nullish(),
   bounds: z.array(z.number()).nullish(),
+  /** The click's reference crop, a path inside the revision (harvest, sidecar 1.2). */
+  image: z.string().nullish(),
   selectors: z.array(z.unknown()).nullish(),
   input_type: z.string().nullish()
 })
@@ -409,13 +419,19 @@ export function flowFromRecording(
   /** Fields left out because replay can't fill them, by description, in recording order. */
   const unfillable = new Map<string, string>()
 
+  /** The flow-relative crop for a recorded target, when the caller maps it. */
+  const imageOf = (target: RecordedTarget | null): string | undefined => {
+    const recorded = target?.image
+    return typeof recorded === 'string' && options.image ? options.image(recorded) : undefined
+  }
+
   for (const event of valid) {
     const target = event.target ?? null
     const selectors = flowSelectors(target)
     const targetKey = selectors.length > 0 ? JSON.stringify(selectors) : null
-    const stepTarget = (): NonNullable<Extract<FlowStep, { action: 'click' }>['target']> => {
+    const stepTarget = (image?: string): NonNullable<Extract<FlowStep, { action: 'click' }>['target']> => {
       const bbox = bboxOf(target)
-      return bbox ? { selectors, bbox } : { selectors }
+      return { selectors, ...(bbox ? { bbox } : {}), ...(image !== undefined ? { image } : {}) }
     }
     const role = target?.role?.trim().toLowerCase() ?? ''
 
@@ -425,7 +441,7 @@ export function flowFromRecording(
           skip('no_target')
           break
         }
-        steps.push({ step: { action: 'click', target: stepTarget(), note: `Click ${describe(target)}` }, targetKey })
+        steps.push({ step: { action: 'click', target: stepTarget(imageOf(target)), note: `Click ${describe(target)}` }, targetKey })
         break
       }
 
@@ -467,11 +483,15 @@ export function flowFromRecording(
         const label = `${verb} ${describe(target)}`
         // A click that only focused this field is noise, even when it came back
         // to a field already being filled (moving the caret): drop it first, so
-        // the input still merges into that field's fill.
+        // the input still merges into that field's fill. The fill keeps the
+        // click's reference crop: the press is what took it.
+        let clickImage: string | undefined
         if (steps.at(-1)?.targetKey === targetKey && steps.at(-1)?.step.action === 'click') {
-          steps.pop()
+          clickImage = (steps.pop()!.step as Extract<DraftStep, { action: 'click' }>).target.image
           skip('focus_click')
         }
+        // A secret field's look is not kept, even from before the secret was typed.
+        const image = redacted ? undefined : imageOf(target) ?? clickImage
         const last = steps.at(-1)
         if (last && last.targetKey === targetKey && last.step.action === action) {
           const prev = last.step as Extract<DraftStep, { action: 'fill' | 'select' }>
@@ -481,13 +501,15 @@ export function flowFromRecording(
             prev.note = `${last.label ?? label} (secret, supplied at run time)`
           }
           if (redacted || !last.secret) prev.value = value
+          if (last.secret) delete prev.target.image
+          else if (prev.target.image === undefined && image !== undefined) prev.target.image = image
           merged++
           break
         }
         steps.push({
           step: {
             action,
-            target: stepTarget(),
+            target: stepTarget(image),
             value,
             note: redacted ? `${label} (secret, supplied at run time)` : label
           } as DraftStep,

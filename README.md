@@ -366,7 +366,17 @@ alone.
   what was entered in fields a flow can't fill (file pickers, sliders, color
   pickers) are left out and counted in the reply, with warnings to review. Each step
   that recorded its element's box gets it as `bbox`. It returns the
-  YAML and writes nothing. Converter: `src/shared/flow/from-recording.ts`.
+  YAML; with `output` (an absolute `*.nawi.yaml` path inside your home folder,
+  e.g. `nawi export-flow --capture_id <id> --output ~/flows/checkout.nawi.yaml`)
+  it also writes the file, and copies each step's reference crop into
+  `<name>.crops/` next to it as the step's `target.image` (a fill takes the crop of
+  the click that focused its field; secret fields never get one). It never writes
+  through a link, refuses an existing file or another export's crops unless
+  `overwrite: true` (new files are hard-linked into place, so the folder must be
+  on a filesystem with hard links), never leaves a flow pointing at another
+  export's crops (an overwrite that fails puts the old crops back), and keeps a
+  step whose crop can't be read without `image`, with a warning. Converter: `src/shared/flow/from-recording.ts`; writer:
+  `src/main/mcp/flow-export.ts`.
 - **Reference crops at record time** (`src/main/harvest`, sidecar schema 1.2) — every
   harvested input event carries its element's box (`bounds`, CSS px of the top
   viewport). When the user presses the primary button on an element, the harvest
@@ -382,7 +392,7 @@ alone.
   is dropped. A crop shows the control as pressed (hover/active styles), which the
   replayer's tolerance absorbs for mild styles only. `seal()` passes crops through
   unscanned (listed in its report) and annotating a capture carries them into the
-  new revision. `export_flow` doesn't copy crops next to the flow yet (next slice).
+  new revision. `export_flow --output` copies them next to the flow (above).
 - **Flow replay engine** (`src/main/replay`) — runs a flow in a Chromium page
   over raw CDP. Each step's locators are tried in order: the first one matching
   exactly one element wins (one matching several is ambiguous and skipped). A
@@ -771,7 +781,8 @@ CDP selectors and the MCP projection/revision model.
   `export_flow` only has input events to work with on captures whose sidecar
   carries them (for example DC-4 sidecars written by another tool). Wiring the
   harvest into browser recordings, run records and the flow editor land as
-  separate slices.
+  separate slices. `assert` steps don't use a target's reference crop (`image`) yet:
+  only click/fill/select/press/hover/scroll/wait/screenshot fall back to it.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a
   recording cannot be trimmed, shortened or re-exported without leaving the app.

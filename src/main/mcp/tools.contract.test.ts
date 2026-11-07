@@ -39,7 +39,7 @@ const TOOLS_SRC = read('src/main/mcp/tools.ts')
  * calls that reach them. A test below fails when another module starts throwing
  * ToolError, so a code can't reach a tool unseen.
  */
-const CALLEES: Record<string, string> = { runFlowFile: 'src/main/flow-run.ts' }
+const CALLEES: Record<string, string> = { runFlowFile: 'src/main/flow-run.ts', flowFromSidecar: 'src/main/mcp/flow-export.ts' }
 /** Files that may throw ToolError: these, plus CALLEES. The rest throw plain errors (INTERNAL). */
 const TOOL_ERROR_FILES = ['src/main/mcp/tools.ts', 'src/main/mcp/errors.ts', 'src/main/mcp/dispatch.ts', 'src/main/mcp/server.ts', 'src/main/mcp/resources.ts', 'src/main/mcp/prompts.ts']
 const DOC_PATH = 'docs/MCP-ERRORS.md'

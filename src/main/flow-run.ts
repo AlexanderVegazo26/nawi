@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { constants as fsConstants, promises as fs } from 'node:fs'
 import { arch, homedir, platform, release } from 'node:os'
-import { within } from './confine'
+import { insideRoots, within } from './confine'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import {
   FLOW_FILE_SUFFIX,
@@ -153,8 +153,7 @@ export async function resolveFlowFile(file: string, roots: string[] = [homedir()
   } catch {
     throw new ToolError('NOT_FOUND', 'No flow file exists at that path.', { file })
   }
-  const realRoots = await Promise.all(roots.map((r) => fs.realpath(r).catch(() => null)))
-  if (!real.endsWith(FLOW_FILE_SUFFIX) || !realRoots.some((r) => r !== null && within(r, real))) {
+  if (!real.endsWith(FLOW_FILE_SUFFIX) || !(await insideRoots(real, roots))) {
     throw new ToolError(
       'INVALID_ARGUMENTS',
       `Flow files must live inside ${roots.length === 1 ? 'your home directory' : 'an allowed folder'} and resolve to a *${FLOW_FILE_SUFFIX} file.`,
