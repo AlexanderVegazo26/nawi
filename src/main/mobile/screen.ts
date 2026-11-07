@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
 import type { MobileScreenFrame } from '@shared/mobile'
+import { type ProcessResult, runBytes } from './exec'
 import { PNG_SIGNATURE } from './png'
 
 /**
@@ -11,13 +11,8 @@ import { PNG_SIGNATURE } from './png'
 /** The window's frame type (src/shared/mobile.ts): what crosses IPC as is. */
 export type ScreenFrame = MobileScreenFrame
 
-export interface BinaryExecResult {
-  code: number | null
-  stdout: Uint8Array
-  stderr: string
-  /** too_large: stdout passed MAX_FRAME_BYTES (node kills the process, which otherwise looks like a timeout). */
-  error?: 'not_found' | 'timeout' | 'too_large' | 'failed'
-}
+/** A frame grab's outcome; too_large: stdout passed MAX_FRAME_BYTES (see exec.ts). */
+export type BinaryExecResult = ProcessResult<Uint8Array>
 
 export type BinaryExec = (file: string, args: string[], timeoutMs: number) => Promise<BinaryExecResult>
 
@@ -25,21 +20,7 @@ export const SCREENCAP_TIMEOUT_MS = 10_000
 /** A 4K RGBA screen as an uncompressed PNG is ~33 MB; anything bigger is not a screenshot. */
 export const MAX_FRAME_BYTES = 48 * 1024 * 1024
 
-
-export const execBinary: BinaryExec = (file, args, timeoutMs) =>
-  new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: MAX_FRAME_BYTES, encoding: 'buffer' }, (err, stdout, stderr) => {
-      // A Buffer is a Uint8Array: no copy of a multi-MB frame.
-      const out: Uint8Array = stdout ?? new Uint8Array()
-      const errText = Buffer.from(stderr ?? []).toString('utf8')
-      if (!err) return resolve({ code: 0, stdout: out, stderr: errText })
-      const e = err as NodeJS.ErrnoException & { killed?: boolean; code?: number | string; signal?: string | null }
-      if (e.code === 'ENOENT' || e.code === 'EACCES') return resolve({ code: null, stdout: out, stderr: errText, error: 'not_found' })
-      if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return resolve({ code: null, stdout: new Uint8Array(), stderr: errText, error: 'too_large' })
-      if (e.killed || e.signal === 'SIGTERM') return resolve({ code: null, stdout: out, stderr: errText, error: 'timeout' })
-      return resolve({ code: typeof e.code === 'number' ? e.code : null, stdout: out, stderr: errText, error: 'failed' })
-    })
-  })
+export const execBinary: BinaryExec = (file, args, timeoutMs) => runBytes(file, args, timeoutMs, MAX_FRAME_BYTES)
 
 /** Width and height from a PNG's IHDR chunk, or null when `bytes` is not a PNG. */
 export function pngSize(bytes: Uint8Array): { width: number; height: number } | null {

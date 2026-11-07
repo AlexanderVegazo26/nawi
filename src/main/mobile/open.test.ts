@@ -602,7 +602,9 @@ describe('openApp first screen (roadmap M2c)', () => {
     ['uiautomator printing its idle error', ok('ERROR: could not get idle state.\n'), 'could not read the screen: uiautomator printed no screen: ERROR: could not get idle state.'],
     ['an image without uiautomator', failed('/system/bin/sh: uiautomator: inaccessible or not found'), 'could not read the screen: /system/bin/sh: uiautomator: inaccessible or not found'],
     ['a hung dump', { code: null, stdout: '', stderr: '', error: 'timeout' } as ExecResult, 'could not read the screen: uiautomator did not answer'],
-    ['a dump cut at adb\'s output cap', { code: null, stdout: 'UI hierchary dumped to: x\n<hierarchy rotation="0"><node', stderr: '', error: 'timeout' } as ExecResult, 'could not read the screen: the dump is larger than 1 MB'],
+    // What node really returns past maxBuffer (exec.test.ts): the output up to the cap, error too_large, no exit code.
+    ['a dump cut at adb\'s output cap', { code: null, stdout: 'UI hierchary dumped to: x\n<hierarchy rotation="0"><node', stderr: '', error: 'too_large' } as ExecResult, 'could not read the screen: the dump is larger than 1 MB'],
+    ['a dump that timed out mid-print', { code: null, stdout: '<hierarchy rotation="0"><node', stderr: '', error: 'timeout' } as ExecResult, 'could not read the screen: uiautomator did not answer'],
     ['a cut-off dump', ok('<hierarchy rotation="0"><node package="dev.nawi.sample">'), 'could not read the screen: the screen dump is cut off (no closing </hierarchy>)']
   ])('skips the step on %s and still reports the app running', async (_what, dump, summary) => {
     const r = await openApp(req(), simHost({ ...phone(), dump }))

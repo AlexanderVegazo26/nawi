@@ -9,7 +9,7 @@
  * resolves anything (entities are the five XML ones plus numeric references).
  */
 
-/** A dump of a busy screen is ~100 KB. Also the cap on adb's output (the default exec's maxBuffer). */
+/** A dump of a busy screen is ~100 KB. Equal to the cap on adb's text output (MAX_TEXT_OUTPUT, doctor.ts). */
 export const MAX_DUMP_BYTES = 1024 * 1024
 export const MAX_NODES = 10_000
 export const MAX_DEPTH = 256

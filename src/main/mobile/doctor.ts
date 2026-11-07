@@ -1,8 +1,8 @@
-import { execFile } from 'node:child_process'
 import { constants as fsc, promises as fs } from 'node:fs'
 import { arch as osArch, homedir } from 'node:os'
 import { basename, delimiter as pathDelimiter, dirname, join, win32 } from 'node:path'
 import type { ApkInfo } from './apk'
+import { type ProcessResult, runText } from './exec'
 
 /**
  * Roadmap M1 (second slice, M1b): can this machine run an Android app, and if not, what is the one thing to do?
@@ -74,14 +74,8 @@ export interface MobileDoctorReport {
   checks: DoctorCheck[]
 }
 
-export interface ExecResult {
-  /** Exit code, or null when the process could not start or was killed. */
-  code: number | null
-  stdout: string
-  stderr: string
-  /** Why it did not run to completion. */
-  error?: 'not_found' | 'timeout' | 'failed'
-}
+/** A text command's outcome (see exec.ts for what each `error` means). */
+export type ExecResult = ProcessResult<string>
 
 export type Exec = (file: string, args: string[], timeoutMs: number) => Promise<ExecResult>
 
@@ -106,17 +100,10 @@ const ADB_TIMEOUT_MS = 15_000
 const PROP_TIMEOUT_MS = 10_000
 const ACCEL_TIMEOUT_MS = 20_000
 
-const execDefault: Exec = (file, args, timeoutMs) =>
-  new Promise((resolve) => {
-    // execFile throws on a fractional timeout, and deadlines on performance.now() leave fractions (19999.998 ms).
-    execFile(file, args, { timeout: Math.max(1, Math.ceil(timeoutMs)), windowsHide: true, maxBuffer: 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
-      if (!err) return resolve({ code: 0, stdout, stderr })
-      const e = err as NodeJS.ErrnoException & { killed?: boolean; code?: number | string; signal?: string | null }
-      if (e.code === 'ENOENT' || e.code === 'EACCES') return resolve({ code: null, stdout, stderr, error: 'not_found' })
-      if (e.killed || e.signal === 'SIGTERM') return resolve({ code: null, stdout, stderr, error: 'timeout' })
-      return resolve({ code: typeof e.code === 'number' ? e.code : null, stdout, stderr, error: 'failed' })
-    })
-  })
+/** Text output cap: an adb or emulator answer here is a few KB; a screen dump is at most MAX_DUMP_BYTES (hierarchy.ts). */
+export const MAX_TEXT_OUTPUT = 1024 * 1024
+
+const execDefault: Exec = (file, args, timeoutMs) => runText(file, args, timeoutMs, MAX_TEXT_OUTPUT)
 
 export function defaultHost(): DoctorHost {
   return { env: process.env, platform: process.platform, arch: osArch(), home: homedir(), kvmPath: '/dev/kvm', exec: execDefault }

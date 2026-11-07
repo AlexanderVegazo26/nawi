@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import type { ApkInfo } from './apk'
 import { findFirstRunBlockers, labelOf, type FirstScreen } from './blockers'
 import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult, type MobileDoctorReport } from './doctor'
-import { DumpError, dumpLine, parseUiDump, type UiScreen } from './hierarchy'
+import { DumpError, dumpLine, MAX_DUMP_BYTES, parseUiDump, type UiScreen } from './hierarchy'
 import { MAX_ONBOARDING_TAPS, nextOnboardingTap, screenKey, type OnboardingTap } from './onboarding'
 import { CLASS_RE, defaultDeviceSettings, PACKAGE_RE, PERMISSION_RE, TARGET_RE, type DeviceSettings } from './profile'
 import { androidVersionFor, DEFAULT_NETWORK_LINE, isNetworkSerial, parseDefaultNetwork, settingCommands, type DeviceSettingName } from './settings'
@@ -591,10 +591,9 @@ function shellFailed(r: ExecResult): boolean {
 /** Dump and read the screen; a device that can't dump (old image, a screen that never goes idle) is a skip. */
 export async function readScreen(host: Pick<OpenHost, 'exec'>, adb: string, serial: string): Promise<UiScreen | { skipped: string }> {
   const r = await host.exec(adb, ['-s', serial, 'shell', dumpLine(randomBytes(6).toString('hex'))], DUMP_TIMEOUT_MS)
-  if (r.error === 'timeout') {
-    // The dump is printed only once it is complete, so output with a kill means adb's output cap cut it, not a hang.
-    return { skipped: r.stdout.includes('<hierarchy') ? 'could not read the screen: the dump is larger than 1 MB' : 'could not read the screen: uiautomator did not answer' }
-  }
+  // Past the output cap node keeps only the first MAX_DUMP_BYTES, which would parse as a cut-off (broken) dump.
+  if (r.error === 'too_large') return { skipped: `could not read the screen: the dump is larger than ${MAX_DUMP_BYTES / 1024 / 1024} MB` }
+  if (r.error === 'timeout') return { skipped: 'could not read the screen: uiautomator did not answer' }
   try {
     return parseUiDump(r.stdout)
   } catch (err) {
