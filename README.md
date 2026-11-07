@@ -211,12 +211,13 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes twenty-one tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes twenty-two tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
 `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
-`list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`) and
+`list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`),
+`get_heal_proposals` (CLI: `nawi heal <run_id> [--json]`) and
 `inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`), `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
 exit 1 when no device can run it), `mobile_open` (CLI: `nawi mobile-open <file.apk|profile.nawi.mobile.yaml>`,
 exit 1 when the app is not running), `mobile_study` (CLI: `nawi mobile-study [--target serial|avd]`, exit 1 when
@@ -480,6 +481,20 @@ alone.
   agent browse the saved records: newest first, filter by status or flow file,
   one record in full by run id. Code: `src/main/run-record.ts`,
   `src/main/run-report.ts`.
+- **Healing proposals** (roadmap F6, first part): `get_heal_proposals` /
+  `nawi heal <run_id>` read one saved run and, for each step that passed only
+  through a fallback locator (the run's `fallback_step_ids`), propose a YAML
+  patch that moves the locator that matched to the front and drops the ones
+  that found nothing (a locator with a `${...}` placeholder is kept after the
+  match: one run's values can't condemn it), with the evidence (matched and
+  missed locators, URL, before/after screenshots). The patch is a unified diff
+  against the flow file that changes only those locator lines (comments and
+  layout stay as written) and is given only while the file is still the one the
+  run replayed (same sha256; otherwise `flow_status: changed`). Nothing is
+  written: review the diff and apply it from the flow's folder
+  (`nawi heal <run_id> | git apply`). Steps matched only by
+  their reference crop, and failed steps nothing matched, are listed as not
+  healed with the reason. Code: `src/main/heal/`.
 - **Model access layer for AI features** (`src/main/llm`): the one interface
   that semantic assertions, healing, triage and exploration will use. Backends:
   Anthropic (official SDK), any OpenAI-compatible `/chat/completions` endpoint
@@ -778,7 +793,11 @@ CDP selectors and the MCP projection/revision model.
   with the fix.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from
-  `NAWI_SECRET_*` only (no OS keychain or prompt yet).
+  `NAWI_SECRET_*` only (no OS keychain or prompt yet). Healing proposals
+  cover locator-layer fallbacks only: there is no `apply_heal` yet (apply the
+  diff yourself and rerun), no locator is proposed for a step matched only by
+  its reference crop, and failed steps get no candidate from `intent` + the
+  accessibility snapshot yet.
   The app's own recordings don't run the CDP state harvest yet
   (`src/main/harvest` is built and tested but not wired into a capture path), so
   `export_flow` only has input events to work with on captures whose sidecar

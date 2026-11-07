@@ -333,6 +333,7 @@ describe('tool errors on the wire (real server, real tools)', () => {
     { tool: 'export_guide', args: { capture_id: 'nope' }, code: 'NOT_FOUND', detail: { capture_id: 'nope' } },
     { tool: 'export_flow', args: { capture_id: 'nope' }, code: 'NOT_FOUND', detail: { capture_id: 'nope' } },
     { tool: 'get_run', args: { run_id: '20261102T103900123Z-a1b2c3' }, code: 'NOT_FOUND', detail: { run_id: '20261102T103900123Z-a1b2c3' } },
+    { tool: 'get_heal_proposals', args: { run_id: '20261102T103900123Z-a1b2c3' }, code: 'NOT_FOUND', detail: { run_id: '20261102T103900123Z-a1b2c3' } },
     // Inside the home folder: a path outside it is refused as INVALID_ARGUMENTS before the disk is looked at.
     { tool: 'run_flow', args: { file: MISSING_FLOW }, code: 'NOT_FOUND', detail: { file: MISSING_FLOW } }
   ])('$tool: a real refusal is -32000 with data.code $code', async ({ tool, args, code, detail }) => {

@@ -50,6 +50,7 @@ import {
 } from './mobile'
 import type { MobileDoctorReport } from '../main/mobile/doctor'
 import type { ApkInfo } from '../main/mobile/apk'
+import { HEAL_USAGE, HealUsageError, isHealReport, parseHealArgs, renderHealReport } from './heal'
 import {
   SERVE_SUMMARY,
   SERVE_USAGE,
@@ -122,6 +123,8 @@ Exit codes: 0 success, 1 the app reported an error, a flow step failed, mobile-d
 Nawi must already be running (the app, or \`nawi serve\`); no other command starts it for you.
 
 ${RUN_USAGE}
+
+${HEAL_USAGE}
 
 ${MOBILE_INSPECT_USAGE}
 
@@ -221,6 +224,7 @@ async function main(): Promise<void> {
   }
 
   if (command === 'run') return runCommand(argv.slice(1))
+  if (command === 'heal') return healCommand(argv.slice(1))
   if (command === 'mobile-inspect') return mobileInspectCommand(argv.slice(1))
   if (command === 'mobile-doctor') return mobileDoctorCommand(argv.slice(1))
   if (command === 'mobile-open') return mobileOpenCommand(argv.slice(1))
@@ -343,6 +347,24 @@ async function runCommand(argv: string[]): Promise<void> {
     }
   }
   process.exit(runExitCode(report))
+}
+
+/** `nawi heal <run_id>`: positional run id; prints the proposals and the diff, never writes the flow. */
+async function healCommand(argv: string[]): Promise<void> {
+  let args: ReturnType<typeof parseHealArgs>
+  try {
+    args = parseHealArgs(argv)
+  } catch (err) {
+    if (err instanceof HealUsageError) fail(`${err.message}\n\n${HEAL_USAGE}`, EXIT_USAGE)
+    throw err
+  }
+  const result = (await callTool('get_heal_proposals', { run_id: args.run_id })) as { structuredContent?: unknown }
+  const report = result?.structuredContent
+  if (!isHealReport(report)) {
+    fail(`Nawi returned an unexpected get_heal_proposals result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
+  }
+  process.stdout.write(`${args.json ? JSON.stringify(report, null, 2) : renderHealReport(report)}\n`)
+  process.exit(EXIT_OK)
 }
 
 /** `nawi mobile-inspect <file.apk>`: positional file resolved here, the reading done by the app's inspect_apk. */

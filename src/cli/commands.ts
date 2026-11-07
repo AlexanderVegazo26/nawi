@@ -27,6 +27,10 @@ export const COMMANDS: Record<string, { tool: string; summary: string }> = {
       '--follow [--interval ms] streams new runs as NDJSON until interrupted.'
   },
   'run-info': { tool: 'get_run', summary: 'One run record in full: --run_id.' },
+  heal: {
+    tool: 'get_heal_proposals',
+    summary: 'Propose locator fixes for a drifting flow from one saved run, as a YAML diff (nothing is written): nawi heal <run_id> [--json].'
+  },
   'mobile-inspect': { tool: 'inspect_apk', summary: 'Read an Android app\'s manifest without installing it: nawi mobile-inspect <file.apk>.' },
   'mobile-doctor': {
     tool: 'mobile_doctor',

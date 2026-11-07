@@ -15,6 +15,7 @@ import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
 import { MAX_FLOW_PATH, runFlowFile } from '../flow-run'
+import { healProposals, readRunFlow } from '../heal/proposals'
 import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, newRunId, pruneRuns, readRunRecord } from '../run-record'
 import { REVISION_RE } from '../sidecar/paths'
 import { inspectApkFile } from '../mobile/apk'
@@ -830,6 +831,31 @@ const getRun = defineTool({
 })
 
 /**
+ * Roadmap F6 (first slice): healing proposals from a saved run, as a reviewable YAML patch. Reads only; the flow
+ * file is never written here.
+ */
+const getHealProposals = defineTool({
+  name: 'get_heal_proposals',
+  description:
+    'Propose fixes for a flow that is drifting from the app, from one saved run (run_id from list_runs): for each ' +
+    'step that passed only through a fallback locator, a YAML patch that moves the locator that matched to the front ' +
+    'and drops the ones that found nothing, with the evidence (matched and missed locators, URL, before/after ' +
+    'screenshots relative to the run folder). Also lists steps it cannot heal from the record and why. Nothing is ' +
+    'written: review the diff and apply it yourself. flow_status "changed" means the flow file was edited since the ' +
+    'run: run it again first.',
+  idempotent: true,
+  errors: ['NOT_FOUND'],
+  schema: z.object({
+    run_id: z.string().regex(RUN_ID_RE, 'a run id such as 20261102T103900123Z-a1b2c3 (see list_runs)')
+  }),
+  async run(args) {
+    const record = await readRunRecord(runsDir(), args.run_id)
+    if (!record) throw new ToolError('NOT_FOUND', `No saved run ${args.run_id}. Call list_runs for the runs that exist.`, { run_id: args.run_id })
+    return { ...healProposals(record, await readRunFlow(record)), run_dir: join(runsDir(), args.run_id) }
+  }
+})
+
+/**
  * Roadmap M1 (first slice): what an Android app declares, read offline from its .apk, before Nawi installs and
  * drives it. Each refusal carries a `fix` in its detail.
  */
@@ -1321,6 +1347,7 @@ export const TOOLS: ToolDefinition[] = [
   runFlow,
   listRunsTool,
   getRun,
+  getHealProposals,
   inspectApk,
   mobileDoctor,
   mobileOpen,

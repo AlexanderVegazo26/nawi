@@ -49,7 +49,7 @@ describe('MCP prompts (roadmap AI12)', () => {
     expect(tools.length, `parser found: ${tools.join(', ')}`).toBeGreaterThanOrEqual(16)
     const all = text('run_and_triage', { file: FILE }) + text('heal_flow', { run_id: RUN })
     const named = [...new Set([...all.matchAll(/`([a-z]+_[a-z_]+)`/g)].map((m) => m[1]))]
-    expect(named.sort(), 'tools named in prompt text').toEqual(['get_run', 'run_flow'])
+    expect(named.sort(), 'tools named in prompt text').toEqual(['get_heal_proposals', 'get_run', 'run_flow'])
     for (const tool of named) expect(tools, `prompt text names ${tool}`).toContain(tool)
   })
 

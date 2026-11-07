@@ -1,0 +1,311 @@
+import { createHash } from 'node:crypto'
+import { promises as fs } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { isMap, isSeq, type Document, type YAMLMap, type YAMLSeq } from 'yaml'
+import { formatFlowDocument, parseFlow } from '../../shared/flow/yaml'
+import { locatorLayer, type Flow, type LocatorLayer, type Selector } from '../../shared/flow/schema'
+import { resolveFlowFile } from '../flow-run'
+import { missReason, type RecordedStep, type RunRecord } from '../run-record'
+import { unifiedDiff } from './diff'
+
+/**
+ * Roadmap F6, first slice: healing proposals from a saved run. When a step
+ * passed only because a lower locator layer matched (an earlier, more stable
+ * locator found nothing or was broken: `matched.fallback`), the flow is
+ * drifting from the app. The proposal is a reviewable YAML patch for that
+ * step: the locator that matched moves to the front and the ones that found
+ * nothing are dropped. Nothing is written: this only reads the run record and
+ * the flow file, and never rewrites a flow (the "no silent rewriting" rule).
+ *
+ * The patch edits the flow file's own YAML nodes by position (comments and
+ * `${vars.x}` placeholders stay as written), and only when the file is still
+ * the one the run replayed (same sha256): positions in an edited file could
+ * point at other locators. Steps it cannot heal from the record alone are
+ * listed with the reason: a match only through the reference crop (the run
+ * did not record a locator for the element it found) and steps where nothing
+ * matched; later slices propose candidates for those.
+ */
+
+export type FlowStatus = 'current' | 'changed' | 'missing' | 'invalid'
+
+export interface DroppedLocator {
+  selector: Selector
+  /** What it found in the run, worded as in run-info and the report: `no match` or `invalid: <why>`. */
+  reason: string
+}
+
+export interface HealProposal {
+  step_id: string
+  action: RecordedStep['action']
+  intent?: string
+  /** The layer the run matched through, which the proposal moves to the front. */
+  layer: LocatorLayer
+  /** The step's locators as the flow file has them now, and as the proposal has them. */
+  selectors_before: Selector[]
+  selectors_after: Selector[]
+  dropped: DroppedLocator[]
+  /** Why this is believed: what the run saw, from its record. */
+  evidence: {
+    matched: NonNullable<RecordedStep['matched']>
+    misses: NonNullable<RecordedStep['misses']>
+    url?: string
+    /** Before/after screenshots of the step, relative to the run folder. */
+    shots?: RecordedStep['shots']
+  }
+  /** The patch for this step alone, against the flow file. */
+  diff: string
+}
+
+export interface Unhealed {
+  step_id: string
+  status: RecordedStep['status']
+  reason: string
+}
+
+export interface HealReport {
+  run_id: string
+  flow: { name: string; file: string }
+  /**
+   * `current`: the file is the one the run replayed, proposals are against it.
+   * `changed`: it was edited since (sha256 differs): run the flow again first.
+   * `missing`: it is gone or can no longer be read. `invalid`: it no longer parses.
+   */
+  flow_status: FlowStatus
+  proposals: HealProposal[]
+  unhealed: Unhealed[]
+  /** Every proposal applied together, against the flow file; '' when there is none. */
+  diff: string
+  note?: string
+}
+
+
+/** The `target.selectors` sequence of the step with this id, or null when the document has no such step. */
+function selectorsNode(doc: Document, stepId: string): YAMLSeq | null {
+  const steps = doc.get('steps')
+  if (!isSeq(steps)) return null
+  for (const item of steps.items) {
+    if (!isMap(item)) continue
+    const id = (item as YAMLMap).get('id')
+    if (id !== stepId) continue
+    const target = (item as YAMLMap).get('target')
+    if (!isMap(target)) return null
+    const selectors = (target as YAMLMap).get('selectors')
+    return isSeq(selectors) ? (selectors as YAMLSeq) : null
+  }
+  return null
+}
+
+/** A locator with a `${...}` placeholder: whether it finds anything depends on the vars and env of the run. */
+const hasPlaceholder = (selector: Selector): boolean => Object.values(selector).some((v) => typeof v === 'string' && v.includes('${'))
+
+/**
+ * The new order of a step's locators: the matched one first; those that found
+ * nothing (or broke) before it gone, except ones with a placeholder, which one
+ * run's values cannot condemn: they stay, after the match. Null when the run
+ * gives no reason to change the list.
+ */
+function healedOrder(step: RecordedStep, selectors: Selector[]): { order: number[]; dropped: number[] } | null {
+  const matched = step.matched
+  if (!matched || matched.index >= selectors.length) return null
+  const missed = (step.misses ?? []).filter((m) => m.index < matched.index && (m.found === 0 || m.invalid !== undefined)).map((m) => m.index)
+  if (missed.length === 0) return null
+  const dropped = missed.filter((i) => !hasPlaceholder(selectors[i]))
+  const order = [matched.index, ...selectors.map((_, i) => i).filter((i) => i !== matched.index && !dropped.includes(i))]
+  return { order, dropped }
+}
+
+function applyOrder(seq: YAMLSeq, order: number[]): void {
+  seq.items = order.map((i) => seq.items[i])
+}
+
+interface TextEdit {
+  start: number
+  end: number
+  text: string
+}
+
+/**
+ * The edit that reorders a locator list in the file's own text, touching
+ * nothing else: an inline list (`[a, b]`) is rewritten from its items' source
+ * text; a block list moves whole item lines (with their trailing comments).
+ * Null when the layout is not one of those (comment lines between items, two
+ * items on a line...): the caller then writes the document out instead.
+ */
+function reorderEdit(text: string, seq: YAMLSeq, order: number[]): TextEdit | null {
+  const ranges = seq.items.map((item) => (item as { range?: [number, number, number] | null }).range)
+  if (!seq.range || ranges.some((r) => !r)) return null
+  const items = ranges as Array<[number, number, number]>
+  if (seq.flow) {
+    if (text[seq.range[0]] !== '[') return null
+    const end = text.lastIndexOf(']', seq.range[1])
+    if (end < seq.range[0]) return null
+    const between = text.slice(seq.range[0] + 1, end)
+    if (between.includes('#') && /(^|\s)#/.test(between.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, ''))) return null
+    return { start: seq.range[0], end: end + 1, text: `[${order.map((i) => text.slice(items[i][0], items[i][1])).join(', ')}]` }
+  }
+  const lineStart = (at: number): number => text.lastIndexOf('\n', at - 1) + 1
+  const lineEnd = (at: number): number => {
+    const nl = text.indexOf('\n', at)
+    return nl === -1 ? text.length : nl + 1
+  }
+  const spans = items.map(([start, valueEnd]) => [lineStart(start), lineEnd(Math.max(start, valueEnd - 1))] as const)
+  for (let i = 0; i < spans.length; i++) {
+    // Each item starts its own line with its "- " indicator, and the next item starts on the very next line.
+    if (!/^[ \t]*-[ \t]+$/.test(text.slice(spans[i][0], items[i][0]))) return null
+    if (i > 0 && spans[i][0] !== spans[i - 1][1]) return null
+  }
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  const pieces = spans.map(([a, b]) => (text.slice(a, b).endsWith('\n') ? text.slice(a, b) : `${text.slice(a, b)}${eol}`))
+  const joined = order.map((i) => pieces[i]).join('')
+  const last = spans[spans.length - 1][1]
+  return { start: spans[0][0], end: last, text: text.slice(0, last).endsWith('\n') ? joined : joined.slice(0, -eol.length) }
+}
+
+function applyEdits(text: string, edits: TextEdit[]): string {
+  let out = text
+  for (const e of [...edits].sort((x, y) => y.start - x.start)) out = out.slice(0, e.start) + e.text + out.slice(e.end)
+  return out
+}
+
+/** Does `text` parse as a flow whose steps have exactly these locator lists (and are otherwise the same flow)? */
+function hasSelectors(text: string, original: Flow, wanted: Map<string, Selector[]>): boolean {
+  const parsed = parseFlow(text)
+  if (!parsed.ok) return false
+  const expected = {
+    ...original,
+    steps: original.steps.map((s) => (wanted.has(s.id) && 'target' in s && s.target ? { ...s, target: { ...s.target, selectors: wanted.get(s.id)! } } : s))
+  }
+  return isDeepStrictEqual(parsed.flow, expected)
+}
+
+/**
+ * The flow text with these steps' locators reordered: spliced into the file's
+ * own text when its layout allows (only those lines change), else the whole
+ * document written out again (a correct patch, with some layout noise). Either
+ * way the result must parse to the same flow with only those lists changed;
+ * null when it does not (a list shared with another step through a YAML alias).
+ */
+function patchedText(text: string, doc: Document, flow: Flow, changes: Array<{ stepId: string; order: number[] }>): string | null {
+  const wanted = new Map(
+    changes.map(({ stepId, order }) => {
+      const step = flow.steps.find((s) => s.id === stepId)!
+      const selectors = ('target' in step && step.target ? step.target.selectors : []) as Selector[]
+      return [stepId, order.map((i) => selectors[i])] as const
+    })
+  )
+  const edits = changes.map(({ stepId, order }) => reorderEdit(text, selectorsNode(doc, stepId)!, order))
+  if (edits.every((e): e is TextEdit => e !== null)) {
+    const spliced = applyEdits(text, edits)
+    if (hasSelectors(spliced, flow, wanted)) return spliced
+  }
+  const copy = doc.clone()
+  for (const { stepId, order } of changes) applyOrder(selectorsNode(copy, stepId)!, order)
+  const written = formatFlowDocument(copy)
+  return hasSelectors(written, flow, wanted) ? written : null
+}
+
+/**
+ * The proposals for one run, given the flow file's text as it is now (null
+ * when it could not be read). Pure: the caller reads the record and the file.
+ */
+export function healProposals(record: RunRecord, flowFile: Buffer | string | null, displayName: string = basename(record.flow.file)): HealReport {
+  const base = { run_id: record.run_id, flow: { name: record.flow.name, file: record.flow.file } }
+  const candidates = record.steps.filter((s) => s.status === 'passed' && s.matched?.fallback === true)
+  const unhealed: Unhealed[] = []
+  for (const step of record.steps) {
+    if (step.status === 'passed' && step.matched?.fallback === true && step.matched.layer === 'visual') {
+      unhealed.push({
+        step_id: step.id,
+        status: step.status,
+        reason: 'only its reference crop matched; the run did not record a locator for the element it found, so there is no locator to propose yet'
+      })
+    } else if (step.status === 'failed' && !step.matched && (step.misses?.length ?? 0) > 0) {
+      unhealed.push({ step_id: step.id, status: step.status, reason: 'no locator and no reference crop matched; nothing to propose from this run' })
+    }
+  }
+  const empty = (flow_status: FlowStatus, note?: string): HealReport => ({
+    ...base,
+    flow_status,
+    proposals: [],
+    unhealed,
+    diff: '',
+    ...(note !== undefined ? { note } : {})
+  })
+
+  if (flowFile === null) return empty('missing', 'The flow file is gone or can no longer be read, so there is nothing to patch.')
+  // The bytes, as run_flow hashed them: text that does not survive a UTF-8 round trip must not look edited.
+  const sha = createHash('sha256').update(flowFile).digest('hex')
+  const flowText = typeof flowFile === 'string' ? flowFile : flowFile.toString('utf8')
+  if (sha !== record.flow.sha256) {
+    return empty('changed', 'The flow file changed since this run, so its locators may no longer be where the run saw them. Run the flow again and ask for proposals from that run.')
+  }
+  const parsed = parseFlow(flowText)
+  if (!parsed.ok) return empty('invalid', 'The flow file no longer parses as a flow.')
+
+  const proposals: HealProposal[] = []
+  const changes: Array<{ stepId: string; order: number[] }> = []
+  for (const step of candidates) {
+    if (step.matched?.layer === 'visual') continue
+    const flowStep = parsed.flow.steps.find((s) => s.id === step.id)
+    const before = flowStep && 'target' in flowStep ? flowStep.target?.selectors : undefined
+    const node = selectorsNode(parsed.document, step.id)
+    if (!before || !node || node.items.length !== before.length) {
+      unhealed.push({ step_id: step.id, status: step.status, reason: 'the flow file has no locator list for this step' })
+      continue
+    }
+    const healed = healedOrder(step, before)
+    if (!healed) {
+      unhealed.push({ step_id: step.id, status: step.status, reason: 'the run marked it as a fallback but recorded no locator that found nothing before the match' })
+      continue
+    }
+    const change = { stepId: step.id, order: healed.order }
+    const single = patchedText(flowText, parsed.document, parsed.flow, [change])
+    if (single === null) {
+      unhealed.push({ step_id: step.id, status: step.status, reason: 'its locator list is shared with another step (a YAML alias), so it cannot be changed for this step alone' })
+      continue
+    }
+    changes.push(change)
+    const matched = step.matched!
+    proposals.push({
+      step_id: step.id,
+      action: step.action,
+      ...(step.intent !== undefined ? { intent: step.intent } : {}),
+      layer: locatorLayer(before[matched.index]),
+      selectors_before: before,
+      selectors_after: healed.order.map((i) => before[i]),
+      dropped: healed.dropped.map((i) => ({
+        selector: before[i],
+        reason: missReason((step.misses ?? []).find((m) => m.index === i)!)
+      })),
+      evidence: {
+        matched,
+        misses: step.misses ?? [],
+        ...(step.url !== undefined ? { url: step.url } : {}),
+        ...(step.shots !== undefined ? { shots: step.shots } : {})
+      },
+      diff: unifiedDiff(flowText, single, displayName)
+    })
+  }
+  // Steps in run order, so the report reads like the flow.
+  const order = new Map(record.steps.map((s, i) => [s.id, i]))
+  unhealed.sort((x, y) => (order.get(x.step_id) ?? 0) - (order.get(y.step_id) ?? 0))
+  return {
+    ...base,
+    flow_status: 'current',
+    proposals,
+    unhealed,
+    diff: changes.length > 0 ? unifiedDiff(flowText, patchedText(flowText, parsed.document, parsed.flow, changes) ?? flowText, displayName) : ''
+  }
+}
+
+/** Reads the flow file a run replayed (the same checks run_flow makes), or null when it cannot be read any more. */
+export async function readRunFlow(record: RunRecord, roots: string[] = [homedir()]): Promise<Buffer | null> {
+  try {
+    const real = await resolveFlowFile(record.flow.file, roots)
+    return await fs.readFile(real)
+  } catch {
+    return null
+  }
+}

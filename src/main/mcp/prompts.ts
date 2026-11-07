@@ -146,6 +146,9 @@ const healFlow: PromptDefinition = {
         "Prefer a role with an accessible name, or a test id, over CSS. Keep the step's action and values as they are.",
       "4. Give the change as a unified diff of the flow file (flow.file), touching only the failed step's target. " +
         'If you cannot read that file, give the new target block in YAML instead.',
+      `4b. Also call the \`get_heal_proposals\` tool with {"run_id": "${runId}"}: steps that passed only through a ` +
+        'fallback locator come with a ready diff there (flow_status must be "current"); list those proposals with ' +
+        'yours, as they are.',
       '5. Tell me how I can check it (do not do it yourself): save the change as a copy of the flow (a new ' +
         '*.nawi.yaml file) and run that copy with `run_flow`. The fix holds only if that step passes and no later ' +
         'step does worse than in this run.'
