@@ -1,7 +1,7 @@
 import { constants as fsc, promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute } from 'node:path'
-import { within } from '../confine'
+import { insideRoots } from '../confine'
 import { androidAttr, isReference, parseAxml, plainAttr, type AndroidAttr, type AxmlElement, type AxmlValue } from './axml'
 import { ApkError, corrupt } from './errors'
 import { detectFramework, type FrameworkInfo } from './framework'
@@ -261,6 +261,10 @@ export async function inspectApkFile(file: string, roots: string[] = [homedir()]
   if (!isAbsolute(file)) throw new ApkError('invalid', 'The APK path must be absolute.', 'Pass the full path, e.g. /home/you/Downloads/app.apk.')
   const hasSuffix = (p: string): boolean => APK_SUFFIXES.some((s) => p.toLowerCase().endsWith(s))
   if (!hasSuffix(file)) throw new ApkError('invalid', 'Only Android packages (*.apk) can be inspected.', 'Pass the path of an .apk file.')
+  const outside = (): ApkError =>
+    new ApkError('invalid', `APK files must live inside ${roots.length === 1 ? 'your home directory' : 'an allowed folder'} and resolve to an .apk file.`, 'Copy the APK into your home folder (e.g. ~/Downloads) and pass that path.')
+  // Checked on the path as given before the disk is touched, so a refusal can't tell whether something outside exists.
+  if (!(await insideRoots(file, roots, true))) throw outside()
   let real: string
   try {
     real = await fs.realpath(file)
@@ -271,10 +275,7 @@ export async function inspectApkFile(file: string, roots: string[] = [homedir()]
     }
     throw unreadable(file, err)
   }
-  const realRoots = await Promise.all(roots.map((r) => fs.realpath(r).catch(() => null)))
-  if (!hasSuffix(real) || !realRoots.some((r) => r !== null && within(r, real))) {
-    throw new ApkError('invalid', `APK files must live inside ${roots.length === 1 ? 'your home directory' : 'an allowed folder'} and resolve to an .apk file.`, 'Copy the APK into your home folder (e.g. ~/Downloads) and pass that path.')
-  }
+  if (!hasSuffix(real) || !(await insideRoots(real, roots))) throw outside()
   // O_NONBLOCK: opening a FIFO named x.apk must not wait for a writer; the handle's own stat then decides (no race).
   let handle: fs.FileHandle
   try {

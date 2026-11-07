@@ -335,6 +335,21 @@ describe('inspectApkFile confines paths like flow files', () => {
     expect([err.kind, err.message]).toEqual(['invalid', `Nawi cannot read ${locked} (EACCES). Check that your user can read the file and its folders (e.g. \`chmod u+r\` on the file).`])
   })
 
+  it('gives a path outside the root the same refusal whether or not anything is there (no existence oracle)', async (ctx) => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) ctx.skip()
+    const locked = join(outside, 'locked.apk')
+    writeFileSync(locked, SAMPLE)
+    chmodSync(locked, 0o000)
+    const paths = [join(outside, 'secret.apk'), join(outside, 'missing.apk'), join(outside, 'no-such-dir', 'x.apk'), locked]
+    const answers = await Promise.all(paths.map(async (p) => {
+      const err = await apkErrorOf(inspectApkFile(p, [home]))
+      return `${err.kind}: ${err.message.replace(p, '<path>')}`
+    }))
+    chmodSync(locked, 0o600)
+    expect(new Set(answers).size, `answers for existing / missing / missing folder / unreadable outside the root: ${JSON.stringify(answers)}`).toBe(1)
+    expect(answers[0]).toMatch(/^invalid: APK files must live inside/)
+  })
+
   it('reads an APK inside the allowed root', async () => {
     expect((await inspectApkFile(join(home, 'app.apk'), [home])).package).toBe('dev.nawi.sample')
   })

@@ -166,6 +166,20 @@ describe('profile files', () => {
     await expect(readProfileFile(outside, [home])).rejects.toThrow(/inside your home directory/)
   })
 
+  it('gives a path outside the allowed folder the same refusal whether or not anything is there (no existence oracle)', async () => {
+    const existing = join(root, 'there.nawi.mobile.yaml')
+    writeFileSync(existing, stringifyMobileProfile(profile()))
+    const paths = [existing, join(root, 'missing.nawi.mobile.yaml'), join(root, 'no-such-dir', 'x.nawi.mobile.yaml')]
+    const answer = (err: unknown): string =>
+      err instanceof ProfileFileError ? `${err.kind}: ${err.message}` : `not a ProfileFileError: ${String(err)}`
+    const reads = await Promise.all(paths.map((p) => readProfileFile(p, [home]).then(() => 'read', answer)))
+    expect(new Set(reads).size, `read answers for existing / missing file / missing folder: ${JSON.stringify(reads)}`).toBe(1)
+    expect(reads[0]).toMatch(/^invalid: Mobile profiles must live inside your home directory/)
+    const writes = await Promise.all(paths.slice(1).map((p) => writeProfileFile(p, profile(), [home]).then(() => 'written', answer)))
+    expect(new Set(writes).size, `write answers for a missing file / missing folder: ${JSON.stringify(writes)}`).toBe(1)
+    expect(writes[0]).toMatch(/^invalid: Mobile profiles are saved inside your home directory only/)
+  })
+
   it('sha256File hashes the bytes', async () => {
     const f = join(home, 'a.bin')
     writeFileSync(f, 'abc')

@@ -147,19 +147,21 @@ export async function resolveFlowFile(file: string, roots: string[] = [homedir()
   if (!file.endsWith(FLOW_FILE_SUFFIX)) {
     throw new ToolError('INVALID_ARGUMENTS', `Only flow files (*${FLOW_FILE_SUFFIX}) can be run.`, { file })
   }
+  const outside = (): ToolError =>
+    new ToolError(
+      'INVALID_ARGUMENTS',
+      `Flow files must live inside ${roots.length === 1 ? 'your home directory' : 'an allowed folder'} and resolve to a *${FLOW_FILE_SUFFIX} file.`,
+      { file }
+    )
+  // Checked on the path as given before the disk is touched, so a refusal can't tell whether something outside exists.
+  if (!(await insideRoots(file, roots, true))) throw outside()
   let real: string
   try {
     real = await fs.realpath(file)
   } catch {
     throw new ToolError('NOT_FOUND', 'No flow file exists at that path.', { file })
   }
-  if (!real.endsWith(FLOW_FILE_SUFFIX) || !(await insideRoots(real, roots))) {
-    throw new ToolError(
-      'INVALID_ARGUMENTS',
-      `Flow files must live inside ${roots.length === 1 ? 'your home directory' : 'an allowed folder'} and resolve to a *${FLOW_FILE_SUFFIX} file.`,
-      { file }
-    )
-  }
+  if (!real.endsWith(FLOW_FILE_SUFFIX) || !(await insideRoots(real, roots))) throw outside()
   const stat = await fs.stat(real)
   if (!stat.isFile()) throw new ToolError('INVALID_ARGUMENTS', 'That path is not a file.', { file })
   if (stat.size > MAX_FLOW_FILE_BYTES) {

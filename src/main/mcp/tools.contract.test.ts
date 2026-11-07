@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { promises as fs, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { postJson } from '../../mcp/post'
+
+/** A flow file that doesn't exist, inside the home folder run_flow reads from (nothing is created there). */
+const MISSING_FLOW = join(homedir(), `nawi-contract-${process.pid}-does-not-exist.nawi.yaml`)
 
 /**
  * Roadmap AI12, "every tool has a schema, a documented error shape and a
@@ -330,7 +333,8 @@ describe('tool errors on the wire (real server, real tools)', () => {
     { tool: 'export_guide', args: { capture_id: 'nope' }, code: 'NOT_FOUND', detail: { capture_id: 'nope' } },
     { tool: 'export_flow', args: { capture_id: 'nope' }, code: 'NOT_FOUND', detail: { capture_id: 'nope' } },
     { tool: 'get_run', args: { run_id: '20261102T103900123Z-a1b2c3' }, code: 'NOT_FOUND', detail: { run_id: '20261102T103900123Z-a1b2c3' } },
-    { tool: 'run_flow', args: { file: '/nawi-contract/does-not-exist.nawi.yaml' }, code: 'NOT_FOUND', detail: { file: '/nawi-contract/does-not-exist.nawi.yaml' } }
+    // Inside the home folder: a path outside it is refused as INVALID_ARGUMENTS before the disk is looked at.
+    { tool: 'run_flow', args: { file: MISSING_FLOW }, code: 'NOT_FOUND', detail: { file: MISSING_FLOW } }
   ])('$tool: a real refusal is -32000 with data.code $code', async ({ tool, args, code, detail }) => {
     const def = TOOLS.find((t) => t.name === tool)
     expect(errorCodesOf(def!), `${tool} must publish ${code}`).toContain(code)

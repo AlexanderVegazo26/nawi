@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { Document, parseDocument } from 'yaml'
 import { z } from 'zod'
-import { within } from '../confine'
+import { insideRoots } from '../confine'
 import { formatPath } from '../../shared/flow/yaml'
 import { MAX_MOBILE_PROFILE_BYTES, MOBILE_PROFILE_SUFFIX } from '../../shared/mobile'
 import { APP_FRAMEWORKS, READ_STRATEGIES } from './framework'
@@ -244,24 +244,22 @@ export class ProfileFileError extends Error {
 
 export const isProfilePath = (p: string): boolean => p.toLowerCase().endsWith(PROFILE_SUFFIX)
 
-async function realRoots(roots: string[]): Promise<string[]> {
-  return (await Promise.all(roots.map((r) => fs.realpath(r).catch(() => null)))).filter((r): r is string => r !== null)
-}
-
 /** Read and validate a profile inside one of `roots` (default: the home folder). */
 export async function readProfileFile(file: string, roots: string[] = [homedir()]): Promise<MobileProfile> {
   if (!isAbsolute(file) || !isProfilePath(file)) {
     throw new ProfileFileError('invalid', `A mobile profile must be an absolute path ending in ${PROFILE_SUFFIX}.`, 'Pass the full path of the profile, or of the .apk.')
   }
+  const outside = (): ProfileFileError =>
+    new ProfileFileError('invalid', `Mobile profiles must live inside your home directory and resolve to a ${PROFILE_SUFFIX} file.`, 'Move the profile into your home folder and pass that path.')
+  // Checked on the path as given before the disk is touched, so a refusal can't tell whether something outside exists.
+  if (!(await insideRoots(file, roots, true))) throw outside()
   let real: string
   try {
     real = await fs.realpath(file)
   } catch {
     throw new ProfileFileError('not_found', `No file exists at ${file}.`, 'Check the path; the CLI resolves a relative path against the current folder.')
   }
-  if (!isProfilePath(real) || !(await realRoots(roots)).some((r) => within(r, real))) {
-    throw new ProfileFileError('invalid', `Mobile profiles must live inside your home directory and resolve to a ${PROFILE_SUFFIX} file.`, 'Move the profile into your home folder and pass that path.')
-  }
+  if (!isProfilePath(real) || !(await insideRoots(real, roots))) throw outside()
   let text: string
   const handle = await fs.open(real, fsc.O_RDONLY | (fsc.O_NONBLOCK ?? 0)).catch(() => null)
   if (!handle) throw new ProfileFileError('invalid', `${file} can't be read.`, 'Check its permissions.')
@@ -294,6 +292,10 @@ export async function writeProfileFile(file: string, profile: MobileProfile, roo
   if (!isAbsolute(file) || !isProfilePath(file)) {
     throw new ProfileFileError('invalid', `A mobile profile must be saved to an absolute path ending in ${PROFILE_SUFFIX}.`, `Name the file like app${PROFILE_SUFFIX}.`)
   }
+  const outside = (): ProfileFileError =>
+    new ProfileFileError('invalid', `Mobile profiles are saved inside your home directory only, as ${PROFILE_SUFFIX} files.`, 'Pick a path inside your home folder.')
+  // Checked on the path as given before the disk is touched, so a refusal can't tell whether a folder outside exists.
+  if (!(await insideRoots(file, roots, true))) throw outside()
   const dir = await fs.realpath(dirname(file)).catch(() => null)
   if (dir === null) throw new ProfileFileError('not_found', `The folder ${dirname(file)} does not exist.`, 'Create it, or save the profile somewhere else.')
   let target = join(dir, basename(file))
@@ -301,9 +303,7 @@ export async function writeProfileFile(file: string, profile: MobileProfile, roo
   if (existing?.isSymbolicLink()) target = await fs.realpath(target).catch(() => target)
   const stat = await fs.stat(target).catch(() => null)
   if (stat && !stat.isFile()) throw new ProfileFileError('invalid', `${file} is not a file.`, 'Save the profile under another name.')
-  if (!isProfilePath(target) || !(await realRoots(roots)).some((r) => within(r, target))) {
-    throw new ProfileFileError('invalid', `Mobile profiles are saved inside your home directory only, as ${PROFILE_SUFFIX} files.`, 'Pick a path inside your home folder.')
-  }
+  if (!isProfilePath(target) || !(await insideRoots(target, roots))) throw outside()
   // Never save what readProfileFile would refuse (an over-long version name, an odd permission name...).
   const checked = ProfileShape.safeParse(profile)
   if (!checked.success) {

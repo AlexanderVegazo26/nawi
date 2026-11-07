@@ -118,6 +118,18 @@ describe('resolveFlowFile: which files a run may read', () => {
     expect(await codeOf(resolveFlowFile(join(root, 'out.nawi.yaml'), [root])), 'symlink out of root').toBe('INVALID_ARGUMENTS')
   })
 
+  it('gives a path outside the roots the same refusal whether or not anything is there (no existence oracle)', async () => {
+    writeFileSync(join(outside, 'real.nawi.yaml'), FLOW)
+    const answers = await Promise.all(
+      [join(outside, 'real.nawi.yaml'), join(outside, 'missing.nawi.yaml'), join(outside, 'no-such-dir', 'x.nawi.yaml')].map(async (file) => {
+        const err = await resolveFlowFile(file, [root]).catch((e: unknown) => e)
+        return err instanceof ToolError ? `${err.code}: ${err.message}` : `not a ToolError: ${String(err)}`
+      })
+    )
+    expect(new Set(answers).size, `answers for existing / missing file / missing folder outside the root: ${JSON.stringify(answers)}`).toBe(1)
+    expect(answers[0]).toMatch(/^INVALID_ARGUMENTS: Flow files must live inside/)
+  })
+
   it('refuses a file over the size limit before reading it', async () => {
     const file = join(root, 'big.nawi.yaml')
     writeFileSync(file, `# ${'x'.repeat(MAX_FLOW_FILE_BYTES)}\n`)
