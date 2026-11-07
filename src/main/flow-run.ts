@@ -101,6 +101,12 @@ export interface RunFlowDeps {
   now?: () => number
   /** Told about each step as it settles (MCP progress notifications). */
   onStep?: ReplayOptions['onStep']
+  /**
+   * Replay these bytes instead of the file's (apply_heal replays a proposed
+   * flow before writing it). The file must still exist: it anchors the roots
+   * check and the flow's relative assets, and the record names it.
+   */
+  source?: Buffer
 }
 
 /** Console errors and failed requests per step in `run_flow`'s answer; the run record keeps up to 20 of each. */
@@ -396,7 +402,7 @@ async function browserFacts(page: BrowserPage): Promise<Pick<RunEnvironment, 'br
 /** Reads, checks and replays one flow file. Step failures are a `failed` report, not a throw. */
 export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {}): Promise<FlowRunReport> {
   const real = await resolveFlowFile(request.file, deps.roots)
-  const bytes = await fs.readFile(real)
+  const bytes = deps.source ?? (await fs.readFile(real))
   const parsed = parseFlow(bytes.toString('utf8'))
   if (!parsed.ok) {
     throw new ToolError('INVALID_ARGUMENTS', `The flow file is not valid:\n${formatFlowErrors(parsed.errors, real)}`, {

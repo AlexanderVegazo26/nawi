@@ -323,6 +323,9 @@ describe('tool errors on the wire (real server, real tools)', () => {
     { tool: 'capture_region', args: { display_id: 999, x: 0, y: 0, width: 10, height: 10 }, code: 'NOT_FOUND', detail: { display_id: 999 } },
     { tool: 'get_state_layer', args: { capture_id: 'nope', revision: '../v1' }, code: 'INVALID_ARGUMENTS', detail: { issues: [expect.objectContaining({ path: 'revision' })] } },
     { tool: 'export_flow', args: { capture_id: 'nope', revision: 'bogus' }, code: 'INVALID_ARGUMENTS', detail: { issues: [expect.objectContaining({ path: 'revision' })] } },
+    // Writing the user's flow file needs explicit consent: without confirm: true nothing is read or run.
+    { tool: 'apply_heal', args: { run_id: '20261102T103900123Z-a1b2c3' }, code: 'INVALID_ARGUMENTS', detail: { issues: [expect.objectContaining({ path: 'confirm' })] } },
+    { tool: 'apply_heal', args: { run_id: '20261102T103900123Z-a1b2c3', confirm: false }, code: 'INVALID_ARGUMENTS', detail: { issues: [expect.objectContaining({ path: 'confirm' })] } },
     { tool: 'start_recording', args: {}, code: 'NOT_IMPLEMENTED', detail: { tool: 'start_recording' } },
     { tool: 'stop_recording', args: {}, code: 'NOT_IMPLEMENTED', detail: { tool: 'stop_recording' } },
     { tool: 'capture_element', args: { selector: '#save' }, code: 'NO_BROWSER_ATTACHED', detail: { selector: '#save' } },
@@ -334,6 +337,7 @@ describe('tool errors on the wire (real server, real tools)', () => {
     { tool: 'export_flow', args: { capture_id: 'nope' }, code: 'NOT_FOUND', detail: { capture_id: 'nope' } },
     { tool: 'get_run', args: { run_id: '20261102T103900123Z-a1b2c3' }, code: 'NOT_FOUND', detail: { run_id: '20261102T103900123Z-a1b2c3' } },
     { tool: 'get_heal_proposals', args: { run_id: '20261102T103900123Z-a1b2c3' }, code: 'NOT_FOUND', detail: { run_id: '20261102T103900123Z-a1b2c3' } },
+    { tool: 'apply_heal', args: { run_id: '20261102T103900123Z-a1b2c3', confirm: true }, code: 'NOT_FOUND', detail: { run_id: '20261102T103900123Z-a1b2c3' } },
     // Inside the home folder: a path outside it is refused as INVALID_ARGUMENTS before the disk is looked at.
     { tool: 'run_flow', args: { file: MISSING_FLOW }, code: 'NOT_FOUND', detail: { file: MISSING_FLOW } }
   ])('$tool: a real refusal is -32000 with data.code $code', async ({ tool, args, code, detail }) => {

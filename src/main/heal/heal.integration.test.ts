@@ -6,8 +6,9 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { findBrowserExecutable } from '../cdp/launcher'
 import { TEST_BROWSER_ARGS } from '../cdp/test-browser-args'
-import { runFlowFile, type FlowRunReport, type RunFlowDeps } from '../flow-run'
-import { readRunRecord } from '../run-record'
+import { resolveFlowFile, runFlowFile, type FlowRunReport, type RunFlowDeps } from '../flow-run'
+import { readRunRecord, type RunRecord } from '../run-record'
+import { applyHeal } from './apply'
 import { healProposals, readRunFlow } from './proposals'
 
 /**
@@ -17,6 +18,11 @@ import { healProposals, readRunFlow } from './proposals'
  * that locator to the front and drops the role + name one, `git apply` puts
  * the patch on the real file, and a replay of the healed flow passes without
  * any fallback (and proposes nothing more).
+ *
+ * Second half (apply_heal): the same proposal applied by Nawi after a real
+ * replay of the proposed flow, and a wrong match rejected by that replay: a
+ * restyle moved the `.primary` class to a Discard button, so the CSS fallback
+ * clicks the wrong button, the later assert fails, and the file stays as it is.
  */
 
 const executable = findBrowserExecutable(['playwright-chromium'])
@@ -55,6 +61,18 @@ steps:
     action: assert
     target: { selectors: [{ role: status }] }
     expect: { text: Saved hello }
+`
+
+/** 2.0 also restyled the form: `.primary` is now on Discard, which empties the note. */
+const APP_V2_RESTYLED = `<!doctype html>
+<meta charset="utf-8">
+<title>Notes</title>
+<form onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'Saved ' + document.getElementById('body').value">
+  <textarea id="body" data-testid="note-body"></textarea>
+  <button class="primary" type="button" onclick="document.getElementById('body').value = ''">Discard</button>
+  <button type="submit">Store</button>
+</form>
+<p id="out" role="status"></p>
 `
 
 const why = (r: FlowRunReport): string => JSON.stringify(r, null, 1)
@@ -118,5 +136,52 @@ describeWithBrowser('healing proposals from a real run', () => {
     expect(healed?.fallback_step_ids, 'no drift left').toBeUndefined()
     expect(healed?.steps.find((s) => s.id === 'save')?.matched).toMatchObject({ index: 0, layer: 'css', fallback: false })
     expect(healProposals(healed!, await readRunFlow(healed!, [root]))).toMatchObject({ flow_status: 'current', proposals: [], unhealed: [], diff: '' })
+  }, 60_000)
+
+  /** apply_heal's wiring as tools.ts does it, against the test root and runs folder. */
+  const applyDeps = (record: RunRecord, runs: string): Parameters<typeof applyHeal>[2] => ({
+    readFlow: () => readRunFlow(record, [root]),
+    realPath: () => resolveFlowFile(record.flow.file, [root]),
+    replay: (source) => runFlowFile({ file: record.flow.file, headless: true, screenshots: 'off' }, { ...deps(runs), source })
+  })
+
+  it('apply_heal writes the proposal after its replay passes, and the healed file replays with no fallback', async () => {
+    writeFileSync(join(root, 'app.html'), APP_V2)
+    const file = join(root, 'apply.nawi.yaml')
+    const original = flowText(pathToFileURL(join(root, 'app.html')).href)
+    writeFileSync(file, original)
+    const runs = join(root, 'runs-apply')
+
+    const first = await runFlowFile({ file, headless: true, screenshots: 'off' }, deps(runs))
+    expect(first.status, why(first)).toBe('passed')
+    const record = (await readRunRecord(runs, first.run_id!))!
+    const result = await applyHeal(record, undefined, applyDeps(record, runs))
+    expect(result, JSON.stringify(result, null, 1)).toMatchObject({ applied: true, step_ids: ['save'], replay: { status: 'passed' } })
+    expect(result.replay?.steps.find((s) => s.id === 'save')?.matched).toEqual({ index: 0, layer: 'css', fallback: false })
+    expect(readFileSync(file, 'utf8'), 'only the dropped locator line is gone').toBe(original.replace('        - { role: button, name: Save }\n', ''))
+    expect(readFileSync(file, 'utf8')).toContain('# Recorded against 1.x, when the button said Save.')
+
+    const again = await runFlowFile({ file, headless: true, screenshots: 'off' }, deps(runs))
+    expect(again.status, why(again)).toBe('passed')
+    expect((await readRunRecord(runs, again.run_id!))?.fallback_step_ids, 'no drift left').toBeUndefined()
+  }, 60_000)
+
+  it('apply_heal rejects a wrong match: the moved locator clicks Discard, the replay fails, nothing is written', async () => {
+    writeFileSync(join(root, 'restyled.html'), APP_V2_RESTYLED)
+    const file = join(root, 'wrong.nawi.yaml')
+    const original = flowText(pathToFileURL(join(root, 'restyled.html')).href).replace('{ css: "#save" }', '{ css: ".primary" }')
+    writeFileSync(file, original)
+    const runs = join(root, 'runs-wrong')
+
+    const first = await runFlowFile({ file, headless: true, screenshots: 'off' }, deps(runs))
+    expect(first.status, why(first)).toBe('failed')
+    const record = (await readRunRecord(runs, first.run_id!))!
+    const report = healProposals(record, await readRunFlow(record, [root]))
+    expect(report.proposals.map((p) => p.selectors_after), 'F6a still proposes the fallback that matched').toEqual([[{ css: '.primary' }]])
+
+    const result = await applyHeal(record, undefined, applyDeps(record, runs))
+    expect(result, JSON.stringify(result, null, 1)).toMatchObject({ applied: false, replay: { status: 'failed', failed_step_id: 'done' } })
+    expect(result.reason).toMatch(/failed at step done when replayed/)
+    expect(readFileSync(file, 'utf8'), 'the wrong heal was not written').toBe(original)
   }, 60_000)
 })

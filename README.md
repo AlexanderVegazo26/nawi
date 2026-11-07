@@ -211,13 +211,14 @@ What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
 ## Agent access — MCP and CLI
 
-Nawi exposes twenty-two tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes twenty-three tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
 `run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`),
-`get_heal_proposals` (CLI: `nawi heal <run_id> [--json]`) and
+`get_heal_proposals` (CLI: `nawi heal <run_id> [--json]`), `apply_heal` (CLI: `nawi heal-apply <run_id> [--step id]`,
+or `nawi heal <run_id> --apply`; exit 1 when nothing was written) and
 `inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`), `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
 exit 1 when no device can run it), `mobile_open` (CLI: `nawi mobile-open <file.apk|profile.nawi.mobile.yaml>`,
 exit 1 when the app is not running), `mobile_study` (CLI: `nawi mobile-study [--target serial|avd]`, exit 1 when
@@ -494,7 +495,18 @@ alone.
   written: review the diff and apply it from the flow's folder
   (`nawi heal <run_id> | git apply`). Steps matched only by
   their reference crop, and failed steps nothing matched, are listed as not
-  healed with the reason. Code: `src/main/heal/`.
+  healed with the reason. `apply_heal` / `nawi heal-apply <run_id>` (F6, second
+  part) writes the proposals (all, or `step_ids` / `--step`) into the flow file,
+  but only after replaying the proposed flow (saved as a run record): the file
+  is written only when that replay passes, each healed step matches through its
+  new first locator, and no other step needs a fallback it did not need before.
+  A wrong match (the moved locator finds another element, so a later step
+  fails) is rejected with the reason and nothing is written. The write is
+  atomic (temp file + rename, mode kept), changes only what the diff shows, and
+  happens only while the file still has the sha256 the run replayed (checked
+  again after the replay); read-only and non-UTF-8 files are left alone, and
+  pausing agent access stops it before the write. Over MCP it needs `confirm: true`, the
+  explicit consent to write the user's file. Code: `src/main/heal/`.
 - **Model access layer for AI features** (`src/main/llm`): the one interface
   that semantic assertions, healing, triage and exploration will use. Backends:
   Anthropic (official SDK), any OpenAI-compatible `/chat/completions` endpoint
@@ -794,8 +806,7 @@ CDP selectors and the MCP projection/revision model.
 - **Flows can be written, exported and run (CLI/MCP), but not yet edited in
   the UI.** Run records have an HTML report and MCP/CLI listing, but no in-app UI to browse them yet. Secrets come from
   `NAWI_SECRET_*` only (no OS keychain or prompt yet). Healing proposals
-  cover locator-layer fallbacks only: there is no `apply_heal` yet (apply the
-  diff yourself and rerun), no locator is proposed for a step matched only by
+  cover locator-layer fallbacks only: no locator is proposed for a step matched only by
   its reference crop, and failed steps get no candidate from `intent` + the
   accessibility snapshot yet.
   The app's own recordings don't run the CDP state harvest yet

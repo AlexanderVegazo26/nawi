@@ -31,6 +31,12 @@ export const COMMANDS: Record<string, { tool: string; summary: string }> = {
     tool: 'get_heal_proposals',
     summary: 'Propose locator fixes for a drifting flow from one saved run, as a YAML diff (nothing is written): nawi heal <run_id> [--json].'
   },
+  'heal-apply': {
+    tool: 'apply_heal',
+    summary:
+      'Write those proposals into the flow file once a replay of the proposed flow passes (a wrong match is rejected): ' +
+      'nawi heal-apply <run_id> [--step id] [--headless] [--var k=v]. Exit 1 if nothing was written.'
+  },
   'mobile-inspect': { tool: 'inspect_apk', summary: 'Read an Android app\'s manifest without installing it: nawi mobile-inspect <file.apk>.' },
   'mobile-doctor': {
     tool: 'mobile_doctor',

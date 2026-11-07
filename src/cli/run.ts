@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 /** Mirrors the app's limits (`src/main/flow-run.ts`, the run_flow schema) so a bad value is a usage error here. */
 export const FLOW_FILE_SUFFIX = '.nawi.yaml'
 export const MAX_FLOW_FILE_BYTES = 1024 * 1024
-const STEP_TIMEOUT_RANGE = { min: 100, max: 600_000 }
+export const STEP_TIMEOUT_RANGE = { min: 100, max: 600_000 }
 
 /**
  * `nawi run <file> [--headless] [--var name=value ...]` — the CLI half of the

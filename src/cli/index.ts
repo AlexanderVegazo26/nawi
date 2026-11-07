@@ -50,7 +50,17 @@ import {
 } from './mobile'
 import type { MobileDoctorReport } from '../main/mobile/doctor'
 import type { ApkInfo } from '../main/mobile/apk'
-import { HEAL_USAGE, HealUsageError, isHealReport, parseHealArgs, renderHealReport } from './heal'
+import {
+  HEAL_APPLY_USAGE,
+  HEAL_USAGE,
+  HealUsageError,
+  isApplyHealResult,
+  isHealReport,
+  parseHealApplyArgs,
+  parseHealArgs,
+  renderApplyHeal,
+  renderHealReport
+} from './heal'
 import {
   SERVE_SUMMARY,
   SERVE_USAGE,
@@ -125,6 +135,8 @@ Nawi must already be running (the app, or \`nawi serve\`); no other command star
 ${RUN_USAGE}
 
 ${HEAL_USAGE}
+
+${HEAL_APPLY_USAGE}
 
 ${MOBILE_INSPECT_USAGE}
 
@@ -224,7 +236,9 @@ async function main(): Promise<void> {
   }
 
   if (command === 'run') return runCommand(argv.slice(1))
+  if (command === 'heal' && argv.includes('--apply')) return healApplyCommand(argv.slice(1))
   if (command === 'heal') return healCommand(argv.slice(1))
+  if (command === 'heal-apply') return healApplyCommand(argv.slice(1))
   if (command === 'mobile-inspect') return mobileInspectCommand(argv.slice(1))
   if (command === 'mobile-doctor') return mobileDoctorCommand(argv.slice(1))
   if (command === 'mobile-open') return mobileOpenCommand(argv.slice(1))
@@ -365,6 +379,37 @@ async function healCommand(argv: string[]): Promise<void> {
   }
   process.stdout.write(`${args.json ? JSON.stringify(report, null, 2) : renderHealReport(report)}\n`)
   process.exit(EXIT_OK)
+}
+
+/**
+ * `nawi heal-apply <run_id>` (and `nawi heal <run_id> --apply`): typing the command is the consent apply_heal asks
+ * for. The flow's env/secret names are read from its file (get_heal_proposals names it), as `nawi run` does.
+ */
+async function healApplyCommand(argv: string[]): Promise<void> {
+  let args: ReturnType<typeof parseHealApplyArgs>
+  try {
+    args = parseHealApplyArgs(argv)
+  } catch (err) {
+    if (err instanceof HealUsageError) fail(`${err.message}\n\n${HEAL_APPLY_USAGE}`, EXIT_USAGE)
+    throw err
+  }
+  const proposals = ((await callTool('get_heal_proposals', { run_id: args.run_id })) as { structuredContent?: unknown })?.structuredContent
+  if (!isHealReport(proposals)) {
+    fail(`Nawi returned an unexpected get_heal_proposals result: ${JSON.stringify(proposals).slice(0, 500)}`, EXIT_APP_ERROR)
+  }
+  const text = readFlowText(proposals.flow.file, { statSync, readFileSync }) ?? ''
+  const { env, secrets } = inputsFor(flowReferences(text, Object.values(args.vars)), process.env)
+  const { json, run_id, step_ids, ...rest } = args
+  const result = (
+    (await callTool('apply_heal', { run_id, ...(step_ids ? { step_ids } : {}), confirm: true, ...rest, env, secrets })) as {
+      structuredContent?: unknown
+    }
+  )?.structuredContent
+  if (!isApplyHealResult(result)) {
+    fail(`Nawi returned an unexpected apply_heal result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
+  }
+  process.stdout.write(`${json ? JSON.stringify(result, null, 2) : renderApplyHeal(result)}\n`)
+  process.exit(result.applied ? EXIT_OK : EXIT_APP_ERROR)
 }
 
 /** `nawi mobile-inspect <file.apk>`: positional file resolved here, the reading done by the app's inspect_apk. */

@@ -14,8 +14,9 @@ import { ToolError, agentAccessPaused, notImplemented } from './errors'
 import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
-import { MAX_FLOW_PATH, runFlowFile } from '../flow-run'
+import { MAX_FLOW_PATH, resolveFlowFile, runFlowFile } from '../flow-run'
 import { healProposals, readRunFlow } from '../heal/proposals'
+import { applyHeal } from '../heal/apply'
 import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, newRunId, pruneRuns, readRunRecord } from '../run-record'
 import { REVISION_RE } from '../sidecar/paths'
 import { inspectApkFile } from '../mobile/apk'
@@ -759,15 +760,8 @@ const runFlow = defineTool({
       .describe('Page screenshots around each step in the run record.')
   }),
   async run(args, ctx) {
-    const stop = new AbortController()
-    const pause = (): void => stop.abort('agent access was paused in Nawi, so the remaining steps were not run')
-    const off = settings.onSettingsChanged((next) => {
-      if (next.agentAccessPaused) pause()
-    })
-    try {
-      // Paused between dispatch's check and the subscription above: refuse before launching anything.
-      if ((await settings.getSettings()).agentAccessPaused) throw agentAccessPaused()
-      return await runFlowFile(
+    return withAgentStop(ctx, (signal) =>
+      runFlowFile(
         {
           file: args.file,
           vars: args.vars,
@@ -779,16 +773,33 @@ const runFlow = defineTool({
           screenshots: args.screenshots
         },
         {
-          signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
+          signal,
           record: { dir: runsDir(), appVersion: app.getVersion() },
           onStep: ctx.progress ? (step) => ctx.progress?.(stepProgress(step)) : undefined
         }
       )
-    } finally {
-      off()
-    }
+    )
   }
 })
+
+/**
+ * Runs `work` with a signal that fires when agent access is paused in Nawi or the caller cancels, so a replay stops
+ * after the step in progress. Refuses before starting when access is already paused.
+ */
+async function withAgentStop<T>(ctx: { signal?: AbortSignal }, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const stop = new AbortController()
+  const pause = (): void => stop.abort('agent access was paused in Nawi, so the remaining steps were not run')
+  const off = settings.onSettingsChanged((next) => {
+    if (next.agentAccessPaused) pause()
+  })
+  try {
+    // Paused between dispatch's check and the subscription above: refuse before launching anything.
+    if ((await settings.getSettings()).agentAccessPaused) throw agentAccessPaused()
+    return await work(ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal)
+  } finally {
+    off()
+  }
+}
 
 /** Roadmap F4c: the saved run records, newest first, without their steps. */
 const listRunsTool = defineTool({
@@ -841,8 +852,8 @@ const getHealProposals = defineTool({
     'step that passed only through a fallback locator, a YAML patch that moves the locator that matched to the front ' +
     'and drops the ones that found nothing, with the evidence (matched and missed locators, URL, before/after ' +
     'screenshots relative to the run folder). Also lists steps it cannot heal from the record and why. Nothing is ' +
-    'written: review the diff and apply it yourself. flow_status "changed" means the flow file was edited since the ' +
-    'run: run it again first.',
+    'written: review the diff, then apply it yourself or with apply_heal (which replays it first). flow_status ' +
+    '"changed" means the flow file was edited since the run: run it again first.',
   idempotent: true,
   errors: ['NOT_FOUND'],
   schema: z.object({
@@ -852,6 +863,66 @@ const getHealProposals = defineTool({
     const record = await readRunRecord(runsDir(), args.run_id)
     if (!record) throw new ToolError('NOT_FOUND', `No saved run ${args.run_id}. Call list_runs for the runs that exist.`, { run_id: args.run_id })
     return { ...healProposals(record, await readRunFlow(record)), run_dir: join(runsDir(), args.run_id) }
+  }
+})
+
+/**
+ * Roadmap F6 (second slice): write a healing proposal into the flow file, only after a replay of the proposed flow
+ * holds (see heal/apply.ts). `confirm: true` is the explicit consent to write the user's file.
+ */
+const applyHealTool = defineTool({
+  name: 'apply_heal',
+  description:
+    'Apply the healing proposals of one saved run (see get_heal_proposals) to its flow file: only the steps in ' +
+    'step_ids (default: every proposal). Nawi first replays the proposed flow in a browser (it is saved as a run ' +
+    'record like run_flow\'s) and writes the file only when that replay passed, each healed step matched through ' +
+    'its new first locator, and no other step needed a fallback it did not need before; a wrong match (the moved ' +
+    'locator finds another element, so a later step fails) is rejected and nothing is written. The write changes ' +
+    'only what the diff shows, atomically, and only while the file is still the one the run replayed (read-only or ' +
+    'non-UTF-8 files are left alone). confirm must be true: it writes the user\'s flow file, so show them the diff first. applied: false ' +
+    'comes with the reason. vars, env, secrets, headless, cdp_endpoint and step_timeout_ms are as in run_flow.',
+  idempotent: false,
+  errors: ['NOT_FOUND', 'NOT_IMPLEMENTED', 'UNAVAILABLE'],
+  schema: z.object({
+    run_id: z.string().regex(RUN_ID_RE, 'a run id such as 20261102T103900123Z-a1b2c3 (see list_runs)'),
+    step_ids: z.array(z.string().min(1).max(200)).min(1).max(500).optional().describe('Steps to heal; default every proposal.'),
+    confirm: z.literal(true).describe('Must be true: this writes the flow file.'),
+    vars: inputMap('vars').describe('Values for vars the flow declares, overriding the file\'s defaults.'),
+    env: inputMap('env values').describe('Values for ${env.NAME} references.'),
+    secrets: inputMap('secrets').describe('Values for ${secret.name} references. Never stored or reported.'),
+    headless: z.boolean().default(false),
+    cdp_endpoint: z.string().max(200).optional().describe('e.g. "9222" or "127.0.0.1:9222". Loopback only.'),
+    step_timeout_ms: z.number().int().min(100).max(600_000).optional().describe('Default per-step timeout (5000).')
+  }),
+  async run(args, ctx) {
+    const record = await readRunRecord(runsDir(), args.run_id)
+    if (!record) throw new ToolError('NOT_FOUND', `No saved run ${args.run_id}. Call list_runs for the runs that exist.`, { run_id: args.run_id })
+    return withAgentStop(ctx, (signal) =>
+      applyHeal(record, args.step_ids, {
+        readFlow: () => readRunFlow(record),
+        realPath: () => resolveFlowFile(record.flow.file),
+        replay: (source) =>
+          runFlowFile(
+            {
+              file: record.flow.file,
+              vars: args.vars,
+              env: args.env,
+              secrets: args.secrets,
+              headless: args.headless,
+              cdpEndpoint: args.cdp_endpoint,
+              stepTimeoutMs: args.step_timeout_ms,
+              screenshots: 'all'
+            },
+            {
+              signal,
+              source,
+              record: { dir: runsDir(), appVersion: app.getVersion() },
+              onStep: ctx.progress ? (step) => ctx.progress?.(stepProgress(step)) : undefined
+            }
+          ),
+        signal
+      })
+    )
   }
 })
 
@@ -1348,6 +1419,7 @@ export const TOOLS: ToolDefinition[] = [
   listRunsTool,
   getRun,
   getHealProposals,
+  applyHealTool,
   inspectApk,
   mobileDoctor,
   mobileOpen,

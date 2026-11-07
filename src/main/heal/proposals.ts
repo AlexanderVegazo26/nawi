@@ -211,6 +211,33 @@ function patchedText(text: string, doc: Document, flow: Flow, changes: Array<{ s
  * when it could not be read). Pure: the caller reads the record and the file.
  */
 export function healProposals(record: RunRecord, flowFile: Buffer | string | null, displayName: string = basename(record.flow.file)): HealReport {
+  return analyse(record, flowFile, displayName).report
+}
+
+/**
+ * The flow text with the proposals for these steps applied (all of them when
+ * `stepIds` is undefined), for apply_heal. `text` is null when the report has
+ * no proposal for one of the steps (see `missing`) or none at all; `diff` is
+ * the patch for exactly those steps.
+ */
+export function healedFlow(
+  record: RunRecord,
+  flowFile: Buffer | string | null,
+  stepIds?: string[],
+  displayName: string = basename(record.flow.file)
+): { report: HealReport; step_ids: string[]; missing: string[]; text: string | null; diff: string } {
+  const { report, patch } = analyse(record, flowFile, displayName)
+  const known = report.proposals.map((p) => p.step_id)
+  const wanted = stepIds ?? known
+  const missing = wanted.filter((id) => !known.includes(id))
+  if (!patch || wanted.length === 0 || missing.length > 0) return { report, step_ids: wanted, missing, text: null, diff: '' }
+  const text = patch(wanted)
+  return { report, step_ids: wanted, missing, text, diff: text === null ? '' : unifiedDiff(patch.original, text, displayName) }
+}
+
+type Patch = ((stepIds: string[]) => string | null) & { original: string }
+
+function analyse(record: RunRecord, flowFile: Buffer | string | null, displayName: string): { report: HealReport; patch?: Patch } {
   const base = { run_id: record.run_id, flow: { name: record.flow.name, file: record.flow.file } }
   const candidates = record.steps.filter((s) => s.status === 'passed' && s.matched?.fallback === true)
   const unhealed: Unhealed[] = []
@@ -225,13 +252,15 @@ export function healProposals(record: RunRecord, flowFile: Buffer | string | nul
       unhealed.push({ step_id: step.id, status: step.status, reason: 'no locator and no reference crop matched; nothing to propose from this run' })
     }
   }
-  const empty = (flow_status: FlowStatus, note?: string): HealReport => ({
-    ...base,
-    flow_status,
-    proposals: [],
-    unhealed,
-    diff: '',
-    ...(note !== undefined ? { note } : {})
+  const empty = (flow_status: FlowStatus, note?: string): { report: HealReport } => ({
+    report: {
+      ...base,
+      flow_status,
+      proposals: [],
+      unhealed,
+      diff: '',
+      ...(note !== undefined ? { note } : {})
+    }
   })
 
   if (flowFile === null) return empty('missing', 'The flow file is gone or can no longer be read, so there is nothing to patch.')
@@ -291,12 +320,22 @@ export function healProposals(record: RunRecord, flowFile: Buffer | string | nul
   // Steps in run order, so the report reads like the flow.
   const order = new Map(record.steps.map((s, i) => [s.id, i]))
   unhealed.sort((x, y) => (order.get(x.step_id) ?? 0) - (order.get(y.step_id) ?? 0))
+  const patch: Patch = Object.assign(
+    (stepIds: string[]): string | null => {
+      const chosen = changes.filter((c) => stepIds.includes(c.stepId))
+      return chosen.length > 0 ? patchedText(flowText, parsed.document, parsed.flow, chosen) : null
+    },
+    { original: flowText }
+  )
   return {
-    ...base,
-    flow_status: 'current',
-    proposals,
-    unhealed,
-    diff: changes.length > 0 ? unifiedDiff(flowText, patchedText(flowText, parsed.document, parsed.flow, changes) ?? flowText, displayName) : ''
+    report: {
+      ...base,
+      flow_status: 'current',
+      proposals,
+      unhealed,
+      diff: changes.length > 0 ? unifiedDiff(flowText, patch(changes.map((c) => c.stepId)) ?? flowText, displayName) : ''
+    },
+    patch
   }
 }
 
