@@ -3,9 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FlowRun } from './replay/replay'
+import { toHtmlReport } from './run-report'
 import {
+  HEAL_REPLAY_MARKER,
+  KEPT_HEAL_REPLAYS,
   RUN_ID_RE,
   buildRunRecord,
+  readRunRecord,
+  summarizeRun,
   matchedLine,
   missReason,
   newRunId,
@@ -325,6 +330,58 @@ describe('writeRunRecord and pruneRuns', () => {
     expect(await pruneRuns(runs, 2)).toEqual([ids[0], ids[1]])
     expect(readdirSync(runs).sort()).toEqual(['20200101T000000000Z-ffffff', ids[2], ids[3], 'my-notes'].sort())
     expect(await pruneRuns(join(runs, 'missing')), 'a missing folder is nothing to prune').toEqual([])
+  })
+
+  /** Saves a passed one-step run started at T0 + i seconds; a heal replay of `healOf` when given. */
+  const saveRun = async (i: number, healOf?: string): Promise<string> => {
+    const built = buildRunRecord({
+      runId: newRunId(T0 + i * 1000, () => (healOf ? 'eeeeee' : 'aaaaaa')),
+      flow: { name: 'f', file: '/home/u/flows/save.nawi.yaml', sha256: 'f'.repeat(64) },
+      run: { status: 'passed', startedAt: T0 + i * 1000, durationMs: 5, steps: [{ id: 's1', action: 'press', status: 'passed' }] },
+      environment: { os: { platform: 'linux', release: '7.0.0', arch: 'x64' } },
+      ...(healOf !== undefined ? { healOf } : {})
+    })
+    await writeRunRecord(runs, built.record, built.assets)
+    return built.record.run_id
+  }
+
+  it('marks an apply_heal replay: heal_of in run.json, list summary and report, plus the marker file', async () => {
+    const healed = await saveRun(0)
+    const replay = await saveRun(1, healed)
+    const back = await readRunRecord(runs, replay)
+    expect(back?.heal_of, 'run.json names the healed run').toBe(healed)
+    expect(summarizeRun(back!).heal_of, 'list_runs shows it').toBe(healed)
+    expect(existsSync(join(runs, replay, HEAL_REPLAY_MARKER)), 'pruneRuns reads the marker, not run.json').toBe(true)
+    expect(existsSync(join(runs, healed, HEAL_REPLAY_MARKER)), 'an ordinary run has no marker').toBe(false)
+    const ordinary = await readRunRecord(runs, healed)
+    expect(ordinary && 'heal_of' in ordinary, 'an ordinary run has no heal_of key').toBe(false)
+    const html = toHtmlReport(back!, new Map())
+    expect(html).toContain(`Replay of the healing proposals of run ${healed}`)
+    expect(html).toContain('Proposed flow SHA-256')
+    expect(toHtmlReport(ordinary!, new Map())).not.toContain('healing proposals')
+  })
+
+  it('refuses to write, and will not read, a heal_of that is not a run id', async () => {
+    const id = await saveRun(0)
+    const { record: r, assets } = record()
+    await expect(writeRunRecord(runs, { ...r, heal_of: '../x' }, assets)).rejects.toThrow(/not a run id/)
+    const file = join(runs, id, 'run.json')
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), heal_of: '../../etc' }))
+    expect(await readRunRecord(runs, id), 'a record with a malformed heal_of is not whole').toBeNull()
+  })
+
+  it('does not count heal replays toward keep, and keeps only the newest KEPT_HEAL_REPLAYS of them', async () => {
+    const ordinary = [await saveRun(0), await saveRun(1)]
+    const replays: string[] = []
+    for (let i = 0; i < KEPT_HEAL_REPLAYS + 3; i++) replays.push(await saveRun(10 + i, ordinary[1]))
+    const newest = await saveRun(100)
+
+    // keep 20 of 26 run folders: counted together, the 2 ordinary runs older than the replays would go.
+    const deleted = await pruneRuns(runs, KEPT_HEAL_REPLAYS)
+    expect(deleted, 'only the 3 oldest replays').toEqual(replays.slice(0, 3))
+    expect(readdirSync(runs).sort(), 'every ordinary run survives a burst of heal replays').toEqual([...ordinary, ...replays.slice(3), newest].sort())
+    expect(await pruneRuns(runs, 1), 'replays never outnumber keep').toEqual([...ordinary, ...replays.slice(3, -1)])
+    expect(readdirSync(runs).sort()).toEqual([replays.at(-1), newest].sort())
   })
 
   it('removes temporary folders a crashed write left behind, but not one younger than an hour', async () => {

@@ -37,6 +37,16 @@ import { anchorMissText } from './replay/visual-anchor'
 export const RUN_RECORD_VERSION = 1
 /** How many runs the app keeps; older ones are deleted after each new run. */
 export const DEFAULT_KEEP_RUNS = 200
+/**
+ * How many apply_heal replays (records with `heal_of`) are kept, on top of
+ * the `keep` ordinary runs: a burst of heal attempts never pushes real runs out.
+ */
+export const KEPT_HEAL_REPLAYS = 20
+/**
+ * Empty file in the folder of a run with `heal_of`, so pruneRuns can tell the
+ * two kinds apart without parsing every run.json.
+ */
+export const HEAL_REPLAY_MARKER = 'heal-replay'
 
 /** `20261102T103900123Z-a1b2c3`: sorts by start time, and is safe as a folder name everywhere. */
 export const RUN_ID_RE = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/
@@ -116,6 +126,13 @@ export interface RunRecord {
    * Absent when there are none.
    */
   fallback_step_ids?: string[]
+  /**
+   * Set when this run is apply_heal's replay of the healing proposals of run
+   * `heal_of`: it replayed proposed flow text, not the file's bytes, so
+   * `flow.sha256` is that text's hash (the file holds it only if the heal was
+   * written). Absent for ordinary runs.
+   */
+  heal_of?: string
   steps: RecordedStep[]
 }
 
@@ -133,6 +150,8 @@ export interface RunRecordInput {
   flow: { name: string; file: string; sha256: string }
   run: FlowRun
   environment: RunEnvironment
+  /** The run whose healing proposals this run replayed (apply_heal). */
+  healOf?: string
 }
 
 /** The record plus the screenshot files it refers to (relative path → PNG bytes). */
@@ -201,6 +220,7 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     ...(opening && Object.keys(opening).length > 0 ? { opening } : {}),
     ...(run.finalUrl !== undefined ? { final_url: run.finalUrl } : {}),
     ...(fallbacks.length > 0 ? { fallback_step_ids: fallbacks } : {}),
+    ...(input.healOf !== undefined ? { heal_of: input.healOf } : {}),
     steps
   }
   return { record, assets }
@@ -346,6 +366,7 @@ export async function writeRunRecord(
   reportHtml?: string
 ): Promise<string> {
   if (!RUN_ID_RE.test(record.run_id)) throw new Error(`not a run id: ${JSON.stringify(record.run_id)}`)
+  if (record.heal_of !== undefined && !RUN_ID_RE.test(record.heal_of)) throw new Error(`not a run id: ${JSON.stringify(record.heal_of)}`)
   await fs.mkdir(runsRoot, { recursive: true })
   const final = join(runsRoot, record.run_id)
   const temp = join(runsRoot, `.tmp-${record.run_id}`)
@@ -358,6 +379,7 @@ export async function writeRunRecord(
     }
     await fs.writeFile(join(temp, 'junit.xml'), toJUnitXml(record))
     if (reportHtml !== undefined) await fs.writeFile(join(temp, 'report.html'), reportHtml)
+    if (record.heal_of !== undefined) await fs.writeFile(join(temp, HEAL_REPLAY_MARKER), '')
     // run.json last: its presence in a folder means the run is complete.
     await fs.writeFile(join(temp, 'run.json'), `${JSON.stringify(record, null, 2)}\n`)
     await fs.rename(temp, final)
@@ -370,7 +392,8 @@ export async function writeRunRecord(
 
 /**
  * Deletes all but the newest `keep` runs (by run id, which sorts by start
- * time), and temporary folders a crashed write left behind (older than an
+ * time), apply_heal replays beyond the newest KEPT_HEAL_REPLAYS (they don't
+ * count toward `keep`), and temporary folders a crashed write left behind (older than an
  * hour, so a run being written right now is safe). Only folders named like a
  * run id are touched; anything else a user put in the folder stays. Returns
  * the names it deleted.
@@ -386,7 +409,17 @@ export async function pruneRuns(runsRoot: string, keep: number = DEFAULT_KEEP_RU
     .filter((e) => e.isDirectory() && RUN_ID_RE.test(e.name))
     .map((e) => e.name)
     .sort()
-  const doomed = runs.slice(0, Math.max(0, runs.length - Math.max(0, keep)))
+  const ordinary: string[] = []
+  const replays: string[] = []
+  for (const name of runs) {
+    const marked = await fs.access(join(runsRoot, name, HEAL_REPLAY_MARKER)).then(
+      () => true,
+      () => false
+    )
+    ;(marked ? replays : ordinary).push(name)
+  }
+  const oldest = (names: string[], kept: number): string[] => names.slice(0, Math.max(0, names.length - Math.max(0, kept)))
+  const doomed = [...oldest(ordinary, keep), ...oldest(replays, Math.min(KEPT_HEAL_REPLAYS, keep))].sort()
   for (const e of entries) {
     if (!e.isDirectory() || !e.name.startsWith('.tmp-') || !RUN_ID_RE.test(e.name.slice(5))) continue
     const stat = await fs.stat(join(runsRoot, e.name)).catch(() => null)
@@ -406,6 +439,8 @@ export interface RunSummary {
   totals: RunRecord['totals']
   failed_step_id?: string
   error?: string
+  /** Present on apply_heal's replays: the run whose proposals were replayed. */
+  heal_of?: string
 }
 
 export function summarizeRun(record: RunRecord): RunSummary {
@@ -417,7 +452,8 @@ export function summarizeRun(record: RunRecord): RunSummary {
     duration_ms: record.duration_ms,
     totals: record.totals,
     ...(record.failed_step_id !== undefined ? { failed_step_id: record.failed_step_id } : {}),
-    ...(record.error !== undefined ? { error: record.error } : {})
+    ...(record.error !== undefined ? { error: record.error } : {}),
+    ...(record.heal_of !== undefined ? { heal_of: record.heal_of } : {})
   }
 }
 
@@ -446,6 +482,7 @@ export async function readRunRecord(runsRoot: string, runId: string): Promise<Ru
     typeof r.duration_ms !== 'number' ||
     typeof r.flow?.name !== 'string' ||
     typeof r.flow.file !== 'string' ||
+    (r.heal_of !== undefined && (typeof r.heal_of !== 'string' || !RUN_ID_RE.test(r.heal_of))) ||
     [t?.passed, t?.failed, t?.skipped, t?.not_run].some((n) => typeof n !== 'number')
   ) {
     return null

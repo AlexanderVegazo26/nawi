@@ -806,7 +806,8 @@ const listRunsTool = defineTool({
   name: 'list_runs',
   description:
     'List saved flow run records (from run_flow / nawi run), newest first: run_id, flow, status, start time, ' +
-    'duration, step totals and the failing step. Filter by status or flow file; limit defaults to 20. ' +
+    'duration, step totals and the failing step; apply_heal\'s replays carry heal_of (the run whose proposals they ' +
+    'replayed). Filter by status or flow file; limit defaults to 20. ' +
     'Use get_run for one run\'s steps and evidence.',
   idempotent: true,
   errors: [],
@@ -875,7 +876,7 @@ const applyHealTool = defineTool({
   description:
     'Apply the healing proposals of one saved run (see get_heal_proposals) to its flow file: only the steps in ' +
     'step_ids (default: every proposal). Nawi first replays the proposed flow in a browser (it is saved as a run ' +
-    'record like run_flow\'s) and writes the file only when that replay passed, each healed step matched through ' +
+    'record like run_flow\'s, with heal_of = run_id) and writes the file only when that replay passed, each healed step matched through ' +
     'its new first locator, and no other step needed a fallback it did not need before; a wrong match (the moved ' +
     'locator finds another element, so a later step fails) is rejected and nothing is written. The write changes ' +
     'only what the diff shows, atomically, and only while the file is still the one the run replayed (read-only or ' +
@@ -916,6 +917,7 @@ const applyHealTool = defineTool({
             {
               signal,
               source,
+              healOf: record.run_id,
               record: { dir: runsDir(), appVersion: app.getVersion() },
               onStep: ctx.progress ? (step) => ctx.progress?.(stepProgress(step)) : undefined
             }

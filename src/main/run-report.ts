@@ -126,7 +126,7 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
   const env = record.environment
   const rows: Array<[string, string]> = [
     ['Flow file', record.flow.file],
-    ['Flow SHA-256', record.flow.sha256],
+    [typeof record.heal_of === 'string' ? 'Proposed flow SHA-256' : 'Flow SHA-256', record.flow.sha256],
     ['Started', record.started_at],
     ['Duration', ms(record.duration_ms)],
     ['Run id', record.run_id],
@@ -159,6 +159,9 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
     `<h1>${htmlEscape(record.flow.name)} <span class="badge ${htmlEscape(record.status)}">${htmlEscape(STATUS_LABEL[record.status] ?? record.status)}</span></h1>`,
     `<p class="muted">${htmlEscape(summary)}${failedIndex >= 0 ? ` · first failure: <a href="#step-${failedIndex + 1}">${htmlEscape(record.steps[failedIndex].id)}</a>` : ''}</p>`,
     record.error ? `<pre>${htmlEscape(record.error)}</pre>` : '',
+    typeof record.heal_of === 'string'
+      ? `<p class="muted">Replay of the healing proposals of run ${htmlEscape(record.heal_of)}: it ran the proposed flow, not the file as it was. The file holds that flow only if the heal was applied.</p>`
+      : '',
     drift,
     `<dl>${rows.map(([k, v]) => `<dt>${htmlEscape(k)}</dt><dd>${htmlEscape(v)}</dd>`).join('')}</dl>`,
     record.opening ? `<h2>While opening the target</h2>${evidence(record.opening)}` : '',

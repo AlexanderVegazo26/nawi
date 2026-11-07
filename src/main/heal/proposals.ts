@@ -268,6 +268,12 @@ function analyse(record: RunRecord, flowFile: Buffer | string | null, displayNam
   const sha = createHash('sha256').update(flowFile).digest('hex')
   const flowText = typeof flowFile === 'string' ? flowFile : flowFile.toString('utf8')
   if (sha !== record.flow.sha256) {
+    if (record.heal_of !== undefined) {
+      return empty(
+        'changed',
+        `Run ${record.run_id} was apply_heal's replay of the proposals of run ${record.heal_of}: it ran proposed flow text that is not in the file (the heal was not applied, or the file changed since). Ask for proposals from run ${record.heal_of}, or run the flow again.`
+      )
+    }
     return empty('changed', 'The flow file changed since this run, so its locators may no longer be where the run saw them. Run the flow again and ask for proposals from that run.')
   }
   const parsed = parseFlow(flowText)

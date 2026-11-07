@@ -462,7 +462,7 @@ alone.
   `--screenshots failed` (MCP `screenshots: "failed"`) keeps only the page the
   failing step left, `off` none; `nawi run` prints the failing step's
   screenshot path and JUnit names it in the failure text. The folder is written under a temporary name and renamed,
-  so a reader never sees half a run; the newest 200 runs are kept. Secret
+  so a reader never sees half a run; the newest 200 runs are kept (plus up to 20 `apply_heal` replays, which don't count toward the 200). Secret
   values are scrubbed from the text, and in every screenshot the fields the
   run typed a secret into are drawn as discs (masked just for the capture,
   then restored); a secret the page itself shows elsewhere as text is not
@@ -497,7 +497,8 @@ alone.
   their reference crop, and failed steps nothing matched, are listed as not
   healed with the reason. `apply_heal` / `nawi heal-apply <run_id>` (F6, second
   part) writes the proposals (all, or `step_ids` / `--step`) into the flow file,
-  but only after replaying the proposed flow (saved as a run record): the file
+  but only after replaying the proposed flow (saved as a run record marked
+  `heal_of: <run_id>`, so it never reads as a run of an edited file): the file
   is written only when that replay passes, each healed step matches through its
   new first locator, and no other step needs a fallback it did not need before.
   A wrong match (the moved locator finds another element, so a later step

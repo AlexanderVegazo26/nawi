@@ -261,6 +261,18 @@ describe('healProposals', () => {
     expect(report.unhealed[1].reason).toMatch(/nothing to propose/)
   })
 
+  it("names the healed run when asked about apply_heal's replay of text that is not in the file", () => {
+    const healedRun = '20261107T120000000Z-def456'
+    // The replay ran the proposed text (its sha); the file still holds FLOW because the heal was rejected.
+    const replay = { ...record([typeStep, saveDrifted, doneStep], FLOW.replace('hello', 'hi')), heal_of: healedRun }
+    const report = healProposals(replay, FLOW)
+    expect(report).toMatchObject({ flow_status: 'changed', proposals: [], diff: '' })
+    expect(report.note, 'not the generic "file changed" note').toContain(`replay of the proposals of run ${healedRun}`)
+    expect(report.note).toContain(`Ask for proposals from run ${healedRun}`)
+    // Once the heal was written, the replay is a run of the file like any other.
+    expect(healProposals(replay, FLOW.replace('hello', 'hi')).flow_status).toBe('current')
+  })
+
   it('refuses to patch a flow file that changed since the run, is gone, or no longer parses', () => {
     const run = record([typeStep, saveDrifted, doneStep])
     const changed = healProposals(run, FLOW.replace('hello', 'hi'))

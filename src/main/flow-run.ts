@@ -107,6 +107,11 @@ export interface RunFlowDeps {
    * check and the flow's relative assets, and the record names it.
    */
   source?: Buffer
+  /**
+   * The run whose healing proposals `source` holds (apply_heal): saved as the
+   * record's `heal_of`, so the record is not read as a run of the file itself.
+   */
+  healOf?: string
 }
 
 /** Console errors and failed requests per step in `run_flow`'s answer; the run record keeps up to 20 of each. */
@@ -438,7 +443,8 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
           ...(deps.record.appVersion !== undefined ? { app_version: deps.record.appVersion } : {}),
           os: { platform: platform(), release: release(), arch: arch() },
           ...facts
-        }
+        },
+        ...(deps.healOf !== undefined ? { healOf: deps.healOf } : {})
       })
       // The report is a convenience: if it cannot be rendered, the record (run.json, junit.xml) is still saved.
       let html: string | undefined

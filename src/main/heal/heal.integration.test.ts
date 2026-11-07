@@ -142,7 +142,7 @@ describeWithBrowser('healing proposals from a real run', () => {
   const applyDeps = (record: RunRecord, runs: string): Parameters<typeof applyHeal>[2] => ({
     readFlow: () => readRunFlow(record, [root]),
     realPath: () => resolveFlowFile(record.flow.file, [root]),
-    replay: (source) => runFlowFile({ file: record.flow.file, headless: true, screenshots: 'off' }, { ...deps(runs), source })
+    replay: (source) => runFlowFile({ file: record.flow.file, headless: true, screenshots: 'off' }, { ...deps(runs), source, healOf: record.run_id })
   })
 
   it('apply_heal writes the proposal after its replay passes, and the healed file replays with no fallback', async () => {
@@ -183,5 +183,12 @@ describeWithBrowser('healing proposals from a real run', () => {
     expect(result, JSON.stringify(result, null, 1)).toMatchObject({ applied: false, replay: { status: 'failed', failed_step_id: 'done' } })
     expect(result.reason).toMatch(/failed at step done when replayed/)
     expect(readFileSync(file, 'utf8'), 'the wrong heal was not written').toBe(original)
+
+    // The rejected replay's record says what it was, instead of looking like a run of an edited file.
+    const replayRecord = (await readRunRecord(runs, result.replay!.run_id!))!
+    expect(replayRecord.heal_of, 'the replay names the run it healed').toBe(record.run_id)
+    const fromReplay = healProposals(replayRecord, await readRunFlow(replayRecord, [root]))
+    expect(fromReplay.flow_status).toBe('changed')
+    expect(fromReplay.note, 'points back at the run to take proposals from').toContain(`proposals of run ${record.run_id}`)
   }, 60_000)
 })
