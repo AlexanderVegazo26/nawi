@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseFlow, stringifyFlow } from '../../shared/flow'
+import { keyLines, touchLines } from './fixtures/getevent'
 import { device, ID, PKG, type Device } from './fixtures/shop-app'
 import { replayAndroidFlow } from './flow-replay'
 import { dumpLine, parseUiDump, type UiScreen } from './hierarchy'
@@ -78,31 +79,6 @@ const GETEVENT_TAP_BACK = `add device 3: /dev/input/event2
 `
 
 const PANEL: TouchPanel = { path: '/dev/input/event2', x: { min: 0, max: 32767 }, y: { min: 0, max: 32767 } }
-const hex = (n: number): string => (n >>> 0).toString(16).padStart(8, '0')
-/** The raw panel value whose scaled pixel is `px` (the inverse of GestureReader's scaling). */
-const raw = (px: number, size: number): number => Math.ceil((px * 32767) / size)
-
-/** `getevent -lt` lines for one finger: down at `from`, moved through `path`, up after `ms`. */
-function touchLines(t0: number, from: [number, number], ms: number, path: Array<[number, number]> = [], slot = 0, id = 1): string {
-  const at = (t: number): string => `[${(t / 1000).toFixed(6).padStart(14)}] /dev/input/event2:`
-  const lines = [
-    `${at(t0)} EV_ABS       ABS_MT_SLOT          ${hex(slot)}`,
-    `${at(t0)} EV_ABS       ABS_MT_TRACKING_ID   ${hex(id)}`,
-    `${at(t0)} EV_ABS       ABS_MT_POSITION_X    ${hex(raw(from[0], 1080))}`,
-    `${at(t0)} EV_ABS       ABS_MT_POSITION_Y    ${hex(raw(from[1], 2400))}`,
-    `${at(t0)} EV_SYN       SYN_REPORT           00000000`
-  ]
-  path.forEach(([x, y], i) => {
-    const t = t0 + ((i + 1) * ms) / (path.length + 1)
-    lines.push(`${at(t)} EV_ABS       ABS_MT_POSITION_X    ${hex(raw(x, 1080))}`, `${at(t)} EV_ABS       ABS_MT_POSITION_Y    ${hex(raw(y, 2400))}`, `${at(t)} EV_SYN       SYN_REPORT           00000000`)
-  })
-  lines.push(`${at(t0 + ms)} EV_ABS       ABS_MT_TRACKING_ID   ffffffff`, `${at(t0 + ms)} EV_SYN       SYN_REPORT           00000000`)
-  return `${lines.join('\n')}\n`
-}
-
-const keyLines = (t: number, key: string): string =>
-  [`[${(t / 1000).toFixed(6).padStart(14)}] /dev/input/event1: EV_KEY       ${key}             DOWN`, `[${((t + 50) / 1000).toFixed(6).padStart(14)}] /dev/input/event1: EV_KEY       ${key}             UP`].join('\n') + '\n'
-
 const read = (text: string): RawInput[] => new GestureReader([PANEL], DISPLAY).push(text)
 
 describe('getevent parsing', () => {

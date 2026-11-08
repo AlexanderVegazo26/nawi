@@ -53,6 +53,10 @@ export const COMMANDS: Record<string, { tool: string; summary: string }> = {
   'mobile-explore': {
     tool: 'mobile_explore',
     summary: 'Explore the app a connected Android device shows now with safe taps and save its screen graph with findings per screen. Exit 1 if it could not.'
+  },
+  'mobile-record': {
+    tool: 'mobile_record',
+    summary: 'Record what you do on a connected Android device into an android flow: nawi mobile-record [--package name] [--output flow.nawi.yaml]. Exit 1 if nothing was recorded.'
   }
 }
 

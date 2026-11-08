@@ -9,12 +9,15 @@ import {
   parseMobileOpenArgs,
   parseMobileStudyArgs,
   parseMobileExploreArgs,
+  parseMobileRecordArgs,
   readProfileText,
   renderApkInfo,
   renderDoctorReport,
   renderOpenResult,
   renderStudyResult,
   renderExploreResult,
+  renderRecordResult,
+  type MobileRecordReport,
   type MobileOpenReport,
   type MobileStudyReport,
   type MobileExploreReport
@@ -401,5 +404,79 @@ describe('renderExploreResult', () => {
   it('prints the error and the one next step when it could not explore', () => {
     const out = renderExploreResult({ ok: false, error: 'dev.a is not in front', fix: 'Bring dev.a to the front.', target: { kind: 'device', name: 'R5', serial: 'R5', api: 34 }, package: 'dev.a', exploration_id: null, exploration_dir: null, stopped: 'not_in_app', notes: [] })
     expect(out).toBe('Could not explore dev.a on device R5: dev.a is not in front.\n\nNext: Bring dev.a to the front.')
+  })
+})
+
+describe('parseMobileRecordArgs', () => {
+  it('reads the device, app, launch, name, limits and output (resolved against the shell folder)', () => {
+    expect(
+      parseMobileRecordArgs(['--target', 'Pixel_9', '--package', 'dev.a', '--no-launch', '--name', 'Sign in', '--max-seconds', '300', '--idle-seconds', '20', '--output', 'flows/a.nawi.yaml', '--overwrite', '--json'], '/home/u/work')
+    ).toEqual({ json: true, target: 'Pixel_9', package: 'dev.a', launch: false, name: 'Sign in', max_seconds: 300, idle_seconds: 20, output: '/home/u/work/flows/a.nawi.yaml', overwrite: true })
+    expect(parseMobileRecordArgs([], '/home/u'), 'no flags: the tool defaults apply').toEqual({ json: false })
+  })
+
+  it.each([
+    [['--max-seconds', '9'], /--max-seconds takes a whole number from 10 to 1800/],
+    [['--idle-seconds', '601'], /--idle-seconds takes a whole number from 3 to 600/],
+    [['--idle-seconds', '1.5'], /--idle-seconds takes a whole number/],
+    [['--output'], /--output needs a value/],
+    [['--name', '--json'], /--name needs a value/],
+    [['--overwrite'], /--overwrite only applies together with --output/],
+    [['--launch'], /Unknown flag --launch/],
+    [['flow.nawi.yaml'], /mobile-record takes no file: use --output/]
+  ])('refuses %j', (argv, message) => {
+    expect(() => parseMobileRecordArgs(argv, '/home/u')).toThrow(MobileUsageError)
+    expect(() => parseMobileRecordArgs(argv, '/home/u')).toThrow(message)
+  })
+})
+
+describe('renderRecordResult', () => {
+  const base: MobileRecordReport = {
+    ok: true,
+    error: null,
+    fix: null,
+    target: { kind: 'avd', name: 'Pixel_9', serial: 'emulator-5554', api: 35 },
+    package: 'dev.nawi.shop',
+    launched: { activity: '.MainActivity' },
+    stopped: 'idle',
+    inputs: 12,
+    steps: 2,
+    warnings: ['A swipe at (500, 1200) is not recorded: android flows have no step for it yet.'],
+    flow_yaml: 'version: 1\nname: Recorded on dev.nawi.shop\n',
+    file: null,
+    save_error: null
+  }
+
+  it('prints the summary, each warning and the flow when it was not written to a file', () => {
+    expect(renderRecordResult(base)).toBe(
+      [
+        'Recorded dev.nawi.shop on virtual device Pixel_9 (emulator-5554): 2 steps from 12 touches and keys.',
+        '  started    from its launcher (.MainActivity)',
+        '  stopped    idle (no touch for the idle time)',
+        '  warning    A swipe at (500, 1200) is not recorded: android flows have no step for it yet.',
+        '',
+        'version: 1',
+        'name: Recorded on dev.nawi.shop'
+      ].join('\n')
+    )
+  })
+
+  it('names the file when the flow was written, and says why when it could not be', () => {
+    expect(renderRecordResult({ ...base, launched: null, warnings: [], file: '/home/u/a.nawi.yaml' })).toBe(
+      [
+        'Recorded dev.nawi.shop on virtual device Pixel_9 (emulator-5554): 2 steps from 12 touches and keys.',
+        '  started    from the screen it showed (not restarted)',
+        '  stopped    idle (no touch for the idle time)',
+        '',
+        'Saved: /home/u/a.nawi.yaml'
+      ].join('\n')
+    )
+    expect(renderRecordResult({ ...base, warnings: [], save_error: 'the flow could not be written: EEXIST.' })).toContain('Not saved: the flow could not be written: EEXIST.\n\nversion: 1')
+  })
+
+  it('a failed recording is the error and the one next step', () => {
+    expect(renderRecordResult({ ...base, ok: false, error: 'no app is in front to record', fix: 'Start the app first.', target: null, package: null, flow_yaml: null })).toBe(
+      'Could not record the app: no app is in front to record.\n\nNext: Start the app first.'
+    )
   })
 })

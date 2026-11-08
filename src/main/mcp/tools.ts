@@ -12,7 +12,7 @@ import { defineTool, type ToolDefinition } from './dispatch'
 import { stepProgress } from './progress'
 import { ToolError, agentAccessPaused, notImplemented } from './errors'
 import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
-import { flowFromSidecar, NoInputEventsError } from './flow-export'
+import { flowFromSidecar, NoInputEventsError, prepareFlowOutput, writeFlowOutput } from './flow-export'
 import { carryForwardFiles } from './revision'
 import { androidReplayOf, MAX_FLOW_PATH, resolveFlowFile, runFlowFile } from '../flow-run'
 import { healProposals, readRunFlow } from '../heal/proposals'
@@ -39,6 +39,7 @@ import { realpath } from 'node:fs/promises'
 import { DEFAULT_KEEP_STUDIES, studyLiveScreen, writeStudy } from '../mobile/study-live'
 import { DEFAULT_KEEP_EXPLORATIONS, MAX_NEVER_PRESS_WORDS, NEVER_PRESS_WORD_RE, discardExploration, exploreLiveApp, screenshotSpool, writeExploration } from '../mobile/explore-live'
 import { DEFAULT_MAX_DEPTH, DEFAULT_MAX_SCREENS, DEFAULT_MAX_TAPS, DEFAULT_TIME_BUDGET_MS } from '../mobile/explore'
+import { DEFAULT_IDLE_MS, DEFAULT_MAX_MS, recordAndroidLive } from '../mobile/record-live'
 
 /**
  * The twelve FR-AGT.1 tools.
@@ -1422,6 +1423,98 @@ const mobileExplore = defineTool({
   }
 })
 
+/**
+ * Roadmap M5c (second slice): record what a person does on a connected Android device into an android flow.
+ */
+const mobileRecord = defineTool({
+  name: 'mobile_record',
+  description:
+    'Record what a person does on a connected Android device into an android flow (*.nawi.yaml, target.kind ' +
+    'android) that run_flow replays. The app is started from its launcher first (force-stop, then start, as run_flow ' +
+    'does before a replay; launch: false records from the screen it shows now), then the device\'s touches and keys ' +
+    'are read live (`adb shell getevent`) while the person uses the app: taps become click steps on the view under ' +
+    'the finger (resource id, content description and text locators, each kept only when it finds that view alone), ' +
+    'typing becomes one fill step per field with the final text, Back/Home/Enter become press steps. A password ' +
+    'field\'s text is never read: its fill types ${secret.<name>} at run time. Long presses, swipes, taps on other ' +
+    'apps (a permission prompt) and touches that came before the screen after the previous tap was read (a read takes ' +
+    'about 2 seconds) are not steps: warnings say which and why. Recording stops after idle_seconds without a touch ' +
+    '(once something was recorded), after max_seconds, when cancelled (or agent access is paused: what was recorded ' +
+    'is kept), when the device stops sending touches, or when its screen can no longer be read. `target` and `package` work like mobile_explore (default: ' +
+    'the only connected device, the app in front). Returns ok, error and fix (the one next step when not ok), target, ' +
+    'package, launched ({activity} or null), stopped (idle / max_time / cancelled / disconnected / unreadable), inputs (touches ' +
+    'and keys read, typing included), steps, warnings, flow_yaml, and with output (an absolute *.nawi.yaml path inside ' +
+    'your home folder, checked before recording starts) file: where it was written (save_error when it could not be; ' +
+    'an existing file is replaced only with overwrite: true). Send a progressToken in _meta to get a ' +
+    'notifications/progress message each time the screen has been read (the next touch is safe). A device problem ' +
+    'is a normal result with ok: false, not an error.',
+  idempotent: false,
+  errors: ['NOT_FOUND'],
+  schema: z.object({
+    target: z.string().regex(TARGET_RE, 'an adb serial (see mobile_doctor devices) or an AVD name').optional().describe('Device serial or AVD name of a running emulator; default: the only connected device.'),
+    package: z.string().regex(PACKAGE_RE, 'an Android package name').optional().describe('The app to record. Default: the app in front.'),
+    launch: z.boolean().default(true).describe('Start the app from its launcher before recording, as a replay does. false: record from the screen it shows now.'),
+    name: z.string().min(1).max(200).optional().describe('Flow name. Defaults to "Recorded on <package>".'),
+    max_seconds: z.number().int().min(10).max(1800).default(DEFAULT_MAX_MS / 1000).describe('Longest the recording runs.'),
+    idle_seconds: z.number().int().min(3).max(600).default(DEFAULT_IDLE_MS / 1000).describe('Stop after this long without a touch or key, once something was recorded.'),
+    output: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe('Absolute path of the *.nawi.yaml file to write, inside your home folder. Omit to only return the YAML.'),
+    overwrite: z.boolean().default(false).describe('Replace an existing file at output.')
+  }),
+  async run(args, ctx) {
+    // A bad output path is refused before anyone spends minutes recording.
+    const out = args.output === undefined ? null : await prepareFlowOutput(args.output, args.overwrite)
+    const stop = new AbortController()
+    const off = settings.onSettingsChanged((next) => {
+      if (next.agentAccessPaused) stop.abort(agentAccessPaused())
+    })
+    try {
+      if ((await settings.getSettings()).agentAccessPaused) throw agentAccessPaused()
+      let reads = 0
+      const r = await recordAndroidLive({
+        target: args.target ?? null,
+        package: args.package ?? null,
+        launch: args.launch,
+        name: args.name,
+        maxMs: args.max_seconds * 1000,
+        idleMs: args.idle_seconds * 1000,
+        signal: ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal,
+        onReady: ctx.progress ? (inputs) => ctx.progress?.({ progress: ++reads, message: `screen read after ${inputs} inputs: ready for the next touch` }) : undefined
+      })
+      let file: string | null = null
+      let saveError: string | null = null
+      if (r.ok && r.flow_yaml !== null && out !== null) {
+        try {
+          file = await writeFlowOutput(out, r.flow_yaml)
+        } catch (err) {
+          // The recording is the answer: a file that appeared meanwhile (or a full disk) loses only the saved copy.
+          saveError = `the flow could not be written: ${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+      return {
+        ok: r.ok,
+        error: r.error,
+        fix: r.fix,
+        target: r.target,
+        package: r.package,
+        launched: r.launched,
+        stopped: r.stopped,
+        inputs: r.inputs,
+        steps: r.flow?.steps.length ?? 0,
+        warnings: r.warnings,
+        flow_yaml: r.flow_yaml,
+        file,
+        save_error: saveError
+      }
+    } finally {
+      off()
+    }
+  }
+})
+
 /** The FR-AGT.1 surface, in the order the requirement lists them. */
 export const TOOLS: ToolDefinition[] = [
   captureScreen,
@@ -1446,7 +1539,8 @@ export const TOOLS: ToolDefinition[] = [
   mobileDoctor,
   mobileOpen,
   mobileStudy,
-  mobileExplore
+  mobileExplore,
+  mobileRecord
 ]
 
 export const TOOL_NAMES = TOOLS.map((t) => t.name)

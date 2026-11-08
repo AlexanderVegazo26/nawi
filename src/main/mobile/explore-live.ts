@@ -138,7 +138,7 @@ export async function exploreLiveApp(req: LiveExploreRequest, host: ExploreLiveH
  * The package of the device's home screen (launcher), or null when the device does not say. Read-only:
  * `cmd package resolve-activity` resolves the HOME intent without starting anything.
  */
-export async function homePackage(host: ExploreLiveHost, adb: string, serial: string): Promise<string | null> {
+export async function homePackage(host: Pick<ExploreLiveHost, 'exec'>, adb: string, serial: string): Promise<string | null> {
   const r = await host.exec(adb, ['-s', serial, 'shell', HOME_ACTIVITY_LINE], SHELL_TIMEOUT_MS)
   if (r.code !== 0) return null
   // --brief prints a priority line, then `package/activity`.

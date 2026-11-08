@@ -91,6 +91,7 @@ it declares (`errors` in `src/main/mcp/tools.ts`). `tools/list` publishes the fu
 | `mobile_open` | `NOT_FOUND`, `NOT_IMPLEMENTED` |
 | `mobile_study` | (none) |
 | `mobile_explore` | (none) |
+| `mobile_record` | `NOT_FOUND` |
 <!-- /generated -->
 
 ## Adding a tool or a code

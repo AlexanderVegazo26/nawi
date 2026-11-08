@@ -66,6 +66,22 @@ vi.mock('../mobile/explore-live', async (importOriginal) => ({
   }
 }))
 
+// The live recorder (adb + getevent) is tested against a simulated person and app in mobile/record-live.test.ts; here it returns a result.
+const recordCalls: Record<string, unknown>[] = []
+let recordResult: Record<string, unknown> = {}
+/** What the simulated recording does with the request before it returns (e.g. reports a screen read), once. */
+let recordRun: ((req: Record<string, unknown>) => Promise<void>) | null = null
+vi.mock('../mobile/record-live', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../mobile/record-live')>()),
+  recordAndroidLive: async (req: Record<string, unknown>) => {
+    recordCalls.push(req)
+    const run = recordRun
+    recordRun = null
+    await run?.(req)
+    return recordResult
+  }
+}))
+
 const { makeZip } = await import('../mobile/fixtures/make-zip')
 const { TOOLS } = await import('./tools')
 const { dispatch } = await import('./dispatch')
@@ -620,5 +636,102 @@ describe('mobile_explore', () => {
     exploreCalls.length = 0
     await expect(exploreTool(args)).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' })
     expect(exploreCalls).toEqual([])
+  })
+})
+
+describe('mobile_record', () => {
+  const recordTool = (args: Record<string, unknown>, progress?: (u: { progress: number; message?: string }) => void) =>
+    dispatch(
+      { token: TOKEN, tools: TOOLS, isPaused: async () => false },
+      { name: 'mobile_record', args, authorization: `Bearer ${TOKEN}`, origin: null, callId: `c6-${Math.random()}`, progress }
+    ) as Promise<Record<string, unknown>>
+  const target = { kind: 'avd', name: 'Pixel_9', serial: 'emulator-5554', api: 35 }
+  const YAML = 'version: 1\nname: Recorded on dev.nawi.shop\ntarget:\n  kind: android\n  package: dev.nawi.shop\nsteps: []\n'
+  const recorded = (over: Record<string, unknown> = {}) => ({
+    ok: true,
+    error: null,
+    fix: null,
+    target,
+    package: 'dev.nawi.shop',
+    launched: { activity: '.MainActivity' },
+    stopped: 'idle',
+    inputs: 9,
+    flow: { version: 1, name: 'Recorded on dev.nawi.shop', target: { kind: 'android', package: 'dev.nawi.shop' }, steps: [{ id: 's1' }, { id: 's2' }] },
+    flow_yaml: YAML,
+    warnings: ['w1'],
+    ...over
+  })
+
+  it('passes the limits (seconds -> ms), launch and name through, with the defaults for what is left out', async () => {
+    recordCalls.length = 0
+    recordResult = recorded()
+    await recordTool({ target: 'Pixel_9', package: 'dev.nawi.shop', launch: false, name: 'Sign in', max_seconds: 300, idle_seconds: 20 })
+    expect(recordCalls[0], 'request handed to recordAndroidLive').toMatchObject({ target: 'Pixel_9', package: 'dev.nawi.shop', launch: false, name: 'Sign in', maxMs: 300_000, idleMs: 20_000 })
+    await recordTool({})
+    expect(recordCalls[1], 'defaults').toMatchObject({ target: null, package: null, launch: true, maxMs: 120_000, idleMs: 15_000 })
+    expect((recordCalls[1].signal as AbortSignal).aborted, 'a live abort signal (pause / cancel)').toBe(false)
+  })
+
+  it('returns the flow, its step count and the warnings; writes nothing without output', async () => {
+    recordResult = recorded()
+    const r = await recordTool({})
+    expect(r).toEqual({ ok: true, error: null, fix: null, target, package: 'dev.nawi.shop', launched: { activity: '.MainActivity' }, stopped: 'idle', inputs: 9, steps: 2, warnings: ['w1'], flow_yaml: YAML, file: null, save_error: null })
+  })
+
+  it('writes the flow to output and returns the file', async () => {
+    recordResult = recorded()
+    const file = join(home, 'recorded.nawi.yaml')
+    const r = await recordTool({ output: file })
+    expect(r.file).toBe(file)
+    expect(readFileSync(file, 'utf8')).toBe(YAML)
+    recordResult = recorded({ flow_yaml: YAML.replace('steps: []', 'steps: [] # again') })
+    await expect(recordTool({ output: file }), 'an existing file needs overwrite').rejects.toMatchObject({ code: 'INVALID_ARGUMENTS', detail: { exists: true } })
+    expect((await recordTool({ output: file, overwrite: true })).file).toBe(file)
+    expect(readFileSync(file, 'utf8')).toContain('# again')
+  })
+
+  it.each([
+    ['a relative path', 'flow.nawi.yaml', 'INVALID_ARGUMENTS'],
+    ['a file that is not a flow file', '/x/flow.yaml', 'INVALID_ARGUMENTS'],
+    ['a path outside home', '/tmp/nawi-outside/flow.nawi.yaml', 'INVALID_ARGUMENTS'],
+    ['a folder that does not exist', '<home>/no-such-folder/flow.nawi.yaml', 'NOT_FOUND']
+  ])('refuses %s as output before recording anything', async (_what, output, code) => {
+    recordCalls.length = 0
+    await expect(recordTool({ output: output.replace('<home>', home) })).rejects.toMatchObject({ code })
+    expect(recordCalls, 'nobody was asked to record').toEqual([])
+  })
+
+  it('keeps the recording when the file appeared while recording (save_error, not an error)', async () => {
+    const file = join(home, 'raced.nawi.yaml')
+    recordResult = recorded()
+    recordRun = async () => writeFileSync(file, 'someone else\n')
+    const r = await recordTool({ output: file })
+    expect(r).toMatchObject({ ok: true, file: null, flow_yaml: YAML, save_error: expect.stringMatching(/^the flow could not be written: A file already exists/) })
+    expect(readFileSync(file, 'utf8'), 'the other file is untouched').toBe('someone else\n')
+  })
+
+  it('a failed recording is a normal result and writes nothing', async () => {
+    const file = join(home, 'never.nawi.yaml')
+    recordResult = recorded({ ok: false, error: 'no app is in front to record', fix: 'Start the app first.', flow: null, flow_yaml: null, warnings: [], stopped: null, inputs: 0, launched: null })
+    const r = await recordTool({ output: file })
+    expect(r).toMatchObject({ ok: false, error: 'no app is in front to record', fix: 'Start the app first.', steps: 0, file: null, save_error: null })
+    expect(existsSync(file)).toBe(false)
+  })
+
+  it('reports each screen read as progress that grows', async () => {
+    recordResult = recorded()
+    recordRun = async (req) => {
+      const ready = req.onReady as (inputs: number) => void
+      ready(0)
+      ready(3)
+      ready(3)
+    }
+    const updates: Array<{ progress: number; message?: string }> = []
+    await recordTool({}, (u) => updates.push(u))
+    expect(updates).toEqual([
+      { progress: 1, message: 'screen read after 0 inputs: ready for the next touch' },
+      { progress: 2, message: 'screen read after 3 inputs: ready for the next touch' },
+      { progress: 3, message: 'screen read after 3 inputs: ready for the next touch' }
+    ])
   })
 })

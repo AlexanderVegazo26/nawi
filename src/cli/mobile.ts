@@ -407,3 +407,107 @@ export function renderExploreResult(r: MobileExploreReport): string {
   else if (r.exploration_dir) lines.push('', `Saved: ${r.exploration_dir} (graph.json + a screenshot per screen)`)
   return lines.join('\n')
 }
+
+export const MOBILE_RECORD_USAGE = `nawi mobile-record [--target <serial|avd>] [--package <name>] [--no-launch] [--name <text>]
+                   [--max-seconds <n>] [--idle-seconds <n>] [--output <file.nawi.yaml>] [--overwrite] [--json]
+
+  Records what you do on a connected Android device into an android flow that \`nawi run\` replays. The app
+  (--package, default: the app in front) is restarted from its launcher first, as a replay does (--no-launch:
+  record from the screen it shows now). Then use the app: taps become click steps, typing becomes one fill step
+  per field (a password types \${secret.<name>} at run time; it is never read), Back/Home/Enter become presses.
+  After a tap that changes the screen, wait about 2 seconds before the next one: Nawi reads the screen in between,
+  and a touch that comes before that read is not recorded (the warnings say so). Recording stops after
+  --idle-seconds without a touch (default 15) or --max-seconds (default 120); Ctrl-C cancels and keeps nothing.
+  Prints the flow, or writes it to --output (an existing file only with --overwrite). Exit 0 when a flow was
+  recorded, 1 when not.`
+
+export interface MobileRecordArgs {
+  json: boolean
+  target?: string
+  package?: string
+  launch?: false
+  name?: string
+  max_seconds?: number
+  idle_seconds?: number
+  /** Absolute: resolved against the shell's folder (the app's cwd is not the user's). */
+  output?: string
+  overwrite?: true
+}
+
+const RECORD_LIMITS: Record<string, { key: 'max_seconds' | 'idle_seconds'; min: number; max: number }> = {
+  '--max-seconds': { key: 'max_seconds', min: 10, max: 1800 },
+  '--idle-seconds': { key: 'idle_seconds', min: 3, max: 600 }
+}
+
+export function parseMobileRecordArgs(argv: string[], cwd: string): MobileRecordArgs {
+  const out: MobileRecordArgs = { json: false }
+  const value = (flag: string, v: string | undefined): string => {
+    if (v === undefined || v.startsWith('--')) throw new MobileUsageError(`${flag} needs a value.`)
+    return v
+  }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    const limit = RECORD_LIMITS[a]
+    if (a === '--json') out.json = true
+    else if (a === '--target') out.target = value(a, argv[++i])
+    else if (a === '--package') out.package = value(a, argv[++i])
+    else if (a === '--no-launch') out.launch = false
+    else if (a === '--overwrite') out.overwrite = true
+    else if (a === '--name') out.name = value(a, argv[++i])
+    else if (a === '--output') out.output = resolve(cwd, value(a, argv[++i]))
+    else if (limit) {
+      const v = value(a, argv[++i])
+      const n = /^\d{1,6}$/.test(v) ? Number(v) : NaN
+      if (!(n >= limit.min && n <= limit.max)) throw new MobileUsageError(`${a} takes a whole number from ${limit.min} to ${limit.max}, not "${v.slice(0, 20)}".`)
+      out[limit.key] = n
+    } else if (a.startsWith('--')) throw new MobileUsageError(`Unknown flag ${a}.`)
+    else throw new MobileUsageError(`mobile-record takes no file: use --output for where the flow goes (got "${a.slice(0, 80)}").`)
+  }
+  if (out.overwrite && out.output === undefined) throw new MobileUsageError('--overwrite only applies together with --output.')
+  return out
+}
+
+/** What `nawi mobile-record` prints; mobile_record's structured result. */
+export interface MobileRecordReport {
+  ok: boolean
+  error: string | null
+  fix: string | null
+  target: { kind: 'device' | 'avd'; name: string; serial: string; api: number | null } | null
+  package: string | null
+  launched: { activity: string } | null
+  stopped: string | null
+  inputs: number
+  steps: number
+  warnings: string[]
+  flow_yaml: string | null
+  file: string | null
+  save_error: string | null
+}
+
+const RECORD_STOPPED_TEXT: Record<string, string> = {
+  idle: 'no touch for the idle time',
+  max_time: 'the time limit',
+  cancelled: 'cancelled',
+  disconnected: 'the device stopped sending touches',
+  unreadable: 'the screen could not be read any more'
+}
+
+/** A terminal summary of a mobile_record result, with the flow itself when it was not written to a file. */
+export function renderRecordResult(r: MobileRecordReport): string {
+  const where = r.target ? (r.target.kind === 'avd' ? `virtual device ${r.target.name} (${r.target.serial})` : `device ${r.target.name}`) : null
+  if (!r.ok) {
+    return [`Could not record${r.package ? ` ${r.package}` : ' the app'}${where ? ` on ${where}` : ''}: ${r.error ?? 'unknown error'}.`, ...(r.fix ? ['', `Next: ${r.fix}`] : [])].join('\n')
+  }
+  const lines = [
+    `Recorded ${r.package} on ${where}: ${r.steps} step${r.steps === 1 ? '' : 's'} from ${r.inputs} touch${r.inputs === 1 ? '' : 'es'} and keys.`,
+    `  started    ${r.launched ? `from its launcher (${r.launched.activity})` : 'from the screen it showed (not restarted)'}`,
+    `  stopped    ${r.stopped ?? '?'}${r.stopped && RECORD_STOPPED_TEXT[r.stopped] ? ` (${RECORD_STOPPED_TEXT[r.stopped]})` : ''}`
+  ]
+  for (const w of r.warnings) lines.push(`  warning    ${w}`)
+  if (r.file) lines.push('', `Saved: ${r.file}`)
+  else {
+    if (r.save_error) lines.push('', `Not saved: ${r.save_error.replace(/\.$/, '')}.`)
+    if (r.flow_yaml) lines.push('', r.flow_yaml.replace(/\n$/, ''))
+  }
+  return lines.join('\n')
+}

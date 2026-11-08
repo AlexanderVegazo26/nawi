@@ -42,7 +42,7 @@ const TOOLS_SRC = read('src/main/mcp/tools.ts')
  * calls that reach them. A test below fails when another module starts throwing
  * ToolError, so a code can't reach a tool unseen.
  */
-const CALLEES: Record<string, string> = { runFlowFile: 'src/main/flow-run.ts', flowFromSidecar: 'src/main/mcp/flow-export.ts' }
+const CALLEES: Record<string, string> = { runFlowFile: 'src/main/flow-run.ts', flowFromSidecar: 'src/main/mcp/flow-export.ts', prepareFlowOutput: 'src/main/mcp/flow-export.ts', writeFlowOutput: 'src/main/mcp/flow-export.ts' }
 /** Files that may throw ToolError: these, plus CALLEES. The rest throw plain errors (INTERNAL). */
 const TOOL_ERROR_FILES = ['src/main/mcp/tools.ts', 'src/main/mcp/errors.ts', 'src/main/mcp/dispatch.ts', 'src/main/mcp/server.ts', 'src/main/mcp/resources.ts', 'src/main/mcp/prompts.ts']
 const DOC_PATH = 'docs/MCP-ERRORS.md'
@@ -193,7 +193,7 @@ describe('every MCP tool declares the error codes it can return', () => {
   it('sees every module that throws ToolError (others throw plain errors, which end as INTERNAL)', () => {
     const throwing = sourceFiles('src/main').filter((f) => /new ToolError\(/.test(read(f)))
     expect(throwing.sort(), 'a new module throws ToolError: add it to CALLEES (with the call that reaches it) or TOOL_ERROR_FILES').toEqual(
-      [...TOOL_ERROR_FILES, ...Object.values(CALLEES)].sort()
+      [...new Set([...TOOL_ERROR_FILES, ...Object.values(CALLEES)])].sort()
     )
     expect(helpers.get('requireItem'), 'the helper scan should see requireItem').toEqual(new Set(['NOT_FOUND']))
     expect(helpers.get('notImplemented'), 'the helper scan should see errors.ts').toEqual(new Set(['NOT_IMPLEMENTED']))

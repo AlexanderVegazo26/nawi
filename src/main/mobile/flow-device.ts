@@ -73,18 +73,33 @@ export function parseLauncher(stdout: string, pkg: string): string | null {
  * device or setup problem. `signal` is checked before the app is stopped and before it is started again.
  */
 export async function prepareAndroidRun(
-  req: { package: string; target?: string | null; launch?: boolean; signal?: AbortSignal },
+  req: {
+    package: string
+    target?: string | null
+    launch?: boolean
+    signal?: AbortSignal
+    /** For messages: what the device is picked for. */
+    verb?: 'run' | 'record'
+    /** A device the caller already picked (doctor + pickTarget): `target` is then ignored. */
+    picked?: { adb: string; target: AndroidRunTarget }
+  },
   host: AndroidRunHost
 ): Promise<AndroidRunDevice | AndroidRunRefusal | AndroidRunStopped> {
   if (req.target != null && !TARGET_RE.test(req.target)) {
     return { error: `"${req.target.slice(0, 100)}" is not an adb serial or AVD name`, fix: 'Pass the serial from `nawi mobile-doctor` or the name of a running virtual device.' }
   }
   const pkg = req.package
-  const doctor = await runMobileDoctor(null, host)
-  const adb = doctor.adb?.path
-  if (!adb) return { error: 'adb is not available', fix: doctor.fix ?? 'Install the Android SDK Platform-Tools and set ANDROID_HOME.' }
-  const target = await pickTarget(doctor, host, adb, req.target ?? null, 'run')
-  if ('fix' in target) return target
+  let adb: string
+  let target: AndroidRunTarget
+  if (req.picked) ({ adb, target } = req.picked)
+  else {
+    const doctor = await runMobileDoctor(null, host)
+    if (!doctor.adb?.path) return { error: 'adb is not available', fix: doctor.fix ?? 'Install the Android SDK Platform-Tools and set ANDROID_HOME.' }
+    adb = doctor.adb.path
+    const picked = await pickTarget(doctor, host, adb, req.target ?? null, req.verb ?? 'run')
+    if ('fix' in picked) return picked
+    target = picked
+  }
   const { serial, name } = target
   const shell = (line: string, timeoutMs = SHELL_TIMEOUT_MS): Promise<ExecResult> => host.exec(adb, ['-s', serial, 'shell', line], timeoutMs)
   const lost = (r: ExecResult, what: string): AndroidRunRefusal => ({
@@ -96,7 +111,7 @@ export async function prepareAndroidRun(
   const path = await shell(`pm path ${shQuote(pkg)}`)
   if (!/^package:/m.test(path.stdout)) {
     if (unreachable(path)) return lost(path, 'check which apps are installed')
-    return { error: `${pkg} is not installed on ${name}`, fix: `Install it with \`nawi mobile-open <file.apk> --target ${name}\`, then run the flow again.` }
+    return { error: `${pkg} is not installed on ${name}`, fix: `Install it with \`nawi mobile-open <file.apk> --target ${name}\`, then ${req.verb === 'record' ? 'record' : 'run the flow'} again.` }
   }
 
   if (req.launch === false) return { adb, target, launched: null }

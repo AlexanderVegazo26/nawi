@@ -154,6 +154,19 @@ export function parseKeyboardRegion(stdout: string): UiBounds[] | null {
   return boxes.length > 0 ? boxes : null
 }
 
+/**
+ * The on-screen keyboard's area when it is up, [] when it is down, null when it is up (or may be) and its area can't
+ * be read. Shared by the run evidence (masking) and the recorder (which touches are typing).
+ */
+export async function readKeyboardBoxes(shell: (line: string) => ReturnType<Exec>): Promise<UiBounds[] | null> {
+  const shown = await shell(KEYBOARD_SHOWN_LINE)
+  // grep exits 1 when the line is missing: like the replayer, that is a keyboard that is not shown. No answer is unknown.
+  if (shown.error === 'timeout' || shown.error === 'not_found' || shown.error === 'too_large') return null
+  if (!/mInputShown=true/.test(shown.stdout)) return []
+  const win = await shell(KEYBOARD_WINDOW_LINE)
+  return win.code !== 0 || win.error ? null : parseKeyboardRegion(win.stdout)
+}
+
 /** An android flow locator as a screen-dump query; null for layers that don't apply to Android views. */
 export const toUiLocator = (s: Selector): UiLocator | null =>
   'id' in s ? { resource_id: s.id } : 'desc' in s ? { content_desc: s.desc } : 'text' in s ? { text: s.text } : null
@@ -222,15 +235,7 @@ export async function startAndroidEvidence(req: AndroidEvidenceRequest, host: An
     uid = listed.code === 0 && !listed.error ? parsePackageUid(listed.stdout, pkg) : null
   }
   let shotsGaveUp = false
-  /** The keyboard's area when it is up, [] when it is down, null when it is up and its area can't be read. */
-  const keyboardBoxes = async (): Promise<UiBounds[] | null> => {
-    const shown = await shell(KEYBOARD_SHOWN_LINE)
-    // grep exits 1 when the line is missing: like the replayer, that is a keyboard that is not shown. No answer is unknown.
-    if (shown.error === 'timeout' || shown.error === 'not_found' || shown.error === 'too_large') return null
-    if (!/mInputShown=true/.test(shown.stdout)) return []
-    const win = await shell(KEYBOARD_WINDOW_LINE)
-    return win.code !== 0 || win.error ? null : parseKeyboardRegion(win.stdout)
-  }
+  const keyboardBoxes = (): Promise<UiBounds[] | null> => readKeyboardBoxes(shell)
 
   return {
     async shot() {

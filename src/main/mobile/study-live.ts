@@ -66,7 +66,7 @@ export async function pickTarget(
   host: Pick<StudyHost, 'exec'>,
   adb: string,
   wanted: string | null,
-  verb: 'study' | 'explore' | 'run' = 'study'
+  verb: 'study' | 'explore' | 'run' | 'record' = 'study'
 ): Promise<Target | { error: string; fix: string }> {
   const online = doctor.devices.filter((d) => d.state === 'device')
   const asTarget = async (serial: string, api: number | null, emulator: boolean): Promise<Target> => {

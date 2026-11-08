@@ -186,6 +186,12 @@ export class GestureReader {
     return this.read(lines)
   }
 
+  /** A finger is on a touch panel now (a gesture has started and not ended). */
+  get touching(): boolean {
+    for (const s of this.state.values()) if (s.gesture !== null || s.contacts.size > 0) return true
+    return false
+  }
+
   /** The inputs completed by what is left once the stream ended (a last line without its newline). */
   end(): RawInput[] {
     const last = this.rest
@@ -335,7 +341,8 @@ const KEY_STEPS: Readonly<Record<string, string>> = {
 /** Keys that change the device, not the app: never replayed. */
 const DEVICE_KEYS = /^KEY_(POWER|VOLUMEUP|VOLUMEDOWN|MUTE|SLEEP|WAKEUP|CAMERA)$/
 
-const inside = (b: UiBounds | null, p: Point): boolean => b !== null && p.x >= b.left && p.x < b.right && p.y >= b.top && p.y < b.bottom
+/** Whether `p` is in box `b` (right and bottom edges excluded). */
+export const inside = (b: UiBounds | null, p: Point): boolean => b !== null && p.x >= b.left && p.x < b.right && p.y >= b.top && p.y < b.bottom
 const actionable = (n: UiNode): boolean => n.clickable || n.long_clickable || n.checkable || isTextField(n)
 const oneLine = (s: string, max: number): string => {
   const flat = s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()

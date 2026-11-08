@@ -223,11 +223,12 @@ or `nawi heal <run_id> --apply`; exit 1 when nothing was written) and
 `inspect_apk` (CLI: `nawi mobile-inspect <file.apk>`), `mobile_doctor` (CLI: `nawi mobile-doctor [file.apk]`,
 exit 1 when no device can run it), `mobile_open` (CLI: `nawi mobile-open <file.apk|profile.nawi.mobile.yaml>`,
 exit 1 when the app is not running), `mobile_study` (CLI: `nawi mobile-study [--target serial|avd]`, exit 1 when
-the screen could not be read) and `mobile_explore` (CLI: `nawi mobile-explore [--target serial|avd] [--depth n]
-[--never-press word]...`, exit 1 when the app could not be explored). Every tool has a CLI command (a test keeps the
+the screen could not be read), `mobile_explore` (CLI: `nawi mobile-explore [--target serial|avd] [--depth n]
+[--never-press word]...`, exit 1 when the app could not be explored) and `mobile_record` (CLI: `nawi mobile-record
+[--package name] [--output flow.nawi.yaml]`, exit 1 when no flow was recorded). Every tool has a CLI command (a test keeps the
 two lists equal); `nawi tools [--json]` prints what the running app offers with each tool's JSON Schema, and
 `nawi runs --follow [--interval ms]` streams runs saved from now on as NDJSON (one run per line) until interrupted.
-Exit codes: 0 success, 1 the app reported an error, a flow step failed, `mobile-doctor` found no device, `mobile-open` did not get the app running, `mobile-study` could not read the screen or `mobile-explore` could not explore the app, 2 usage, 3 Nawi not running.
+Exit codes: 0 success, 1 the app reported an error, a flow step failed, `mobile-doctor` found no device, `mobile-open` did not get the app running, `mobile-study` could not read the screen, `mobile-explore` could not explore the app or `mobile-record` recorded no flow, 2 usage, 3 Nawi not running.
 A refused tool call is JSON-RPC -32000 with a typed code in `error.data.code` (`NOT_FOUND`, `INVALID_ARGUMENTS` with
 `data.issues`, `AGENT_ACCESS_PAUSED`, ...); each `tools/list` entry names the codes that tool can return under
 `_meta["nawi/errors"]`, and [docs/MCP-ERRORS.md](docs/MCP-ERRORS.md) documents the shape and every code (a contract
@@ -709,6 +710,23 @@ alone.
   choice, secret scrubbing and "nothing installed or booted" as `mobile_study`;
   MCP callers get a progress message per screen found, and pausing agent
   access stops the run before its next tap.
+- **Record an android flow on the device** (`mobile_record`, CLI `nawi mobile-record
+  [--target serial|avd] [--package name] [--no-launch] [--name text] [--max-seconds 120]
+  [--idle-seconds 15] [--output flow.nawi.yaml] [--overwrite]`,
+  `src/main/mobile/record-live.ts` + `src/main/mobile/record.ts`): restarts the
+  app from its launcher (as `nawi run` does before a replay; `--no-launch`
+  records from the screen it shows), then reads the device's touches and keys
+  live from `adb shell getevent` while you use the app, and the screen
+  (uiautomator) once the device is quiet after each one. Taps become click
+  steps with the resource id / content description / text locators that find
+  that view alone; typing becomes one fill per field with its final text (a
+  password field types `${secret.<name>}` at run time, its text is never
+  read); Back, Home and Enter become presses. A screen read takes about 2 s:
+  a touch that comes before the read after the previous screen change is not
+  recorded, and the warnings say so (as they do for long presses, swipes and
+  taps on Android's permission prompt). Stops after the idle time without a
+  touch, the time limit, a cancel or pause, or an unplugged device; prints the
+  flow or writes it to `--output` (checked before recording starts).
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
   `src/main/mobile/ui-session.ts`): drag an `.apk` anywhere onto Nawi (or use
   **Choose an .apk…**) and it runs the same open as `mobile_open`, listing each
@@ -862,14 +880,16 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Mobile: install, launch, watch and replay hand-written flows, not yet record.** An APK dropped on the
+- **Mobile: install, launch, watch, record and replay flows.** An APK dropped on the
   window (or `mobile_open`) is installed and launched on a device or an existing
   virtual device and its screen is shown live and can be studied (`mobile_study`)
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record), but there is no live recorder (only its engine, M5c), inspector or
-  input on that screen yet, Nawi does not create a virtual device for you
+  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record), and are recorded from the device (`nawi mobile-record`:
+  taps, typing, Back/Home/Enter; no long press, swipe, rotation or deep link steps yet, and a tap must wait for the screen
+  read after the previous screen change, about 2 s), but there is no inspector or input on that screen yet and the recorder
+  is not in the Mobile view yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is
   filled in only from a hand-written `sign_in` section (Nawi does not propose

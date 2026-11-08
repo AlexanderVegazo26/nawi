@@ -242,6 +242,23 @@ async function prepareOutput(file: string, overwrite: boolean, roots: string[]):
   return { file: target, folder, cropsDir, overwrite }
 }
 
+/** Where a flow made elsewhere (mobile_record) is written: checked by prepareFlowOutput, written by writeFlowOutput. */
+export type FlowOutput = Output
+
+/**
+ * Check `file` as export_flow checks its output (absolute `*.nawi.yaml` inside a root, folder exists, no link, no
+ * existing file unless `overwrite`), before the work that makes the flow, so a bad path fails first.
+ */
+export function prepareFlowOutput(file: string, overwrite: boolean, roots: string[] = [homedir()]): Promise<FlowOutput> {
+  return prepareOutput(file, overwrite, roots)
+}
+
+/** Write a flow's YAML (no crops) where prepareFlowOutput said, the same way export_flow writes; returns the file. */
+export async function writeFlowOutput(out: FlowOutput, yaml: string): Promise<string> {
+  await writeExport(out, yaml, new Map())
+  return out.file
+}
+
 const fileExists = (output: string): ToolError =>
   new ToolError('INVALID_ARGUMENTS', 'A file already exists at output; pass overwrite: true to replace it.', { output, exists: true })
 const cropsNotFolder = (cropsDir: string): ToolError =>

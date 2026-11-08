@@ -32,12 +32,16 @@ import {
   MOBILE_OPEN_USAGE,
   MOBILE_STUDY_USAGE,
   MOBILE_EXPLORE_USAGE,
+  MOBILE_RECORD_USAGE,
   MobileUsageError,
   parseMobileDoctorArgs,
   parseMobileInspectArgs,
   parseMobileOpenArgs,
   parseMobileStudyArgs,
   parseMobileExploreArgs,
+  parseMobileRecordArgs,
+  renderRecordResult,
+  type MobileRecordReport,
   readProfileText,
   renderApkInfo,
   renderDoctorReport,
@@ -128,7 +132,7 @@ Values are parsed as JSON when they look like JSON (numbers, true/false, arrays,
 objects) and kept as strings otherwise, so --width 800 sends a number and
 --name "My shot" sends a string. A flag with no value is the boolean true.
 
-Exit codes: 0 success, 1 the app reported an error, a flow step failed, mobile-doctor found no device, mobile-open did not get the app running, mobile-study could not read the screen or mobile-explore could not explore the app, 2 usage, 3 Nawi not running.
+Exit codes: 0 success, 1 the app reported an error, a flow step failed, mobile-doctor found no device, mobile-open did not get the app running, mobile-study could not read the screen, mobile-explore could not explore the app or mobile-record recorded no flow, 2 usage, 3 Nawi not running.
 
 Nawi must already be running (the app, or \`nawi serve\`); no other command starts it for you.
 
@@ -147,6 +151,8 @@ ${MOBILE_OPEN_USAGE}
 ${MOBILE_STUDY_USAGE}
 
 ${MOBILE_EXPLORE_USAGE}
+
+${MOBILE_RECORD_USAGE}
 
 ${SERVE_USAGE}`
 
@@ -244,6 +250,7 @@ async function main(): Promise<void> {
   if (command === 'mobile-open') return mobileOpenCommand(argv.slice(1))
   if (command === 'mobile-study') return mobileStudyCommand(argv.slice(1))
   if (command === 'mobile-explore') return mobileExploreCommand(argv.slice(1))
+  if (command === 'mobile-record') return mobileRecordCommand(argv.slice(1))
 
   let parsed: { args: Record<string, unknown>; json: boolean }
   try {
@@ -512,6 +519,30 @@ async function mobileExploreCommand(argv: string[]): Promise<void> {
     fail(`Nawi returned an unexpected mobile_explore result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
   }
   process.stdout.write(`${json ? JSON.stringify(report, null, 2) : renderExploreResult(report)}\n`)
+  process.exit(report.ok ? EXIT_OK : EXIT_APP_ERROR)
+}
+
+/** `nawi mobile-record`: exit 0 when a flow was recorded (it may have warnings), 1 with the fix when not. */
+async function mobileRecordCommand(argv: string[]): Promise<void> {
+  let parsed: ReturnType<typeof parseMobileRecordArgs>
+  try {
+    parsed = parseMobileRecordArgs(argv, process.cwd())
+  } catch (err) {
+    if (err instanceof MobileUsageError) fail(`${err.message}\n\n${MOBILE_RECORD_USAGE}`, EXIT_USAGE)
+    throw err
+  }
+  const { json, ...args } = parsed
+  process.stderr.write(
+    'Recording: Nawi restarts the app and reads its screen first (a few seconds). Start once its first screen shows, wait\n' +
+      'about 2 s after each tap that changes the screen, and stop by not touching the device for the idle time (Ctrl-C\n' +
+      'cancels without a flow).\n'
+  )
+  const result = (await callTool('mobile_record', args)) as { structuredContent?: MobileRecordReport }
+  const report = result?.structuredContent
+  if (!report || typeof report.ok !== 'boolean') {
+    fail(`Nawi returned an unexpected mobile_record result: ${JSON.stringify(result).slice(0, 500)}`, EXIT_APP_ERROR)
+  }
+  process.stdout.write(`${json ? JSON.stringify(report, null, 2) : renderRecordResult(report)}\n`)
   process.exit(report.ok ? EXIT_OK : EXIT_APP_ERROR)
 }
 
