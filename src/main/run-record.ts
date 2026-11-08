@@ -275,6 +275,10 @@ function failureDetail(step: RecordedStep): string {
     lines.push(`  locator ${miss.index} ${describe(miss.selector as Record<string, unknown>)}: ${why}`)
   }
   if (step.matched) lines.push(`  ${matchedLine(step.matched)}`)
+  if (step.suggested) {
+    const s = step.suggested
+    lines.push(`  suggested (unverified, score ${s.score}): ${s.role || 'control'} "${s.name}" -> ${s.candidates.map((c) => describe(c as Record<string, unknown>)).join(' | ')}`)
+  }
   if (step.url !== undefined) lines.push(`  page: ${step.url}`)
   if (step.shots?.after !== undefined) lines.push(`  screenshot after the step: ${step.shots.after} (in the run folder)`)
   lines.push(...evidenceLines(step).map((l) => `  ${l}`))

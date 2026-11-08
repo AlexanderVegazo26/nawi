@@ -285,4 +285,12 @@ describe('judgeReplay', () => {
     expect(judgeReplay(run, ['save'], replayed([at0('open'), { id: 'save', action: 'click', status: 'skipped' }, at0('done')]))).toMatch(/Healed step save did not pass in the replay \(skipped\)/)
     expect(judgeReplay(run, ['save'], replayed([at0('open'), { id: 'save', action: 'click', status: 'passed' }, at0('done')]))).toMatch(/matched through no recorded locator/)
   })
+
+  it('rejects a fallback on a step the run never reached (after a healed failure), saying it never ran rather than blaming the heal', () => {
+    const failedRun = record([at0('open'), { id: 'save', action: 'click', status: 'failed', error: 'no locator matched' }, { id: 'done', action: 'assert', status: 'not_run' }])
+    const doneFallback = { ...at0('done', 'role'), matched: { index: 1, selector: { css: '#out' }, layer: 'css' as const, fallback: true } }
+    const why = judgeReplay(failedRun, ['save'], replayed([at0('open'), at0('save'), doneFallback]))
+    expect(why).toMatch(/^Step done needed a fallback locator in the replay; it never ran in run \S+ \(it came after the failure\)/)
+    expect(why).toContain('Nothing was written')
+  })
 })

@@ -105,6 +105,15 @@ export function judgeReplay(record: RunRecord, healed: string[], replay: FlowRun
   for (const step of replay.steps) {
     if (healed.includes(step.id) || !step.matched?.fallback) continue
     const before = record.steps.find((s) => s.id === step.id)
+    if (!before || before.status === 'not_run' || before.status === 'skipped') {
+      // After a healed failure the replay reaches steps the run never did: their drift may be old, or the heal
+      // may have led somewhere else; one replay cannot tell, so it is not written either way.
+      return (
+        `Step ${step.id} needed a fallback locator in the replay; it never ran in run ${record.run_id} (it came after the failure), ` +
+        'so this replay cannot tell older drift there from a heal that led somewhere else. Nothing was written: review the diff and apply it yourself, ' +
+        'then run the flow again and heal from that run.'
+      )
+    }
     if (!before?.matched?.fallback) {
       return `Step ${step.id} needed a fallback locator in the replay but not in run ${record.run_id}. Nothing was written.`
     }

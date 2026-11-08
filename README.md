@@ -500,8 +500,21 @@ alone.
   record `matched.candidates`), and the proposal puts them in front (`added`,
   layer `visual`) and drops the locators that found nothing; they are proven
   only by a replay, which `apply_heal` runs before it writes. A crop-only match
-  without candidates (a run from an older Nawi, or no unique locator) and
-  failed steps nothing matched are listed as not healed with the reason. `apply_heal` / `nawi heal-apply <run_id>` (F6, second
+  without candidates (a run from an older Nawi, or no unique locator) is
+  listed as not healed with the reason. A failed step nothing matched (no
+  locator, no crop; F6c-2) gets a suggestion when the page offers one: right
+  after the failure the run reads the page's accessibility snapshot (visible
+  controls with role + accessible name, the rules role locators replay with),
+  picks the one control whose name shares the most words with the step's
+  `intent` or with the names its own locators looked for (a fill only gets text
+  fields, a select only pickers; none when two are equally close, the best is
+  not close enough, or the page has more than 2000 named controls; it waits at
+  most 1.5 s after the failure and is not counted in the step's duration), and records
+  it with its own unique locators (run record `suggested`, also in the JUnit
+  failure text). The proposal puts those in front (layer `suggested`,
+  `unverified: true`) and keeps the flow's own locators after them: it is a
+  guess from names, so review it; `apply_heal` replays the whole flow before it
+  writes. Failed steps without a suggestion are listed as not healed. `apply_heal` / `nawi heal-apply <run_id>` (F6, second
   part) writes the proposals (all, or `step_ids` / `--step`) into the flow file,
   but only after replaying the proposed flow (saved as a run record marked
   `heal_of: <run_id>`, so it never reads as a run of an edited file): the file

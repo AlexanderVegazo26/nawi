@@ -148,9 +148,12 @@ export function renderHealReport(report: HealReport): string {
   for (const p of report.proposals) {
     const dropped = p.dropped.map((d) => `${JSON.stringify(d.selector)} (${d.reason})`).join(', ')
     const added = p.added ?? []
+    const suggested = p.evidence.suggested
     const how =
-      p.layer !== 'visual'
-        ? `matched by ${p.layer} ${JSON.stringify(p.selectors_before[p.evidence.matched.index])}`
+      p.layer === 'suggested'
+        ? `failed, nothing matched; suggested from ${suggested?.basis === 'locators' ? "its locators' names" : 'its intent'}: ${suggested?.role || 'control'} "${suggested?.name ?? ''}" (score ${suggested?.score ?? '?'}); ${added.length > 0 ? `add ${added.map((s) => JSON.stringify(s)).join(', ')}` : `move ${JSON.stringify(p.selectors_after[0])} to the front`} (UNVERIFIED: a guess from names, review it; apply_heal replays it first)`
+        : p.layer !== 'visual'
+        ? `matched by ${p.layer} ${JSON.stringify(p.selectors_before[p.evidence.matched?.index ?? 0])}`
         : added.length > 0
           ? `matched by its reference crop; add ${added.map((s) => JSON.stringify(s)).join(', ')} (unverified until replayed)`
           : `matched by its reference crop; move ${JSON.stringify(p.selectors_after[0])} to the front`

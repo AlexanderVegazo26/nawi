@@ -285,7 +285,7 @@ describe('healProposals', () => {
         [{ role: 'button', name: 'Save' }, 'no match'],
         [{ css: '#save' }, 'no match']
       ])
-      expect(p.evidence.matched.score).toBe(0.98)
+      expect(p.evidence.matched?.score).toBe(0.98)
     })
 
     it('writes the new locators in the file\'s own style, touching only that list, and the patch applies and parses', () => {
@@ -434,5 +434,74 @@ describe('nawi heal output', () => {
   it('says when there is nothing to heal, and passes the note through for a changed flow', () => {
     expect(renderHealReport(healProposals(record([typeStep, doneStep]), FLOW))).toContain('No step drifted: nothing to heal.')
     expect(renderHealReport(healProposals(record([typeStep, saveDrifted]), 'x'))).toContain('The flow file changed since this run')
+  })
+})
+
+describe('a failed step nothing matched, with a suggestion from the page (F6c-2)', () => {
+  const SAVE_SELECTORS = [{ testid: 'save-note' }, { role: 'button', name: 'Save' }, { css: 'form > button.primary' }, { css: '#save' }]
+  /** Every locator of `save` found nothing; the page's best match for "Save the note" was the "Save note" button. */
+  const failedSave = (candidates: Array<Record<string, string>>, extra: Partial<RecordedStep> = {}): RecordedStep => ({
+    id: 'save',
+    action: 'click',
+    status: 'failed',
+    intent: 'Save the note',
+    error: 'no locator matched exactly one element within 5000 ms',
+    misses: SAVE_SELECTORS.map((selector, index) => ({ index, selector, found: 0 })),
+    suggested: { role: 'button', name: 'Save note', score: 1, basis: 'intent', candidates: candidates as never },
+    ...extra
+  })
+
+  it('puts the suggested control\'s locators in front, keeps every flow locator after them, and marks it unverified', () => {
+    const report = healProposals(record([typeStep, failedSave([{ testid: 'save-note-v2' }, { role: 'button', name: 'Save note' }])]), FLOW)
+    expect(report.unhealed, JSON.stringify(report, null, 1)).toEqual([])
+    const [p] = report.proposals
+    expect(p).toMatchObject({ step_id: 'save', layer: 'suggested', unverified: true, dropped: [] })
+    expect(p.added).toEqual([{ testid: 'save-note-v2' }, { role: 'button', name: 'Save note' }])
+    expect(p.selectors_after, 'a guess condemns no locator: all four stay, after the suggestion').toEqual([
+      { testid: 'save-note-v2' },
+      { role: 'button', name: 'Save note' },
+      ...SAVE_SELECTORS
+    ])
+    expect(p.evidence.matched, 'nothing matched').toBeUndefined()
+    expect(p.evidence.suggested).toMatchObject({ name: 'Save note', score: 1, basis: 'intent' })
+    const patched = applyPatch(FLOW, report.diff)
+    expect(patched).toContain('        - { testid: save-note-v2 }\n        - { role: button, name: Save note }\n        - { testid: save-note } # gone since 2.0\n')
+    const parsed = parseFlow(patched)
+    expect(parsed.ok && parsed.flow.steps[1]).toMatchObject({ id: 'save', target: { selectors: [{ testid: 'save-note-v2' }, { role: 'button', name: 'Save note' }, ...SAVE_SELECTORS] } })
+  })
+
+  it('moves a suggested locator the flow already has to the front instead of copying it', () => {
+    const report = healProposals(record([typeStep, failedSave([{ css: '#save' }])]), FLOW)
+    expect(report.proposals[0]?.selectors_after).toEqual([{ css: '#save' }, ...SAVE_SELECTORS.slice(0, 3)])
+    expect(report.proposals[0]?.added).toEqual([])
+  })
+
+  it('lists it as unhealed, naming the control, when none of its locators is usable in the flow', () => {
+    const report = healProposals(record([typeStep, failedSave([{ bogus: 'x' }])]), FLOW)
+    expect(report.proposals).toEqual([])
+    expect(report.unhealed).toEqual([{ step_id: 'save', status: 'failed', reason: expect.stringContaining('(button "Save note") has no locator the flow can use') }])
+  })
+
+  it('names the basis in the unhealed reason when the suggestion came from its locators\' names', () => {
+    const fromLocators = failedSave([{ bogus: 'x' }])
+    fromLocators.suggested = { ...fromLocators.suggested!, basis: 'locators' }
+    expect(healProposals(record([typeStep, fromLocators]), FLOW).unhealed[0].reason).toContain("suggested from its locators' names (button")
+  })
+
+  it('prints a suggested locator the flow already has as a move, not an empty add', () => {
+    const text = renderHealReport(healProposals(record([typeStep, failedSave([{ css: '#save' }])]), FLOW))
+    expect(text).toContain('(score 1); move {"css":"#save"} to the front (UNVERIFIED')
+  })
+
+  it('says why a failed step without a suggestion is not healed', () => {
+    const report = healProposals(record([typeStep, failedSave([], { suggested: undefined })]), FLOW)
+    expect(report.unhealed[0].reason).toMatch(/no control on the page had a name close enough/)
+  })
+
+  it('prints it as UNVERIFIED in nawi heal, with the control and the score', () => {
+    const text = renderHealReport(healProposals(record([typeStep, failedSave([{ role: 'button', name: 'Save note' }])]), FLOW))
+    expect(text).toContain(
+      '  save: failed, nothing matched; suggested from its intent: button "Save note" (score 1); add {"role":"button","name":"Save note"} (UNVERIFIED: a guess from names, review it; apply_heal replays it first)'
+    )
   })
 })

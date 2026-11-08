@@ -143,12 +143,15 @@ const healFlow: PromptDefinition = {
       "3. Work out what the step should target now from the locators that missed and why, the page URL, and the " +
         "screenshots the run kept around that step (read nawi://runs/" + runId + "/<path>, where <path> is a step's " +
         'shots.before, shots.after or screenshot value; skip the ones that are missing). ' +
-        "Prefer a role with an accessible name, or a test id, over CSS. Keep the step's action and values as they are.",
+        "Prefer a role with an accessible name, or a test id, over CSS. Keep the step's action and values as they are. " +
+        "If the step has `suggested` (the control whose name on the page best matched its intent, with that control's " +
+        'locators), treat it as a lead to check against the screenshots, not as proof.',
       "4. Give the change as a unified diff of the flow file (flow.file), touching only the failed step's target. " +
         'If you cannot read that file, give the new target block in YAML instead.',
       `4b. Also call the \`get_heal_proposals\` tool with {"run_id": "${runId}"}: steps that passed only through a ` +
-        'fallback locator come with a ready diff there (flow_status must be "current"); list those proposals with ' +
-        'yours, as they are.',
+        'fallback locator come with a ready diff there (flow_status must be "current"), and a failed step with a ' +
+        'suggestion comes with an unverified one (layer "suggested"); list those proposals with yours, as they are, ' +
+        'and say which are unverified.',
       '5. Tell me how I can check it (do not do it yourself): save the change as a copy of the flow (a new ' +
         '*.nawi.yaml file) and run that copy with `run_flow`. The fix holds only if that step passes and no later ' +
         'step does worse than in this run.'

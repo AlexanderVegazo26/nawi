@@ -30,8 +30,15 @@ import { unifiedDiff } from './diff'
  * The proposal puts those in front (`added`) and drops the locators that found
  * nothing; apply_heal's replay then proves they hold. Steps it cannot heal
  * from the record alone are listed with the reason: a crop-only match without
- * candidates (an older run, or the element had no unique locator) and steps
- * where nothing matched; a later slice proposes candidates for those.
+ * candidates (an older run, or the element had no unique locator).
+ *
+ * Roadmap F6c-2: a step that failed with nothing matched may carry a
+ * suggestion (`suggested`): the control of the page's accessibility snapshot
+ * whose name best matched the step's intent or its locators' names, with that
+ * control's own locators. The proposal puts those in front (layer
+ * `suggested`, `unverified: true`) and keeps the flow's locators after them:
+ * a guess from names condemns nothing. Only apply_heal's replay of the whole
+ * flow can confirm it. Failed steps without a suggestion are listed as unhealed.
  */
 
 export type FlowStatus = 'current' | 'changed' | 'missing' | 'invalid'
@@ -49,9 +56,17 @@ export interface HealProposal {
   /**
    * The layer the run matched through: a locator layer the proposal moves to
    * the front, or `visual` (the reference crop), whose element's own locators
-   * the proposal adds in front (`added`).
+   * the proposal adds in front (`added`). `suggested`: nothing matched, and
+   * the locators added in front are those of the control whose name matched
+   * the step best (see `unverified`).
    */
-  layer: LocatorLayer | 'visual'
+  layer: LocatorLayer | 'visual' | 'suggested'
+  /**
+   * Set on `suggested` proposals: the step failed and the new locators come
+   * from names on the page, not from a match; review them (apply_heal replays
+   * the whole flow before it writes).
+   */
+  unverified?: true
   /** The step's locators as the flow file has them now, and as the proposal has them. */
   selectors_before: Selector[]
   selectors_after: Selector[]
@@ -64,7 +79,10 @@ export interface HealProposal {
   added: Selector[]
   /** Why this is believed: what the run saw, from its record. */
   evidence: {
-    matched: NonNullable<RecordedStep['matched']>
+    /** Absent for `suggested` proposals: nothing matched. */
+    matched?: NonNullable<RecordedStep['matched']>
+    /** `suggested` proposals: the control picked, how well its name matched (0..1) and against what. */
+    suggested?: NonNullable<RecordedStep['suggested']>
     misses: NonNullable<RecordedStep['misses']>
     url?: string
     /** Before/after screenshots of the step, relative to the run folder. */
@@ -132,7 +150,8 @@ type Order = Array<number | Selector>
  */
 function healedOrder(step: RecordedStep, selectors: Selector[]): { order: Order; dropped: number[]; added: Selector[] } | null {
   const matched = step.matched
-  if (!matched) return null
+  // F6c-2: a guess from names condemns no locator, so none is dropped.
+  if (!matched) return step.suggested ? recordedInFront(step.suggested.candidates, selectors, []) : null
   const visual = matched.layer === 'visual' && matched.index === selectors.length
   if (!visual && matched.index >= selectors.length) return null
   const missed = (step.misses ?? []).filter((m) => m.index < matched.index && (m.found === 0 || m.invalid !== undefined)).map((m) => m.index)
@@ -142,18 +161,39 @@ function healedOrder(step: RecordedStep, selectors: Selector[]): { order: Order;
     const order = [matched.index, ...selectors.map((_, i) => i).filter((i) => i !== matched.index && !dropped.includes(i))]
     return { order, dropped, added: [] }
   }
-  // A layer the flow fills from a placeholder is the run's value of it, not a locator for every run: leave it out.
-  const templated = new Set(selectors.filter(hasPlaceholder).map(locatorLayer))
-  const candidates = (matched.candidates ?? []).filter((c) => SelectorSchema.safeParse(c).success && !templated.has(locatorLayer(c)) && !hasPlaceholder(c))
-  if (candidates.length === 0) return null
-  const front = candidates.map((c) => {
-    const at = selectors.findIndex((s) => isDeepStrictEqual(s, c))
-    return at === -1 ? c : at
-  })
+  return recordedInFront(matched.candidates, selectors, missed)
+}
+
+/**
+ * Recorded locators (frontOf) in front of the step's list, then the flow's
+ * other locators, without the `missed` ones (except placeholders and ones
+ * moved to the front).
+ */
+function recordedInFront(candidates: unknown[] | undefined, selectors: Selector[], missed: number[]): { order: Order; dropped: number[]; added: Selector[] } | null {
+  const front = frontOf(candidates, selectors)
+  if (!front) return null
   const kept = front.filter((f): f is number => typeof f === 'number')
   const dropped = missed.filter((i) => !hasPlaceholder(selectors[i]) && !kept.includes(i))
   const order: Order = [...front, ...selectors.map((_, i) => i).filter((i) => !kept.includes(i) && !dropped.includes(i))]
   return { order, dropped, added: front.filter((f): f is Selector => typeof f !== 'number') }
+}
+
+/**
+ * Recorded locators to put in front of a step's list: each one the flow
+ * already has becomes its index (moved, not copied). Left out: anything that
+ * is not a valid locator, and layers the flow fills from a placeholder (the
+ * run's value of it, not a locator for every run). Null when none is left.
+ */
+function frontOf(candidates: unknown[] | undefined, selectors: Selector[]): Order | null {
+  const templated = new Set(selectors.filter(hasPlaceholder).map(locatorLayer))
+  const usable = (candidates ?? []).filter(
+    (c): c is Selector => SelectorSchema.safeParse(c).success && !templated.has(locatorLayer(c as Selector)) && !hasPlaceholder(c as Selector)
+  )
+  if (usable.length === 0) return null
+  return usable.map((c) => {
+    const at = selectors.findIndex((s) => isDeepStrictEqual(s, c))
+    return at === -1 ? c : at
+  })
 }
 
 /** The locator list `order` describes. */
@@ -293,11 +333,17 @@ interface Change {
 
 function analyse(record: RunRecord, flowFile: Buffer | string | null, displayName: string): { report: HealReport; patch?: Patch } {
   const base = { run_id: record.run_id, flow: { name: record.flow.name, file: record.flow.file } }
-  const candidates = record.steps.filter((s) => s.status === 'passed' && s.matched?.fallback === true)
+  const nothingMatched = (s: RecordedStep): boolean => s.status === 'failed' && !s.matched && (s.misses?.length ?? 0) > 0
+  const candidates = record.steps.filter((s) => (s.status === 'passed' && s.matched?.fallback === true) || (nothingMatched(s) && s.suggested))
   const unhealed: Unhealed[] = []
   for (const step of record.steps) {
-    if (step.status === 'failed' && !step.matched && (step.misses?.length ?? 0) > 0) {
-      unhealed.push({ step_id: step.id, status: step.status, reason: 'no locator and no reference crop matched; nothing to propose from this run' })
+    if (nothingMatched(step) && !step.suggested) {
+      unhealed.push({
+        step_id: step.id,
+        status: step.status,
+        reason:
+          'no locator and no reference crop matched, and no control on the page had a name close enough to its intent or locators to suggest; nothing to propose from this run'
+      })
     }
   }
   const empty = (flow_status: FlowStatus, note?: string): { report: HealReport } => ({
@@ -339,8 +385,9 @@ function analyse(record: RunRecord, flowFile: Buffer | string | null, displayNam
     }
     const healed = healedOrder(step, before)
     if (!healed) {
-      const reason =
-        step.matched?.layer === 'visual'
+      const reason = !step.matched
+        ? `the control suggested from its ${step.suggested?.basis === 'locators' ? "locators' names" : 'intent'} (${step.suggested?.role || 'control'} "${step.suggested?.name ?? ''}") has no locator the flow can use`
+        : step.matched.layer === 'visual'
           ? 'only its reference crop matched, and the run recorded no locator that found that element alone (a run from before Nawi recorded them, or the element has none), so there is no locator to propose yet'
           : 'the run marked it as a fallback but recorded no locator that found nothing before the match'
       unhealed.push({ step_id: step.id, status: step.status, reason })
@@ -357,12 +404,13 @@ function analyse(record: RunRecord, flowFile: Buffer | string | null, displayNam
       continue
     }
     changes.push(change)
-    const matched = step.matched!
+    const matched = step.matched
     proposals.push({
       step_id: step.id,
       action: step.action,
       ...(step.intent !== undefined ? { intent: step.intent } : {}),
-      layer: matched.layer === 'visual' ? 'visual' : locatorLayer(before[matched.index]),
+      layer: !matched ? 'suggested' : matched.layer === 'visual' ? 'visual' : locatorLayer(before[matched.index]),
+      ...(!matched ? { unverified: true as const } : {}),
       selectors_before: before,
       selectors_after: orderedSelectors(before, healed.order),
       dropped: healed.dropped.map((i) => ({
@@ -371,7 +419,8 @@ function analyse(record: RunRecord, flowFile: Buffer | string | null, displayNam
       })),
       added: healed.added,
       evidence: {
-        matched,
+        ...(matched ? { matched } : {}),
+        ...(!matched && step.suggested ? { suggested: step.suggested } : {}),
         misses: step.misses ?? [],
         ...(step.url !== undefined ? { url: step.url } : {}),
         ...(step.shots !== undefined ? { shots: step.shots } : {})

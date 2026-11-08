@@ -91,6 +91,61 @@
     return described.list
   }
 
+  /**
+   * The page's accessibility snapshot for a step nothing found (roadmap F6c-2):
+   * every visible control with its role and accessible name, as the probe
+   * computes them (the rules `{ role, name }` locators replay with), in
+   * document order. Controls with no name are left out (nothing to compare an
+   * intent with), and so are names longer than MAX_SNAPSHOT_NAME (whole, never
+   * cut: the host scrubs secret values out of names, and a cut one could hide a
+   * secret's tail from it). A page with more than MAX_SNAPSHOT such controls
+   * answers `{ tooMany: n }` instead: a list cut short could leave out the
+   * right control or its close rival and make a wrong one look like the only
+   * match. The elements are kept until the next snapshot, so
+   * `describeSnapshot(i)` can name the one the host picked. Null when the
+   * probe is not installed.
+   */
+  var MAX_SNAPSHOT = 2000
+  var MAX_SNAPSHOT_NAME = 1000
+  var SNAPSHOT_SELECTOR = INTERACTIVE + ',[role="listbox"]'
+  var snapshotEls = []
+
+  function snapshot() {
+    var p = probe()
+    if (!p || typeof p.roleOf !== 'function' || typeof p.accessibleName !== 'function') return null
+    snapshotEls = []
+    var out = []
+    var all = document.querySelectorAll(SNAPSHOT_SELECTOR)
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i]
+      if (!isVisible(el)) continue
+      var name = String(p.accessibleName(el) || '').replace(/\s+/g, ' ').trim()
+      if (!name || name.length > MAX_SNAPSHOT_NAME) continue
+      if (out.length >= MAX_SNAPSHOT) {
+        snapshotEls = []
+        return { tooMany: all.length }
+      }
+      var role = p.roleOf(el) || ''
+      out.push({
+        i: snapshotEls.length,
+        role: role,
+        name: name,
+        editable: isEditable(el),
+        select: el.tagName === 'SELECT' || role === 'combobox' || role === 'listbox'
+      })
+      snapshotEls.push(el)
+    }
+    return out
+  }
+
+  /** The recorder's locator candidates for snapshot entry `i` (probe.describeSelectors), or null when it is gone. */
+  function describeSnapshot(i) {
+    var p = probe()
+    var el = snapshotEls[i]
+    if (!el || !el.isConnected || !p || typeof p.describeSelectors !== 'function') return null
+    return p.describeSelectors(el)
+  }
+
   /** All elements a selector matches, in document order. */
   function matchesFor(selector) {
     if (selector.__anchor !== undefined) return anchorMatches(selector)
@@ -447,6 +502,8 @@
     selectOption: selectOption,
     scroll: scroll,
     box: box,
-    candidates: candidates
+    candidates: candidates,
+    snapshot: snapshot,
+    describeSnapshot: describeSnapshot
   }
 })()

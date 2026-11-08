@@ -853,7 +853,9 @@ const getHealProposals = defineTool({
     'step that passed only through a fallback locator, a YAML patch that moves the locator that matched to the front ' +
     'and drops the ones that found nothing, with the evidence (matched and missed locators, URL, before/after ' +
     'screenshots relative to the run folder). A step found only by its reference crop (layer "visual") gets that ' +
-    "element's own locators added in front instead (added; unverified until replayed). Also lists steps it cannot " +
+    "element's own locators added in front instead (added; unverified until replayed). A failed step nothing found " +
+    'gets a suggestion when one control on the page has a name close to its intent or its locators\' names (layer ' +
+    '"suggested", unverified: true): that control\'s locators in front, the flow\'s own kept after them. Also lists steps it cannot ' +
     'heal from the record and why. Nothing is ' +
     'written: review the diff, then apply it yourself or with apply_heal (which replays it first). flow_status ' +
     '"changed" means the flow file was edited since the run: run it again first.',

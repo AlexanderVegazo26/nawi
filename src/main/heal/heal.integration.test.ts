@@ -116,6 +116,18 @@ steps:
     expect: { text: Saved hello }
 `
 
+/** 4.0: the button says "Save note" and lost its id, next to a new "Discard note" button: no locator finds it, nor any crop. */
+const APP_V4 = `<!doctype html>
+<meta charset="utf-8">
+<title>Notes</title>
+<form onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'Saved ' + document.getElementById('body').value">
+  <textarea id="body" data-testid="note-body"></textarea>
+  <button type="button" onclick="document.getElementById('body').value = ''">Discard note</button>
+  <button id="store" type="submit">Save note</button>
+</form>
+<p id="out" role="status"></p>
+`
+
 describeWithBrowser('healing proposals from a real run', () => {
   let root: string
   const deps = (runs: string): RunFlowDeps => ({
@@ -253,6 +265,41 @@ describeWithBrowser('healing proposals from a real run', () => {
         '        - { testid: store-note }\n        - { id: store }\n        - { role: button, name: Save }\n'
       )
     )
+
+    const again = await runFlowFile({ file, headless: true, screenshots: 'off' }, deps(runs))
+    expect(again.status, why(again)).toBe('passed')
+    expect((await readRunRecord(runs, again.run_id!))?.fallback_step_ids, 'no drift left').toBeUndefined()
+  }, 60_000)
+
+  it('suggests a control for a step nothing found, from its intent and the page\'s accessibility snapshot, and apply_heal writes it once the replay passes', async () => {
+    writeFileSync(join(root, 'v4.html'), APP_V4)
+    const file = join(root, 'suggest.nawi.yaml')
+    const original = flowText(pathToFileURL(join(root, 'v4.html')).href)
+    writeFileSync(file, original)
+    const runs = join(root, 'runs-suggest')
+
+    const first = await runFlowFile({ file, headless: true, screenshots: 'off', stepTimeoutMs: 1_000 }, deps(runs))
+    expect(first.status, why(first)).toBe('failed')
+    const record = (await readRunRecord(runs, first.run_id!))!
+    const save = record.steps.find((s) => s.id === 'save')!
+    expect(save.matched, 'no locator and no crop found the renamed button').toBeUndefined()
+    expect(save.suggested, JSON.stringify(save, null, 1)).toMatchObject({ role: 'button', name: 'Save note', basis: 'intent' })
+    expect(save.suggested?.candidates.slice(0, 2), 'the suggested button\'s own locators, best first, not the Discard button\'s').toEqual([
+      { id: 'store' },
+      { role: 'button', name: 'Save note' }
+    ])
+
+    const report = healProposals(record, await readRunFlow(record, [root]))
+    expect(report.proposals.map((p) => [p.step_id, p.layer, p.unverified]), JSON.stringify(report, null, 1)).toEqual([['save', 'suggested', true]])
+    expect(report.proposals[0].selectors_after.slice(-2), 'the flow\'s own locators are kept after the suggestion').toEqual([
+      { role: 'button', name: 'Save' },
+      { css: '#save' }
+    ])
+
+    const result = await applyHeal(record, undefined, applyDeps(record, runs))
+    expect(result, JSON.stringify(result, null, 1)).toMatchObject({ applied: true, step_ids: ['save'], replay: { status: 'passed' } })
+    expect(result.replay?.steps.find((s) => s.id === 'save')?.matched).toEqual({ index: 0, layer: 'id', fallback: false })
+    expect(readFileSync(file, 'utf8')).toContain('        - { id: store }\n')
 
     const again = await runFlowFile({ file, headless: true, screenshots: 'off' }, deps(runs))
     expect(again.status, why(again)).toBe('passed')

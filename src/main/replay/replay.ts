@@ -25,6 +25,7 @@ import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
 import { EvidenceCollector, type StepEvidence } from './evidence'
 import { decodePng, type RgbImage } from '../mobile/png'
 import { anchorCandidates } from './anchor-candidates'
+import { pickSuggestion, stepQuery, type Suggestion } from './suggest'
 import { anchorMissText, findAnchor, scaleImage, type AnchorResult } from './visual-anchor'
 
 /**
@@ -109,6 +110,20 @@ export interface StepRun extends StepEvidence {
      * was found (anchorCandidates). A heal proposal puts them in front.
      */
     candidates?: Selector[]
+  }
+  /**
+   * Failed steps nothing found (roadmap F6c-2): the visible control whose
+   * accessible name best matches the step's intent or its locators' names,
+   * from the page's accessibility snapshot when the step failed, with that
+   * control's own locators (each unique on the page then, best first). Unverified:
+   * a guess from names, which only a replay of the healed flow can confirm.
+   */
+  suggested?: {
+    role: string
+    name: string
+    score: number
+    basis: Suggestion['basis']
+    candidates: Selector[]
   }
   /** The step's `intent` from the flow (what it is for), scrubbed. */
   intent?: string
@@ -214,6 +229,14 @@ type PageLocator = Selector | { __anchor: [number, number]; pin: number }
 export const VISUAL_EVERY_MS = 250
 /** A viewport capture for the anchor layer that takes longer than this turns the layer off for the run. */
 export const ANCHOR_SHOT_TIMEOUT_MS = 1_500
+/**
+ * How long a failed step may spend reading the page's accessibility snapshot
+ * for a suggestion (roadmap F6c-2), on top of its own timeout: a page that
+ * does not answer by then gets no suggestion, never a longer run.
+ */
+export const SUGGEST_TIMEOUT_MS = 1_500
+/** The suggested control's name as the run record keeps it (scrubbed first, then cut). */
+const MAX_SUGGESTED_NAME_CHARS = 200
 /**
  * Pins each anchor lookup to the element it first resolved to (replay.js
  * anchorMatches). Process-wide, so runs replayed one after another on one
@@ -670,8 +693,49 @@ class StepRunner {
     if (step.action === 'screenshot' && answer && 'png' in answer) {
       record.screenshotPng = (answer as PageAnswer & { png: string }).png
     }
+    // The step's own time: looking for a suggestion afterwards is not part of it.
     record.durationMs = this.now() - startedAt
+    if (record.status === 'failed' && !record.matched && (record.misses?.length ?? 0) > 0) {
+      const suggested = await this.suggest(step, selectors)
+      if (suggested) record.suggested = suggested
+    }
     return record
+  }
+
+  /**
+   * A suggestion for a step nothing found (roadmap F6c-2): the page's
+   * accessibility snapshot, the control whose name best matches the step
+   * (suggest.ts), and that control's own locators, each unique on the page
+   * now (anchorCandidates: the rules a crop-only match is healed with). Null
+   * when no control is close enough, the control has no usable locator, or
+   * the page does not answer within SUGGEST_TIMEOUT_MS. Never throws: a
+   * suggestion is extra, the step's failure is the result. Once the time is
+   * up nothing more is sent to the page (a snapshot already running there
+   * finishes on its own; its answer is ignored), so the next step is not
+   * competing with a describe call.
+   */
+  private async suggest(step: FlowStep, selectors: Selector[]): Promise<StepRun['suggested'] | null> {
+    const query = stepQuery(step, selectors)
+    if (query.intent.size === 0 && query.locators.size === 0) return null
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let late = false
+    const timeout = new Promise<null>((resolve) => (timer = setTimeout(() => ((late = true), resolve(null)), SUGGEST_TIMEOUT_MS)))
+    const look = (async (): Promise<StepRun['suggested'] | null> => {
+      const snapshot = await this.session.call('snapshot')
+      const picked = late ? null : pickSuggestion(snapshot, step.action, query)
+      if (!picked) return null
+      const described = await this.session.call('describeSnapshot', picked.entry.i)
+      const candidates = late ? [] : anchorCandidates(described, this.redact)
+      if (candidates.length === 0) return null
+      // Scrubbed whole, then cut: a cut first could hide a secret's tail from the scrubber.
+      const name = this.redact(picked.entry.name).slice(0, MAX_SUGGESTED_NAME_CHARS)
+      return { role: picked.entry.role, name, score: picked.score, basis: picked.basis, candidates }
+    })().catch(() => null)
+    try {
+      return await Promise.race([look, timeout])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**
