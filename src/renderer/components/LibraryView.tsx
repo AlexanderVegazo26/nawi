@@ -136,7 +136,10 @@ export function LibraryView({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-4">
+      {/* Wraps instead of overflowing: at the minimum window under 200% zoom
+          (436 CSS px for this column) title + search + button don't fit on one
+          line, and the body's overflow:hidden would clip "New capture". */}
+      <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-6 py-4">
         <div>
           <h1 className="text-xl font-semibold text-text-primary">Library</h1>
           <p className="text-xs text-text-secondary">
@@ -258,7 +261,10 @@ export function LibraryView({
                         className="h-full w-full object-contain"
                       />
                     )}
-                    <span className="absolute right-2 top-2 rounded bg-scrim/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-secondary">
+                    {/* The scrim is black in both themes, so the label is
+                        always light: text-secondary is a dark grey in the light
+                        theme (1.9:1 on this badge, WCAG 1.4.3). */}
+                    <span className="absolute right-2 top-2 rounded bg-scrim/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-white">
                       {mediaKindOf(item.kind) === 'video'
                         ? item.durationMs
                           ? formatDuration(item.durationMs)

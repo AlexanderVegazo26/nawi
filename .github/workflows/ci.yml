@@ -43,12 +43,21 @@ jobs:
       # and the command that reruns only it. Exit 3 (a test skipped) fails the
       # job too: a skipped release-gate suite is not a pass.
       - run: npm run test:agent
+      # The main window's UI in that same Chromium, served by Vite with a stub
+      # preload (no Electron, no display): axe WCAG 2.2 AA ratchet on every
+      # screen in light and dark, and the responsive checks at the window's
+      # minimum/default/wide sizes and at 200% zoom.
+      - name: Renderer a11y and responsive suite
+        if: ${{ !cancelled() }}
+        run: npm run test:renderer
       - name: Upload test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-report
-          path: .test-report/
+          path: |
+            .test-report/
+            test-results/
           retention-days: 14
 
   e2e:

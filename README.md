@@ -30,6 +30,7 @@ npm run dev
 | `npm run test:unit` | Vitest unit suite (no app launch, no DOM required) |
 | `npm run test:agent` | Typecheck + unit suite, with a fix-ready report in `.test-report/summary.md` |
 | `npm run test:e2e` | Builds, then runs Playwright against the real app |
+| `npm run test:renderer` | The main window's UI in Playwright Chromium (no Electron): axe a11y + responsive checks |
 | `npm run package` | Builds an unpacked app into `release/win-unpacked/` |
 | `npm run dist` | Builds a distributable installer for the current platform |
 | `npm run dist:win` / `dist:mac` / `dist:linux` | Builds one platform's installers explicitly |
@@ -813,7 +814,18 @@ index rather than being used as path segments. An E2E test asserts that
 npm run test:unit    # vitest
 npm run test:agent   # typecheck + vitest, writes .test-report/ (what CI's verify job runs)
 npm run test:e2e     # builds, then drives the real Electron app
+npm run test:renderer  # main-window UI in plain Chromium: axe WCAG 2.2 AA + responsive
 ```
+
+`npm run test:renderer` (`playwright.renderer.config.ts`, `e2e-renderer/`) serves
+the renderer with Vite and replaces the preload with a stub `window.api`, so it
+needs neither Electron nor a display. It opens every main-window screen
+(capture, empty and filled library, mobile) and checks: no new axe WCAG 2.2 AA
+violations in light and dark (a ratchet: `KNOWN` in `a11y.spec.ts` lists the
+ones that predate the check and may only shrink), and at the window's minimum
+(1024x660), default, wide (1920x1080) and minimum-at-200%-zoom sizes no
+sideways scroll or clipped element, every rail button on screen and every
+control at least 24x24 CSS px. CI's verify job runs it after `test:agent`.
 
 `npm run test:agent` writes `.test-report/summary.md`: every type error with
 `file:line:col`, and every failing test with `file:line`, its source line, the

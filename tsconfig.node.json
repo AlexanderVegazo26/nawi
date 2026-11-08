@@ -26,6 +26,8 @@
     "src/preload/**/*",
     "src/shared/**/*",
     "scripts/**/*",
+    "e2e-renderer/**/*",
+    "playwright.renderer.config.ts",
     "electron.vite.config.ts"
   ]
 }
