@@ -6,6 +6,7 @@ import { androidReplayOf, runFlowFile } from '../flow-run'
 import { ToolError } from '../mcp/errors'
 import { readRunRecord } from '../run-record'
 import type { ExecResult } from './doctor'
+import { javaCrash } from './fixtures/crash-logs'
 import { parseLauncher, prepareAndroidRun, type AndroidRunHost } from './flow-device'
 import { encodePng } from './png'
 
@@ -230,6 +231,28 @@ describe('runFlowFile on an android flow', () => {
     expect(existsSync(join(report.run_dir!, 'junit.xml')), 'junit.xml is written like for browser runs').toBe(true)
   })
 
+  it('records a crash of the app (M5d-1): the step fails with it, run.json, the reply and report.html keep the report', async () => {
+    // The device's log holds the app's crash report: both the crash read and the step log read return it.
+    const logcat = javaCrash(Math.floor(START / 1000), PKG, { uid: 10234 })
+    const host = simHost({ devices: [{ serial: 'emulator-5560', avd: 'loop-api36', api: 36 }], evidence: { logcat } })
+    const runs = join(root, 'runs')
+    const report = await runFlowFile({ file: flowFile() }, { roots: [root], androidHost: host, now: host.now, record: { dir: runs } })
+    expect(report.status).toBe('failed')
+    expect(report.failed_step_id).toBe('tap')
+    expect(report.steps[0].error).toBe(`${PKG} crashed: java.lang.IllegalStateException: tracking id missing`)
+    expect(report.steps[0].crash, 'the reply names the crash').toMatchObject({ kind: 'crash', process: PKG, pid: 3475 })
+    const record = await readRunRecord(runs, report.run_id!)
+    expect(record?.steps[0].crash?.summary, 'run.json keeps the crash').toBe('java.lang.IllegalStateException: tracking id missing')
+    expect(record?.steps[0].logcat?.filter((l) => l.message === 'FATAL EXCEPTION: main'), 'the report once, though both reads return it').toHaveLength(1)
+    const html = readFileSync(join(report.run_dir!, 'report.html'), 'utf8')
+    expect(html).toContain(`${PKG} crashed: java.lang.IllegalStateException: tracking id missing`)
+    expect(html).toContain('logcat E AndroidRuntime: FATAL EXCEPTION: main')
+    expect(readFileSync(join(report.run_dir!, 'junit.xml'), 'utf8')).toContain('crashed: java.lang.IllegalStateException')
+    // Watched from before the launch (pm path, force-stop, am start each take fake time), not from the first step.
+    const since = calls.map((c) => /^logcat -d -b crash .* -t (\d+)\.(\d{3}) /.exec(c[4] ?? '')).find((m) => m !== null)
+    expect(Number(since?.[1]) * 1000 + Number(since?.[2]) - START, 'crash log read from the launch on').toBeLessThanOrEqual(5)
+  })
+
   it('saves the device screen around each step and the app\'s log lines in the record, and asks for neither without one', async () => {
     const logcat = `  ${Math.floor(START / 1000)}.500 10234  4321  4321 E Shop: could not load the welcome banner\n`
     const host = simHost({ devices: [{ serial: 'emulator-5560', avd: 'loop-api36', api: 36 }], evidence: { logcat } })
@@ -251,7 +274,8 @@ describe('runFlowFile on an android flow', () => {
     calls.length = 0
     const unrecorded = await runFlowFile({ file: flowFile() }, { roots: [root], androidHost: host })
     expect(unrecorded.status).toBe('passed')
-    expect(calls.some((c) => c.includes('screencap') || /^(logcat|date) /.test(c[4] ?? '')), 'no record: no evidence asked of the device').toBe(false)
+    expect(calls.some((c) => c.includes('screencap') || /^logcat (?!-d -b crash )/.test(c[4] ?? '')), 'no record: no screenshots or step log asked of the device').toBe(false)
+    expect(calls.some((c) => /^logcat -d -b crash /.test(c[4] ?? '')), 'crashes are watched for with or without a record (M5d-1)').toBe(true)
   })
 
   it('with launch false acts on the app as it is: no launcher lookup, force-stop or start', async () => {

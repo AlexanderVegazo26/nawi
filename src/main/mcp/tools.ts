@@ -745,7 +745,9 @@ const runFlow = defineTool({
     'booted, and the app must be installed: mobile_open does both). Nawi force-stops the app and starts it from its launcher so the run ' +
     'begins on its first screen, unless launch is false (then the steps act on the app as it is). The reply and record name the device ' +
     '(device). An Android run\'s record also keeps each step\'s device log: the app\'s warnings and errors, and system lines naming its package ' +
-    '(steps[].logcat, first 3 in the reply); headless and cdp_endpoint apply to browser flows only. A step ' +
+    '(steps[].logcat, first 3 in the reply). A crash or ANR of the app fails the step it happens in, with steps[].crash ' +
+    '(kind crash|native_crash|anr, process, pid, summary) and its report first in steps[].logcat, record or not; ' +
+    'headless and cdp_endpoint apply to browser flows only. A step ' +
     'failure is a normal result with status "failed"; errors are for files, browsers or devices that cannot be used (detail.fix says what to do). ' +
     'Send a progressToken in _meta (and accept text/event-stream) to get a notifications/progress message as ' +
     'each step settles. Pausing agent access, cancelling the call (notifications/cancelled), or disconnecting ' +

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { parseFlow, type Flow } from '../../shared/flow'
 import { replayAndroidFlow, type AndroidReplayRequest } from './flow-replay'
+import { crashLogLine } from './crash'
+import { anr, javaCrash, nativeCrash } from './fixtures/crash-logs'
 import { DEVICE_AHEAD_MS, device, ID, PKG, type Device } from './fixtures/shop-app'
 import { decodePng } from './png'
 
@@ -369,5 +371,135 @@ describe('replayAndroidFlow evidence (roadmap M5b-2)', () => {
       expect(since(logs[i]), `step ${i + 1}'s log starts no later than the step`).toBeLessThanOrEqual((r.steps[i].startedAt ?? 0) + DEVICE_AHEAD_MS)
       expect(since(logs[i]), `step ${i + 1}'s log starts no earlier than step ${i}'s`).toBeGreaterThanOrEqual(since(logs[i - 1]))
     }
+  })
+})
+
+describe('replayAndroidFlow crashes and ANRs (roadmap M5d-1)', () => {
+  const TRACK = flow(
+    `  - { id: t1, action: click, target: { selectors: [{ id: "${ID('track')}" }] } }
+  - { id: t2, action: assert, target: { selectors: [{ id: "${ID('status')}" }] }, expect: { text: Shipped to Ana } }
+`
+  )
+  const crashing = (more: Partial<NonNullable<Parameters<typeof device>[1]>['crashOn']> = {}) =>
+    device('order', { crashOn: { control: 'track', log: (sec) => javaCrash(sec, PKG), ...more } })
+
+  it('fails the step whose tap crashed the app, with the exception and the crash report as its log', async () => {
+    const d = crashing()
+    const r = await run(TRACK, d)
+    expect(r.status).toBe('failed')
+    expect(r.failedStepId).toBe('t1')
+    const t1 = r.steps[0]
+    expect(t1.error).toBe(`${PKG} crashed: java.lang.IllegalStateException: tracking id missing`)
+    expect(t1.crash).toMatchObject({ kind: 'crash', process: PKG, pid: 3475, summary: 'java.lang.IllegalStateException: tracking id missing' })
+    expect(t1.logcat?.slice(0, 2).map((l) => l.message), 'the report is kept even with the step log off').toEqual(['FATAL EXCEPTION: main', `Process: ${PKG}, PID: 3475`])
+    expect(r.steps[1].status).toBe('not_run')
+    expect(d.crashReads[0], 'read from the run start on the device clock').toBe(crashLogLine(1_000_000 + DEVICE_AHEAD_MS))
+  })
+
+  it('fails a waiting step as soon as the app is gone and its crash is logged, long before the step timeout', async () => {
+    // The report reaches the log only after the tap's step ended: the next step sees the launcher, not the app.
+    const d = crashing({ logAfterReads: 8 })
+    const r = await run(TRACK, d)
+    expect(r.steps.map((s) => s.status)).toEqual(['passed', 'failed'])
+    const t2 = r.steps[1]
+    expect(t2.error).toBe(`${PKG} crashed: java.lang.IllegalStateException: tracking id missing`)
+    expect(t2.crash?.kind).toBe('crash')
+    expect(t2.durationMs, `the step must not wait out its 10 s timeout (took ${t2.durationMs} ms)`).toBeLessThanOrEqual(2_500)
+    // 8 screen reads (~2 s) before the report: one check after t1, then one per CRASH_POLL_MS (at ~1 s and ~2 s), not one per read.
+    expect(d.crashReads.length, 'checks while waiting are spaced CRASH_POLL_MS apart, not one per screen read').toBe(3)
+  })
+
+  it('fails the step after which the app stopped responding (ANR), though its screen stays', async () => {
+    const d = crashing({ hang: true, log: (sec) => anr(sec, PKG) })
+    const r = await run(TRACK, d)
+    expect(r.failedStepId).toBe('t1')
+    expect(r.steps[0].error).toMatch(/^dev\.nawi\.shop stopped responding \(ANR\): Input dispatching timed out/)
+    expect(r.steps[0].crash).toMatchObject({ kind: 'anr', pid: 5874 })
+    expect(r.steps[0].logcat?.map((l) => l.tag)).toEqual(Array(6).fill('ActivityManager'))
+  })
+
+  it('fails a waiting step on an ANR within seconds, though the frozen app\'s views stay on screen', async () => {
+    // The ANR is declared ~5 s after the tap (20 screen reads): a step that waits 30 s must not run out its timeout.
+    const d = crashing({ hang: true, logAfterReads: 20, log: (sec) => anr(sec, PKG) })
+    const steps = flow(`  - { id: t1, action: click, target: { selectors: [{ id: "${ID('track')}" }] } }
+  - { id: t2, action: wait, timeout_ms: 30000, target: { selectors: [{ text: Delivered }] } }
+`)
+    const r = await run(steps, d)
+    expect(r.steps.map((s) => s.status)).toEqual(['passed', 'failed'])
+    expect(r.steps[1].error).toMatch(/^dev\.nawi\.shop stopped responding \(ANR\): Input dispatching timed out/)
+    expect(r.steps[1].durationMs, `found at the next ANR_POLL_MS check after it was declared (took ${r.steps[1].durationMs} ms)`).toBeLessThanOrEqual(10_000)
+    expect(d.crashReads.length, 'while the app is on screen, one check per ANR_POLL_MS').toBeLessThanOrEqual(4)
+  })
+
+  it('names the crash first when the step failed too, keeping the step\'s own reason', async () => {
+    const d = crashing({ hang: true, logAfterReads: 3, log: (sec) => nativeCrash(sec, PKG) })
+    const steps = flow(`  - { id: t1, action: click, target: { selectors: [{ id: "${ID('track')}" }] } }
+  - { id: t2, action: assert, timeout_ms: 500, target: { selectors: [{ id: "${ID('status')}" }] }, expect: { text: Delivered } }
+`)
+    const r = await run(steps, d)
+    expect(r.steps.map((s) => s.status)).toEqual(['passed', 'failed'])
+    expect(r.steps[1].error).toBe(`${PKG} crashed in native code: signal 11 (SIGSEGV), code 1 (SEGV_MAPERR) (the step: id=${ID('status')}: expected text containing "Delivered", got "Shipped to Ana")`)
+    expect(r.steps[1].crash?.kind).toBe('native_crash')
+  })
+
+  it('waits a moment after the last step before its crash check, so a crash its action caused cannot pass the run', async () => {
+    // The app dies half a second after the tap: the run must not report it passed.
+    const d = crashing({ logAfterMs: 500 })
+    const r = await run(flow(`  - { id: t1, action: click, target: { selectors: [{ id: "${ID('track')}" }] } }\n`), d)
+    expect(r.status).toBe('failed')
+    expect(r.steps[0].error).toBe(`${PKG} crashed: java.lang.IllegalStateException: tracking id missing`)
+  })
+
+  it('counts a crash from the moment the caller launched the app (crashesSince), not only from the first step', async () => {
+    const d = crashing()
+    await run(TRACK, d, { crashesSince: 990_000 })
+    expect(d.crashReads[0]).toBe(crashLogLine(990_000 + DEVICE_AHEAD_MS))
+  })
+
+  it('stops a waiting step that is cancelled without reading the crash log first, as stopped and not crashed', async () => {
+    // The app dies after t1's check; t2 waits on the launcher. The run is cancelled on the read that comes
+    // CRASH_POLL_MS after that check, where a crash check is due: the cancel wins, the log is not read.
+    const controller = new AbortController()
+    const d = device('order', {
+      crashOn: { control: 'track', logAfterReads: 1, log: (sec) => javaCrash(sec, PKG) },
+      onRead: (reads) => {
+        if (reads === 6) controller.abort('user stop')
+      }
+    })
+    const r = await run(TRACK, d, { signal: controller.signal })
+    expect(r.error).toBe('stopped during step t2: user stop')
+    expect(r.steps[1].crash, 'a cancelled step reports no crash').toBeUndefined()
+    expect(d.crashReads, 'only the check after t1').toHaveLength(1)
+  })
+
+  it('does not repeat in the step log the crash lines beyond its cap, nor count them twice', async () => {
+    const sec = Math.floor((1_000_000 + DEVICE_AHEAD_MS) / 1000)
+    const report = javaCrash(sec, PKG, { frames: 45 })
+    const d = device('order', { evidence: { logcat: report }, crashOn: { control: 'track', log: () => report } })
+    const r = await run(TRACK, d, { logcat: true })
+    const t1 = r.steps[0]
+    expect(t1.logcat, 'the report\'s first 30 lines, nothing after them from the step log').toHaveLength(30)
+    expect(t1.logcatDropped, '3 + 45 + 1 = 49 report lines, 19 not kept, counted once').toBe(19)
+  })
+
+  it('ignores another app\'s crash, and passes a run whose app never crashed', async () => {
+    const d = device('order', { crashOn: { control: 'nothing', log: () => '', before: javaCrash(1_794_138_000, 'com.android.settings') + anr(1_794_138_000, `${PKG}.debug`) } })
+    const r = await run(TRACK, d)
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    expect(r.steps.every((s) => s.crash === undefined && s.logcat === undefined)).toBe(true)
+    expect(d.crashReads, 'one check after each step').toHaveLength(2)
+  })
+
+  it('leads the step log with the crash report and keeps the step\'s other lines once (no duplicates)', async () => {
+    const sec = Math.floor((1_000_000 + DEVICE_AHEAD_MS) / 1000)
+    const report = javaCrash(sec, PKG)
+    const other = `         ${sec}.100 10234  3475  3480 W ShopNet : retrying /orders/1/track\n`
+    const d = device('order', { evidence: { logcat: other + report }, crashOn: { control: 'track', log: () => report } })
+    const r = await run(TRACK, d, { logcat: true })
+    const messages = r.steps[0].logcat?.map((l) => l.message) ?? []
+    expect(messages[0]).toBe('FATAL EXCEPTION: main')
+    expect(messages.filter((m) => m === 'FATAL EXCEPTION: main'), 'the device log repeats the report: kept once').toHaveLength(1)
+    expect(messages.at(-1)).toBe('retrying /orders/1/track')
+    expect(d.evidenceLines.filter((l) => l.startsWith('date ')), 'one clock read serves the crash watch and the step logs').toHaveLength(1)
   })
 })

@@ -43,7 +43,19 @@ export interface AndroidEvidenceHost {
  * `logcat -v epoch,uid`: `<seconds>.<ms> <uid> <pid> <tid> <level> <tag>: <message>`. The uid is a number on recent
  * images and a name (`u0_a123`, `system`) on older ones.
  */
-const LOGCAT_LINE_RE = /^\s*(\d+)\.(\d{3})\s+(\S+)\s+(\d+)\s+\d+\s+([VDIWEFA])\s+(.*?)\s*: (.*)$/
+export const LOGCAT_LINE_RE = /^\s*(\d+)\.(\d{3})\s+(\S+)\s+(\d+)\s+(\d+)\s+([VDIWEFA])\s+(.*?)\s*: (.*)$/
+
+/** A device epoch time in ms as `logcat -t` takes it: `<seconds>.<ms>`. */
+export const logcatTime = (deviceMs: number): string => {
+  const ms = Math.floor(deviceMs)
+  return `${Math.floor(ms / 1000)}.${String(ms % 1000).padStart(3, '0')}`
+}
+
+/** A log line's tag and message as the run keeps them: secrets scrubbed first, then cut. */
+export function keptLogText(tag: string, message: string, redact: (text: string) => string): { tag: string; message: string } {
+  const text = redact(message)
+  return { tag: redact(tag).slice(0, 100), message: text.length > MAX_LOGCAT_MESSAGE ? `${text.slice(0, MAX_LOGCAT_MESSAGE)}…` : text }
+}
 
 /** The names `logcat -v uid` may print for `uid` instead of its number. */
 function uidNames(uid: number): string[] {
@@ -83,7 +95,7 @@ export function parseLogcat(
   for (const raw of stdout.split(/\r?\n/)) {
     const m = LOGCAT_LINE_RE.exec(raw)
     if (!m) continue
-    const [, sec, ms, uid, pid, level, tag, message] = m
+    const [, sec, ms, uid, pid, , level, tag, message] = m
     if (level !== 'W' && level !== 'E' && level !== 'F' && level !== 'A') continue
     if (!own.has(uid) && !pids.has(pid) && !namesPackage(message, opts.pkg) && !namesPackage(tag, opts.pkg)) continue
     if (lines.length >= max) {
@@ -92,13 +104,7 @@ export function parseLogcat(
     }
     const at = new Date(Number(sec) * 1000 + Number(ms))
     if (Number.isNaN(at.getTime())) continue
-    const text = opts.redact(message)
-    lines.push({
-      at: at.toISOString(),
-      level,
-      tag: opts.redact(tag).slice(0, 100),
-      message: text.length > MAX_LOGCAT_MESSAGE ? `${text.slice(0, MAX_LOGCAT_MESSAGE)}…` : text
-    })
+    lines.push({ at: at.toISOString(), level, ...keptLogText(tag, message, opts.redact) })
   }
   return { lines, dropped }
 }
@@ -217,6 +223,19 @@ export interface AndroidEvidenceRequest {
   usesSecrets: boolean
   /** Scrubs the secrets the run has used so far. */
   redact(text: string): string
+  /** The device clock's offset the caller already read (readDeviceClockOffset; null = unknown); read here when absent. */
+  clockOffset?: number | null
+}
+
+/**
+ * How far the device's epoch clock (ms) is ahead of `host.now()`, from one `date +%s%3N`; null when the device can't
+ * tell. Half the round trip is assumed: the device read its clock somewhere in the middle of it.
+ */
+export async function readDeviceClockOffset(shell: (line: string) => ReturnType<Exec>, host: { now(): number }): Promise<number | null> {
+  const before = host.now()
+  const clock = await shell('date +%s%3N')
+  const device = clock.code === 0 && !clock.error ? parseDeviceClock(clock.stdout) : null
+  return device === null ? null : device - Math.round((before + host.now()) / 2)
 }
 
 /** Sets up the evidence for one run: asks the device for its clock and the app's uid once (logcat only). */
@@ -226,11 +245,7 @@ export async function startAndroidEvidence(req: AndroidEvidenceRequest, host: An
   let offset: number | null = null
   let uid: number | null = null
   if (req.logcat) {
-    const before = host.now()
-    const clock = await shell('date +%s%3N')
-    const device = clock.code === 0 && !clock.error ? parseDeviceClock(clock.stdout) : null
-    // Half the round trip: the device read its clock somewhere in the middle of it.
-    if (device !== null) offset = device - Math.round((before + host.now()) / 2)
+    offset = req.clockOffset !== undefined ? req.clockOffset : await readDeviceClockOffset(shell, host)
     const listed = await shell(`cmd package list packages -U ${shQuote(pkg)}`)
     uid = listed.code === 0 && !listed.error ? parsePackageUid(listed.stdout, pkg) : null
   }
@@ -269,8 +284,7 @@ export async function startAndroidEvidence(req: AndroidEvidenceRequest, host: An
 
     async stepLog(startedAt) {
       if (offset === null) return { lines: [], dropped: 0 }
-      const since = Math.floor(startedAt + offset)
-      const r = await shell(`logcat -d -v epoch,uid -t ${Math.floor(since / 1000)}.${String(since % 1000).padStart(3, '0')} '*:W'`)
+      const r = await shell(`logcat -d -v epoch,uid -t ${logcatTime(startedAt + offset)} '*:W'`)
       if (r.code !== 0 || r.error) return { lines: [], dropped: 0 }
       let pids: string[] = []
       if (uid === null) {

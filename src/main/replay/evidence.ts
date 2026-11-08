@@ -77,6 +77,22 @@ export interface DeviceLogLine {
   message: string
 }
 
+/**
+ * The flow's app crashed or stopped responding during an Android step (roadmap M5d-1); the step fails with it, and
+ * what the device logged about it leads the step's `logcat`. Secrets scrubbed.
+ */
+export interface AppCrash {
+  /** `crash` = an uncaught Java/Kotlin exception, `native_crash` = a fatal signal, `anr` = Application Not Responding. */
+  kind: 'crash' | 'native_crash' | 'anr'
+  /** ISO time on the device's clock. */
+  at: string
+  /** The app's process (`<package>` or `<package>:<name>`). */
+  process: string
+  pid?: number
+  /** The exception, the signal, or the ANR's reason, in one line. */
+  summary: string
+}
+
 export interface StepEvidence {
   /** Android runs: the device log of the step (see DeviceLogLine), in order. */
   logcat?: DeviceLogLine[]

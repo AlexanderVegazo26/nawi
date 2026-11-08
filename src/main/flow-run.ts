@@ -521,6 +521,8 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
   const recording = deps.record !== undefined
   if (flow.target.kind === 'android') {
     const host = deps.androidHost ?? defaultAndroidRunHost()
+    // A crash from the launch on fails the run's first step (M5d-1).
+    const launching = host.now()
     const ready = await prepareAndroidRun({ package: flow.target.package, target: request.device, launch: request.launch, signal: deps.signal }, host)
     if ('stopped' in ready) return before(typeof deps.signal?.reason === 'string' ? deps.signal.reason : 'the run was stopped')
     if (!('adb' in ready)) {
@@ -539,7 +541,8 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
         onStep: deps.onStep,
         // Screenshots and the device log live only in the record: none without one.
         stepScreenshots: recording ? (request.screenshots ?? 'all') : 'off',
-        logcat: recording
+        logcat: recording,
+        crashesSince: launching
       },
       host
     )

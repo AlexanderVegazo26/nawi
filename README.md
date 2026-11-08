@@ -757,6 +757,18 @@ alone.
   for browser runs) and each step's device log: the app's warnings and errors
   plus system lines naming its package, such as an ANR (`steps[].logcat`, up
   to 50 lines per step, secrets scrubbed; M5b-2, `src/main/mobile/flow-evidence.ts`).
+  A crash or ANR of the app fails the step in which it is seen (M5d-1,
+  `src/main/mobile/crash.ts`): the run reads the device's crash log and the
+  system's ANR reports from the app's launch on, after every step (after the
+  last one, a second later) and while a step waits (every second once the
+  app's windows are gone, every 5 s while they stay up, as under an ANR
+  dialog); a crash a moment after a tap is usually seen by the next step's
+  wait. The step fails with the cause
+  (`<package> crashed: <exception>`, `crashed in native code: <signal>`,
+  `stopped responding (ANR): <reason>`) instead of a missing view at its
+  timeout. The step's `crash` names the kind, process, pid and that one-line
+  summary, and the report leads its `logcat` (kept with or without the step
+  log; an ANR keeps its header, not the system-wide CPU tables).
   Once a secret has been typed, every screenshot paints over the fields that
   got it, any view showing it, and the on-screen keyboard while it is up (its
   suggestions repeat what was typed); a shot that can't be masked is not taken.
@@ -767,8 +779,8 @@ alone.
   it finds that view alone), typing as one `fill` per field read from the
   field's text (a password becomes `${secret.<name>}`, never its value), and
   Back, Home and Enter as presses; taps on another app's window, long presses
-  and swipes are reported, not recorded. It is not wired to a device yet (no
-  `nawi mobile-record` command): that is the next M5 part.
+  and swipes are reported, not recorded. `mobile_record` / `nawi mobile-record`
+  (M5c-2) runs it live on a device.
 
 ## Keyboard shortcuts
 
@@ -886,7 +898,7 @@ CDP selectors and the MCP projection/revision model.
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record), and are recorded from the device (`nawi mobile-record`:
+  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
   taps, typing, Back/Home/Enter; no long press, swipe, rotation or deep link steps yet, and a tap must wait for the screen
   read after the previous screen change, about 2 s), but there is no inspector or input on that screen yet and the recorder
   is not in the Mobile view yet, Nawi does not create a virtual device for you

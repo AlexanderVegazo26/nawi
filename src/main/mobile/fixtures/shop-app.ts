@@ -59,7 +59,9 @@ function app(): Record<string, ScreenSpec> {
         button('track', 'Track', [40, 300, 1040, 450])
       ]
     },
-    cart: { controls: [{ id: ID('empty'), text: 'Your cart is empty', bounds: [40, 100, 1040, 250] }] }
+    cart: { controls: [{ id: ID('empty'), text: 'Your cart is empty', bounds: [40, 100, 1040, 250] }] },
+    /** What is on screen once the app died (crashOn): another package's home screen. */
+    launcher: { controls: [{ id: 'com.android.launcher3:id/workspace', pkg: 'com.android.launcher3', text: 'Home', bounds: [0, 0, 1080, 2400] }] }
   }
 }
 
@@ -95,14 +97,23 @@ export interface DeviceOptions {
    * and screenshots of the current screen: every view's box in its own colour (text fields red), the rest white.
    */
   evidence?: { logcat?: string; keyboardWindow?: string }
+  /**
+   * Roadmap M5d-1: a tap on the control with this resource id name crashes the app (the launcher's home screen comes
+   * up; `hang` = an ANR: the screen stays). From `logAfterReads` more screen reads on (default 0), `logcat -b crash`
+   * returns `log(deviceSec)` (the device time of the tap, in seconds, for timestamps); before that and before the tap
+   * it returns `before` (another app's crash, say); `logAfterMs` also holds it back until that much fake time passed.
+   */
+  crashOn?: { control: string; hang?: boolean; logAfterReads?: number; logAfterMs?: number; log: (deviceSec: number) => string; before?: string }
 }
 
 export interface Device {
   host: AndroidReplayHost
-  /** Every shell line, in order, minus the screen reads, keyboard checks and evidence commands. */
+  /** Every shell line, in order, minus the screen reads, keyboard checks, the clock, crash log reads and evidence commands. */
   lines: string[]
   /** The evidence commands (date, uid, logcat) and `screencap` calls, in order. */
   evidenceLines: string[]
+  /** The crash log reads (`logcat -d -b crash ...`), in order. */
+  crashReads: string[]
   /** Text typed into each field, by resource id name. */
   typed: Record<string, string>
   stack: string[]
@@ -113,6 +124,10 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
   const stack = [start]
   const lines: string[] = []
   const evidenceLines: string[] = []
+  const crashReads: string[] = []
+  /** Screen reads when the crashOn control was tapped; null before. */
+  let crashedAtRead: number | null = null
+  let crashedAtClock = 0
   const typed: Record<string, string> = {}
   const readsOf: Record<string, number> = {}
   let reads = 0
@@ -128,7 +143,8 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
     readsOf[top()] = (readsOf[top()] ?? 0) + 1
     const spec = screens[top()]
     const inner = visible(top()).map((c) => node(PKG, c, textOf(c), '', focused)).join('')
-    let windows = node(PKG, { cls: 'android.widget.FrameLayout', bounds: [0, 0, 1080, 2400] }, '', inner)
+    // Once the app died, the window on screen is the launcher's.
+    let windows = node(top() === 'launcher' ? 'com.android.launcher3' : PKG, { cls: 'android.widget.FrameLayout', bounds: [0, 0, 1080, 2400] }, '', inner)
     if (spec.overlay) windows += node(spec.overlay.pkg, { cls: 'android.widget.FrameLayout', bounds: spec.overlay.bounds }, '', node(spec.overlay.pkg, { cls: 'android.widget.Button', text: 'Allow', bounds: spec.overlay.bounds }, 'Allow'))
     return `UI hierchary dumped to: /data/local/tmp/x.xml\n<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">${windows}</hierarchy>`
   }
@@ -136,6 +152,15 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
     exec: async (_file, args) => {
       const line = args[3] ?? ''
       if (line.startsWith('uiautomator dump')) return ok(dump())
+      // Like a real device, the fake always has a clock and a crash log (empty unless crashOn says otherwise).
+      if (line.startsWith('logcat -d -b crash ')) {
+        crashReads.push(line)
+        const c = over.crashOn
+        if (c === undefined) return ok('')
+        const logged = crashedAtRead !== null && reads - crashedAtRead >= (c.logAfterReads ?? 0) && clock - crashedAtClock >= (c.logAfterMs ?? 0)
+        return ok(`${c.before ?? ''}${logged ? c.log(Math.floor((crashedAtClock + DEVICE_AHEAD_MS) / 1000)) : ''}`)
+      }
+      if (!over.evidence && line.startsWith('date ')) return ok(`${clock + DEVICE_AHEAD_MS}\n`)
       if (line.startsWith('dumpsys input_method')) return ok(`    mInputShown=${keyboard}\n`)
       if (over.evidence && line === 'dumpsys window InputMethod') return ok(over.evidence.keyboardWindow ?? '    touchable region=SkRegion((0,1517,1080,2400))\n')
       if (over.evidence && /^(date |cmd package list packages|logcat )/.test(line)) {
@@ -172,6 +197,12 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       const hit = visible(top())
         .filter((c) => c.enabled !== false && x >= c.bounds[0] && x < c.bounds[2] && y >= c.bounds[1] && y < c.bounds[3])
         .pop()
+      if (over.crashOn && hit?.id === ID(over.crashOn.control) && crashedAtRead === null) {
+        crashedAtRead = reads
+        crashedAtClock = clock
+        if (!over.crashOn.hang) stack.splice(0, stack.length, 'launcher')
+        return ok()
+      }
       focused = hit?.cls === 'android.widget.EditText' ? (hit.id ?? null) : null
       if (focused && over.keyboardOnFocus) keyboard = true
       if (hit?.go === 'up') stack.pop()
@@ -195,5 +226,5 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       return { code: 0, stdout: encodePng({ width: w, height: h, rgb }), stderr: '' }
     }
   }
-  return { host, lines, evidenceLines, typed, stack }
+  return { host, lines, evidenceLines, crashReads, typed, stack }
 }

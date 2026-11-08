@@ -1,9 +1,11 @@
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '../../shared/flow/interpolate'
 import { ANDROID_KEYS, locatorLayer, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
+import type { DeviceLogLine } from '../replay/evidence'
 import type { FlowRun, LocatorMiss, StepProgress, StepRun, StepScreenshots } from '../replay/replay'
 import { findAll } from './blockers'
+import { ANR_POLL_MS, CRASH_POLL_MS, crashMessage, logLineKey, startCrashWatch, type CrashFound } from './crash'
 import type { Exec, ExecResult } from './doctor'
-import { startAndroidEvidence, toUiLocator, type AndroidEvidence } from './flow-evidence'
+import { MAX_LOGCAT_LINES, readDeviceClockOffset, startAndroidEvidence, toUiLocator, type AndroidEvidence } from './flow-evidence'
 import { center, isTextField, type UiNode, type UiScreen } from './hierarchy'
 import { KEYBOARD_SHOWN_LINE, parseAmStart, readScreen } from './open'
 import type { BinaryExec } from './screen'
@@ -54,6 +56,11 @@ export interface AndroidReplayRequest extends FlowInputs {
   stepScreenshots?: StepScreenshots
   /** Keep each step's device log (the app's warnings and errors, `logcat`) in its record; default off. */
   logcat?: boolean
+  /**
+   * Epoch ms (host clock) from which a crash or ANR of the app counts against the run (M5d-1): when the caller
+   * launched the app for it, so a crash right after the launch fails the first step. Default: the run's start.
+   */
+  crashesSince?: number
 }
 
 export const DEFAULT_ANDROID_STEP_TIMEOUT_MS = 10_000
@@ -63,6 +70,8 @@ export const ANDROID_POLL_MS = 250
 export const KEYBOARD_SETTLE_MS = 500
 const SHELL_TIMEOUT_MS = 30_000
 const DEEP_LINK_TIMEOUT_MS = 60_000
+/** How long the app gets after the last step's action before the run looks for a crash one last time. */
+export const LAST_STEP_CRASH_SETTLE_MS = 1_000
 /** A deep link is a URI with a scheme, on one line. */
 const DEEP_LINK_RE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\s\x00-\x1f\x7f]+$/
 
@@ -112,6 +121,14 @@ class StepFailure extends Error {
 
 /** The run was cancelled while a step waited: the step did not fail, it was stopped. */
 class Stopped extends Error {}
+
+/** The app crashed or stopped responding while the step waited for it (M5d-1). */
+class AppCrashed extends StepFailure {
+  constructor(readonly found: CrashFound) {
+    super(crashMessage(found.crash))
+  }
+}
+
 
 /** Longest field content a fill empties (the dump caps a screen at 1 MB; a field holding more is not a form field). */
 export const MAX_CLEAR_CHARS = 4096
@@ -171,6 +188,29 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
     return !failed(r) && /mInputShown=true/.test(r.stdout)
   }
 
+  // One read of the device clock serves the crash watch and the step logs (both read the device log by its time).
+  const clockOffset = await readDeviceClockOffset(shell, host)
+  const crashWatch = startCrashWatch(
+    { adb, serial, pkg, sinceDeviceMs: clockOffset === null ? null : Math.min(req.crashesSince ?? startedAt, startedAt) + clockOffset, redact: interp.redact },
+    host
+  )
+  let lastCrashCheck = Number.NEGATIVE_INFINITY
+  const checkCrash = async (opts?: { last?: boolean }): Promise<CrashFound | null> => {
+    lastCrashCheck = host.now()
+    return crashWatch.check(opts)
+  }
+  /**
+   * While a step waits, ask the device whether the app crashed, so the step fails with the crash now instead of with a
+   * missing view at its timeout: every CRASH_POLL_MS once no view of the app is on screen (its windows are gone: a
+   * crash dialog, the launcher), else every ANR_POLL_MS (a frozen app's views stay on screen under the ANR dialog).
+   */
+  const crashedWhileWaiting = async (screen: UiScreen | null): Promise<void> => {
+    const gone = screen !== null && !screen.nodes.some((n) => n.package === pkg)
+    if (host.now() - lastCrashCheck < (gone ? CRASH_POLL_MS : ANR_POLL_MS)) return
+    const found = await checkCrash()
+    if (found !== null) throw new AppCrashed(found)
+  }
+
   /**
    * Wait until the step's view is on screen and `ready` says it can take the action (null = ready, else why not).
    * A screen that can't be read, a view that isn't ready and a locator that finds nothing all wait; the last reason
@@ -195,6 +235,7 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
         }
       }
       if (signal?.aborted) throw new Stopped()
+      await crashedWhileWaiting('skipped' in screen ? null : screen)
       if (host.now() >= deadline) throw new StepFailure(interp.redact(last), misses)
       await host.delay(ANDROID_POLL_MS, signal)
     }
@@ -317,6 +358,7 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
             }
           }
           if (signal?.aborted) throw new Stopped()
+          await crashedWhileWaiting('skipped' in screen ? null : screen)
           if (host.now() >= deadline) throw new StepFailure(interp.redact(last), record.misses)
           await host.delay(ANDROID_POLL_MS, signal)
         }
@@ -330,7 +372,7 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
   const evidence: AndroidEvidence | null =
     shots !== 'off' || req.logcat
       ? await startAndroidEvidence(
-          { adb, serial, pkg, logcat: req.logcat === true, secretFields, usesSecrets: JSON.stringify(flow).includes('${secret.'), redact: interp.redact },
+          { adb, serial, pkg, logcat: req.logcat === true, secretFields, usesSecrets: JSON.stringify(flow).includes('${secret.'), redact: interp.redact, clockOffset },
           host
         )
       : null
@@ -343,6 +385,8 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
   let lastAfter: string | undefined
 
   const steps: StepRun[] = []
+  /** The last step that will run (not disabled): the run's final crash check waits for the app first. */
+  const lastRunnable = flow.steps.reduce((at, s, i) => (s.disabled ? at : i), -1)
   let failedStepId: string | undefined
   let error: string | undefined
   const notify = (index: number, step: StepRun): void => {
@@ -372,10 +416,12 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
     }
     const before = evidence !== null && shots === 'all' ? (lastAfter ?? (await evidence.shot())) : undefined
     record.startedAt = host.now()
+    let crash: CrashFound | null = null
     try {
       await runStep(step, record)
       record.status = 'passed'
     } catch (e) {
+      if (e instanceof AppCrashed) crash = e.found
       if (e instanceof Stopped) {
         // Cancelled while waiting: like a step after the stop, it did not run to an outcome.
         delete record.matched
@@ -391,7 +437,24 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
       if (e.misses && e.misses.length > 0) record.misses = e.misses
       failedStepId = step.id
     }
+    // A crash the step's own checks did not see (the app died after the action, or its window stayed up): it fails
+    // the step whatever the step's result, and is named first, since it explains a step that failed too. After the
+    // last step the app gets a moment first: no later step would notice a crash its action caused.
+    const last = index === lastRunnable
+    if (crash === null && last && record.status === 'passed' && !signal?.aborted) await host.delay(LAST_STEP_CRASH_SETTLE_MS, signal)
+    if (crash === null && !signal?.aborted) {
+      crash = await checkCrash({ last })
+      if (crash !== null) {
+        const said = crashMessage(crash.crash)
+        record.error = record.status === 'failed' ? `${said} (the step: ${record.error})` : said
+        record.status = 'failed'
+        failedStepId = step.id
+      }
+    }
+    if (crash !== null) record.crash = crash.crash
     record.durationMs = host.now() - record.startedAt
+    let logLines: DeviceLogLine[] = []
+    let logDropped = 0
     // A cancelled run stops collecting at once: shots and logs can take many seconds on a slow device.
     if (evidence !== null && !signal?.aborted) {
       const after = shots === 'all' || (shots === 'failed' && record.status === 'failed') ? await evidence.shot() : undefined
@@ -401,10 +464,20 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
         const since = logSince ?? record.startedAt
         logSince = host.now()
         const log = await evidence.stepLog(since)
-        if (log.lines.length > 0) record.logcat = log.lines
-        if (log.dropped > 0) record.logcatDropped = log.dropped
+        logLines = log.lines
+        logDropped = log.dropped
       }
     }
+    if (crash !== null) {
+      // The crash's own lines lead the step's log (kept even without logcat), then the step's other lines once.
+      const own = crash.lineKeys
+      const rest = logLines.filter((l) => !own.has(logLineKey(l)))
+      const room = Math.max(0, MAX_LOGCAT_LINES - crash.log.length)
+      logLines = [...crash.log, ...rest.slice(0, room)]
+      logDropped += crash.dropped + Math.max(0, rest.length - room)
+    }
+    if (logLines.length > 0) record.logcat = logLines
+    if (logDropped > 0) record.logcatDropped = logDropped
     notify(index, record)
   }
   const run: FlowRun = { status: failedStepId === undefined && error === undefined ? 'passed' : 'failed', startedAt, durationMs: host.now() - startedAt, steps }

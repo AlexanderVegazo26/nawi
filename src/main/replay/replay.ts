@@ -22,7 +22,7 @@ import { buildProbeSource, type ProbeClient } from '../cdp/probe'
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '@shared/flow/interpolate'
 import { locatorLayer, type Flow, type FlowStep, type LocatorLayer, type Selector } from '@shared/flow/schema'
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
-import { EvidenceCollector, type StepEvidence } from './evidence'
+import { EvidenceCollector, type AppCrash, type StepEvidence } from './evidence'
 import { decodePng, type RgbImage } from '../mobile/png'
 import { anchorCandidates } from './anchor-candidates'
 import { pickSuggestion, stepQuery, type Suggestion } from './suggest'
@@ -141,6 +141,8 @@ export interface StepRun extends StepEvidence {
   shots?: { before?: string; after?: string }
   /** JavaScript dialogs the step opened; the replayer dismisses them (accepts `beforeunload`). */
   dialogs?: Array<{ type: string; message: string }>
+  /** Android runs (roadmap M5d-1): the app crashed or stopped responding in this step, which failed it. */
+  crash?: AppCrash
 }
 
 export interface FlowRun {
