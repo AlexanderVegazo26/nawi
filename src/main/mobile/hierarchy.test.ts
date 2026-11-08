@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { center, DumpError, dumpLine, MAX_DEPTH, MAX_NODES, parseBounds, parseUiDump } from './hierarchy'
+import { center, DumpError, dumpLine, isTextField, MAX_DEPTH, MAX_NODES, parseBounds, parseUiDump } from './hierarchy'
 
 /**
  * The screen-dump reader (roadmap M2c, reused by M3) on real `uiautomator dump` output from an API 36 emulator
@@ -68,7 +68,7 @@ describe('parseUiDump on edge cases', () => {
   it('reads rotation, missing attributes as empty / false / enabled, and bad bounds as null', () => {
     const { rotation, nodes } = parseUiDump(wrap('<node class="a.B"/><node enabled="false" bounds="[5,5][1,1]"/>'))
     expect(rotation).toBe(1)
-    expect(nodes[0]).toEqual({ i: 0, parent: null, depth: 0, class: 'a.B', package: '', text: '', resource_id: '', content_desc: '', hint: '', clickable: false, long_clickable: false, focusable: false, scrollable: false, checkable: false, enabled: true, password: false, checked: false, selected: false, bounds: null })
+    expect(nodes[0]).toEqual({ i: 0, parent: null, depth: 0, class: 'a.B', package: '', text: '', resource_id: '', content_desc: '', hint: '', clickable: false, long_clickable: false, focusable: false, focused: false, scrollable: false, checkable: false, enabled: true, password: false, checked: false, selected: false, bounds: null })
     expect(nodes[1].enabled).toBe(false)
     const flags = parseUiDump(wrap('<node checked="true" selected="true"/><node checked="false" selected="TRUE"/>')).nodes
     expect(flags.map((n) => [n.checked, n.selected]), 'only the exact value "true" sets checked/selected').toEqual([[true, true], [false, false]])
@@ -114,5 +114,12 @@ describe('bounds', () => {
     expect(center({ left: 351, top: 2227, right: 729, bottom: 2353 })).toEqual({ x: 540, y: 2290 })
     expect(parseBounds('[1,2][3]')).toBeNull()
     expect(parseBounds('')).toBeNull()
+  })
+
+  it('counts EditText, its subclasses and auto-complete boxes as text fields, and not buttons or plain text', () => {
+    const fields = ['android.widget.EditText', 'com.google.android.material.textfield.TextInputEditText', 'android.widget.AutoCompleteTextView', 'android.widget.MultiAutoCompleteTextView']
+    const others = ['android.widget.Button', 'android.widget.TextView', 'android.widget.SearchView', '']
+    expect(fields.filter((c) => !isTextField({ class: c })), 'should be text fields').toEqual([])
+    expect(others.filter((c) => isTextField({ class: c })), 'should not be text fields').toEqual([])
   })
 })

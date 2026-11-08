@@ -1,6 +1,6 @@
 import { REFERENCE } from '../../shared/flow/schema'
 import { findAll, PERMISSION_PACKAGES, type UiLocator } from './blockers'
-import { center, type UiNode, type UiScreen } from './hierarchy'
+import { center, isTextField, type UiNode, type UiScreen } from './hierarchy'
 import { shQuote } from './shell'
 
 /**
@@ -128,7 +128,7 @@ export function locateOnApp(screen: UiScreen, pkg: string, loc: UiLocator, what:
   if (found.length === 0) return { ok: false, why: `no ${what} matching ${describe(loc)} on the screen` }
   if (found.length > 1) return { ok: false, why: `${found.length} elements match the ${what} (${describe(loc)}), so Nawi can't tell which one is meant` }
   const node = found[0]
-  if (textField && !/EditText$/.test(node.class)) return { ok: false, why: `the ${what} (${describe(loc)}) is a ${node.class.replace(/^.*\./, '')}, not a text field` }
+  if (textField && !isTextField(node)) return { ok: false, why: `the ${what} (${describe(loc)}) is a ${node.class.replace(/^.*\./, '')}, not a text field` }
   if (!node.enabled) return { ok: false, why: `the ${what} (${describe(loc)}) is disabled` }
   const b = node.bounds
   if (b === null || b.right <= b.left || b.bottom <= b.top) return { ok: false, why: `the ${what} (${describe(loc)}) has no size on screen` }

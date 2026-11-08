@@ -40,6 +40,8 @@ export interface UiNode {
   long_clickable: boolean
   /** Can take keyboard / accessibility focus on its own. */
   focusable: boolean
+  /** Has the input focus now (the text field the keyboard types into). */
+  focused: boolean
   /** Scrolls (a list, a pager, a scroll view). */
   scrollable: boolean
   /** A checkbox, switch, radio button or toggle. */
@@ -82,6 +84,13 @@ export function parseBounds(value: string): UiBounds | null {
   const [left, top, right, bottom] = m.slice(1).map(Number)
   return right >= left && bottom >= top ? { left, top, right, bottom } : null
 }
+
+/**
+ * A view `input text` can type into once it has the focus: EditText and its subclasses (AutoCompleteTextView is one,
+ * and so is a search box's text part). One rule for what the recorder (record.ts) writes as a fill and what the
+ * replayer (flow-replay.ts) and sign-in (sign-in.ts) accept as one.
+ */
+export const isTextField = (n: Pick<UiNode, 'class'>): boolean => /(?:EditText|AutoCompleteTextView)$/.test(n.class)
 
 /** The center of a node, where a tap lands. */
 export function center(b: UiBounds): { x: number; y: number } {
@@ -159,6 +168,7 @@ export function parseUiDump(text: string): UiScreen {
       clickable: flag('clickable'),
       long_clickable: flag('long-clickable'),
       focusable: flag('focusable'),
+      focused: flag('focused'),
       scrollable: flag('scrollable'),
       checkable: flag('checkable'),
       // uiautomator always writes it; a node without it is treated as enabled, like Android's default.

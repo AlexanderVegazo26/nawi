@@ -4,7 +4,7 @@ import type { FlowRun, LocatorMiss, StepProgress, StepRun, StepScreenshots } fro
 import { findAll } from './blockers'
 import type { Exec, ExecResult } from './doctor'
 import { startAndroidEvidence, toUiLocator, type AndroidEvidence } from './flow-evidence'
-import { center, type UiNode, type UiScreen } from './hierarchy'
+import { center, isTextField, type UiNode, type UiScreen } from './hierarchy'
 import { KEYBOARD_SHOWN_LINE, parseAmStart, readScreen } from './open'
 import type { BinaryExec } from './screen'
 import { shQuote } from './shell'
@@ -244,7 +244,7 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
         if (!TYPABLE_RE.test(value)) throw new StepFailure('the value has characters a device cannot type with `input text` (only printable ASCII)')
         // A view that is not a text field fails before it is tapped: a drifted locator must not press a button.
         const hit = await tapView(step.target.selectors, deadline, (node, index) => {
-          if (/EditText$/.test(node.class)) return
+          if (isTextField(node)) return
           throw new StepFailure(`${describeLocator(step.target.selectors[index])} is a ${node.class.replace(/^.*\./, '')}, not a text field`)
         })
         matched(hit)
@@ -259,6 +259,13 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
         // parseFlow allows only ANDROID_KEYS names; own properties only, so `constructor` never names a key.
         const key = Object.hasOwn(ANDROID_KEYS, step.key) ? ANDROID_KEYS[step.key] : undefined
         if (key === undefined) throw new StepFailure(`android flows can press ${Object.keys(ANDROID_KEYS).join(', ')}`)
+        // The keyboard is not part of a flow (the dump doesn't show it): Back means Back in the app, so a keyboard a
+        // fill left up is hidden first, as before a tap. The recorder drops a Back that only closed the keyboard.
+        if (step.key === 'Back' && (await keyboardShown())) {
+          await must('input keyevent KEYCODE_BACK', 'hide the on-screen keyboard')
+          await host.delay(KEYBOARD_SETTLE_MS, signal)
+          if (await keyboardShown()) throw new StepFailure('the on-screen keyboard stays up after Back, so Back would only close it')
+        }
         await must(`input keyevent ${key}`, `press ${step.key}`)
         return
       }

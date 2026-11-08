@@ -723,7 +723,8 @@ alone.
   order on the app's own windows (first one that finds exactly one view wins;
   an earlier one that found nothing marks the match as a fallback), waits until
   the view is there, enabled, sized and not under another app's window, hides
-  the on-screen keyboard before a tap, empties a field before typing, opens deep
+  the on-screen keyboard before a tap and before Back (so Back always acts on
+  the app), empties a field before typing, opens deep
   links in the flow's own app, and keeps typed secrets out of what it reports.
   `run_flow` / `nawi run` use it for android flows (M5b,
   `src/main/mobile/flow-device.ts`): the run goes to the connected device or
@@ -741,7 +742,15 @@ alone.
   Once a secret has been typed, every screenshot paints over the fields that
   got it, any view showing it, and the on-screen keyboard while it is up (its
   suggestions repeat what was typed); a shot that can't be masked is not taken.
-  No recorder yet: that is the next M5 part.
+  The recorder's engine is in (M5c, first part, `src/main/mobile/record.ts`):
+  it reads the kernel's touch and key events (`getevent`) and the screen before
+  each gesture and writes the android flow, a tap as a click on the view under
+  the finger (resource id, description and text locators, each kept only when
+  it finds that view alone), typing as one `fill` per field read from the
+  field's text (a password becomes `${secret.<name>}`, never its value), and
+  Back, Home and Enter as presses; taps on another app's window, long presses
+  and swipes are reported, not recorded. It is not wired to a device yet (no
+  `nawi mobile-record` command): that is the next M5 part.
 
 ## Keyboard shortcuts
 
@@ -859,7 +868,7 @@ CDP selectors and the MCP projection/revision model.
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record), but there is no recorder, inspector or
+  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record), but there is no live recorder (only its engine, M5c), inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is
