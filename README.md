@@ -215,7 +215,7 @@ Nawi exposes twenty-three tools over a loopback JSON-RPC endpoint: `capture_scre
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
-`run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml]`),
+`run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml] [--target <serial|avd>] [--no-launch]`),
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`),
 `get_heal_proposals` (CLI: `nawi heal <run_id> [--json]`), `apply_heal` (CLI: `nawi heal-apply <run_id> [--step id]`,
 or `nawi heal <run_id> --apply`; exit 1 when nothing was written) and
@@ -724,8 +724,16 @@ alone.
   the view is there, enabled, sized and not under another app's window, hides
   the on-screen keyboard before a tap, empties a field before typing, opens deep
   links in the flow's own app, and keeps typed secrets out of what it reports.
-  Not yet reachable from `run_flow`/`nawi run` (they answer `NOT_IMPLEMENTED`
-  for android flows), and no recorder yet: both are the next M5 parts.
+  `run_flow` / `nawi run` use it for android flows (M5b,
+  `src/main/mobile/flow-device.ts`): the run goes to the connected device or
+  running emulator (`target` / `--target <serial|avd>` when several are
+  connected; none is booted), checks the app is installed (else the fix names
+  `nawi mobile-open`), force-stops it and starts it from its launcher so every
+  run begins on its first screen (`launch: false` / `--no-launch` acts on the
+  app as it is), and saves the run record like a browser run, with the device,
+  API level and started activity in `run.json`, `report.html` and the reply.
+  No per-step device screenshots or logcat in the record yet, and no recorder:
+  both are the next M5 parts.
 
 ## Keyboard shortcuts
 
@@ -826,12 +834,13 @@ CDP selectors and the MCP projection/revision model.
 
 ## Known gaps
 
-- **Mobile: install, launch and watch, not yet drive.** An APK dropped on the
+- **Mobile: install, launch, watch and replay hand-written flows, not yet record.** An APK dropped on the
   window (or `mobile_open`) is installed and launched on a device or an existing
   virtual device and its screen is shown live and can be studied (`mobile_study`)
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
-  relaunching the app; the graph is not shown in the Mobile view yet), but there is no inspector or
+  relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
+  (`nawi run`: taps, typing, keys, deep links, waits, assertions; no per-step screenshots or logcat yet), but there is no recorder, inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is

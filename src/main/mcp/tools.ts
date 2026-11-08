@@ -14,7 +14,7 @@ import { ToolError, agentAccessPaused, notImplemented } from './errors'
 import { PROJECTABLE_FIELDS, project, MAX_RESPONSE_BYTES } from './projection'
 import { flowFromSidecar, NoInputEventsError } from './flow-export'
 import { carryForwardFiles } from './revision'
-import { MAX_FLOW_PATH, resolveFlowFile, runFlowFile } from '../flow-run'
+import { androidReplayOf, MAX_FLOW_PATH, resolveFlowFile, runFlowFile } from '../flow-run'
 import { healProposals, readRunFlow } from '../heal/proposals'
 import { applyHeal } from '../heal/apply'
 import { DEFAULT_KEEP_RUNS, RUN_ID_RE, listRuns, newRunId, pruneRuns, readRunRecord } from '../run-record'
@@ -728,7 +728,7 @@ export const runsDir = (): string => join(app.getPath('userData'), 'runs')
 const runFlow = defineTool({
   name: 'run_flow',
   description:
-    'Replay a flow file (*.nawi.yaml, absolute path inside your home directory) in a browser and report each ' +
+    'Replay a flow file (*.nawi.yaml, absolute path inside your home directory) in a browser, or on an Android device for a flow with target.kind android, and report each ' +
     'step: passed/failed/skipped/not_run, its intent, the locator that matched (with its layer: testid/id/role/text/css, ' +
     'and fallback: true when a more stable locator found nothing, so the flow is drifting from the app), the ones that missed and why, timings, and ' +
     'what the page did meanwhile (the URL after the step, and its first 3 console errors and failed requests, ' +
@@ -739,8 +739,12 @@ const runFlow = defineTool({
     'failing step left, "off" none. ' +
     'Nawi launches a fresh browser with a throwaway profile (headed unless headless is true), or opens a new tab ' +
     'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +
-    'come only from this call\'s env and secrets; secret values are scrubbed from everything reported. A step ' +
-    'failure is a normal result with status "failed"; errors are for files or browsers that cannot be used. ' +
+    'come only from this call\'s env and secrets; secret values are scrubbed from everything reported. ' +
+    'Android flows run on the connected device or running emulator (target: its serial or AVD name when several are connected; none is ' +
+    'booted, and the app must be installed: mobile_open does both). Nawi force-stops the app and starts it from its launcher so the run ' +
+    'begins on its first screen, unless launch is false (then the steps act on the app as it is). The reply and record name the device ' +
+    '(device); Android runs have no step screenshots yet, and headless, cdp_endpoint and screenshots apply to browser flows only. A step ' +
+    'failure is a normal result with status "failed"; errors are for files, browsers or devices that cannot be used (detail.fix says what to do). ' +
     'Send a progressToken in _meta (and accept text/event-stream) to get a notifications/progress message as ' +
     'each step settles. Pausing agent access, cancelling the call (notifications/cancelled), or disconnecting ' +
     'stops a run after the step in progress.',
@@ -757,7 +761,13 @@ const runFlow = defineTool({
     screenshots: z
       .enum(['all', 'failed', 'off'])
       .default('all')
-      .describe('Page screenshots around each step in the run record.')
+      .describe('Page screenshots around each step in the run record.'),
+    target: z
+      .string()
+      .regex(TARGET_RE, 'an adb serial (see mobile_doctor devices) or an AVD name')
+      .optional()
+      .describe('Android flows: device serial or AVD name of a running emulator; default: the only connected device.'),
+    launch: z.boolean().optional().describe('Android flows: start the app fresh from its launcher first (default true).')
   }),
   async run(args, ctx) {
     return withAgentStop(ctx, (signal) =>
@@ -770,7 +780,9 @@ const runFlow = defineTool({
           headless: args.headless,
           cdpEndpoint: args.cdp_endpoint,
           stepTimeoutMs: args.step_timeout_ms,
-          screenshots: args.screenshots
+          screenshots: args.screenshots,
+          device: args.target,
+          launch: args.launch
         },
         {
           signal,
@@ -879,7 +891,7 @@ const applyHealTool = defineTool({
   name: 'apply_heal',
   description:
     'Apply the healing proposals of one saved run (see get_heal_proposals) to its flow file: only the steps in ' +
-    'step_ids (default: every proposal). Nawi first replays the proposed flow in a browser (it is saved as a run ' +
+    'step_ids (default: every proposal). Nawi first replays the proposed flow in a browser, or for an android flow on the device the run used and with its launch setting (it is saved as a run ' +
     'record like run_flow\'s, with heal_of = run_id) and writes the file only when that replay passed, each healed step matched through ' +
     'its new first locator, and no other step needed a fallback it did not need before; a wrong match (the moved ' +
     'locator finds another element, so a later step fails) is rejected and nothing is written. The write changes ' +
@@ -916,7 +928,10 @@ const applyHealTool = defineTool({
               headless: args.headless,
               cdpEndpoint: args.cdp_endpoint,
               stepTimeoutMs: args.step_timeout_ms,
-              screenshots: 'all'
+              screenshots: 'all',
+              // An android run is replayed on the same device (AVD name or serial), restarted only if the run restarted it.
+              // run.json is not schema-checked past its summary fields: a device name is re-validated by prepareAndroidRun.
+              ...androidReplayOf(record)
             },
             {
               signal,

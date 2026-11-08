@@ -18,14 +18,17 @@ export const STEP_TIMEOUT_RANGE = { min: 100, max: 600_000 }
 
 export const RUN_USAGE = `nawi run <file.nawi.yaml> [--headless] [--var name=value ...] [--cdp-endpoint 9222]
                 [--step-timeout-ms 5000] [--screenshots all|failed|off] [--junit report.xml] [--json]
+                [--target <serial|avd>] [--no-launch]
 
-  Replays a flow file in a fresh browser and prints each step's result.
+  Replays a flow file in a fresh browser (or, for an android flow, on the connected device) and prints each step's result.
   --var name=value     Override a var the flow declares (repeatable).
   --headless           Run the browser without a window.
   --cdp-endpoint <p>   Open a tab in a browser already listening for DevTools on this machine.
   --junit <file>       Also write the run's JUnit XML there (for CI test reporters).
   --screenshots <m>    Page screenshots in the record: all (before/after every step, the default),
                        failed (only the page the failing step left) or off. Secret fields are masked.
+  --target <t>         Android flows: the adb serial or running AVD to use when several are connected.
+  --no-launch          Android flows: run on the app as it is, instead of restarting it from its launcher.
   Every run is saved as a run record (run.json, junit.xml, step screenshots); its folder is printed.
   ${'${env.NAME}'} values come from this shell's environment; ${'${secret.name}'} values from
   NAWI_SECRET_<name> (or NAWI_SECRET_<NAME>). Only names the flow file or a --var mentions are sent.
@@ -38,6 +41,10 @@ export interface RunArgs {
   cdp_endpoint?: string
   step_timeout_ms?: number
   screenshots?: 'all' | 'failed' | 'off'
+  /** Android flows: adb serial or AVD name. */
+  target?: string
+  /** Android flows: false = don't restart the app first. */
+  launch?: false
   /** Absolute path to copy the run's JUnit XML to. */
   junit?: string
   json: boolean
@@ -78,6 +85,12 @@ export function parseRunArgs(argv: string[], cwd: string): RunArgs {
         break
       case '--cdp-endpoint':
         out.cdp_endpoint = value(i++, '--cdp-endpoint')
+        break
+      case '--target':
+        out.target = value(i++, '--target')
+        break
+      case '--no-launch':
+        out.launch = false
         break
       case '--screenshots': {
         const mode = value(i++, '--screenshots')
@@ -188,6 +201,13 @@ interface ReportStep {
   shots?: { before?: string; after?: string }
 }
 
+interface ReportDevice {
+  name: string
+  kind: 'device' | 'avd'
+  api: number | null
+  launched_activity?: string
+}
+
 type ReportEvidence = Pick<ReportStep, 'consoleErrors' | 'consoleErrorsDropped' | 'failedRequests' | 'failedRequestsDropped'>
 
 export interface RunReport {
@@ -199,6 +219,8 @@ export interface RunReport {
   opening?: ReportEvidence
   run_dir?: string
   record_error?: string
+  /** Android flows. */
+  device?: ReportDevice
 }
 
 const MARK: Record<string, string> = { passed: 'ok  ', failed: 'FAIL', skipped: 'skip', not_run: '--  ' }
@@ -231,6 +253,11 @@ function evidenceLines(e: ReportEvidence, indent: string): string[] {
 /** One line per step, then a summary; failures carry the replayer's reason. */
 export function renderRun(report: RunReport): string {
   const lines = [`${report.flow}`]
+  if (report.device) {
+    const d = report.device
+    const api = d.api !== null ? `, API ${d.api}` : ''
+    lines.push(`  on ${d.kind === 'avd' ? 'virtual device ' : ''}${d.name}${api}${d.launched_activity ? `, started ${d.launched_activity}` : ', app as it was'}`)
+  }
   if (report.opening) {
     const opening = evidenceLines(report.opening, '       ')
     if (opening.length > 0) lines.push('  while opening the target:', ...opening)

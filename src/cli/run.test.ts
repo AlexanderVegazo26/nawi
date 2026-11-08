@@ -30,6 +30,18 @@ describe('nawi run: arguments', () => {
     expect(parseRunArgs(['/f.nawi.yaml'], '/x').screenshots, 'unset: the app decides').toBeUndefined()
   })
 
+  it('takes --target and --no-launch for android flows, sent as run_flow\'s target and launch', () => {
+    expect(parseRunArgs(['/phone.nawi.yaml', '--target', 'emulator-5560', '--no-launch'], '/x')).toEqual({
+      file: '/phone.nawi.yaml',
+      vars: {},
+      headless: false,
+      json: false,
+      target: 'emulator-5560',
+      launch: false
+    })
+    expect(parseRunArgs(['/phone.nawi.yaml'], '/x').launch, 'unset: the app restarts the app (its default)').toBeUndefined()
+  })
+
   it('resolves --junit against the shell\'s cwd', () => {
     expect(parseRunArgs(['/f.nawi.yaml', '--junit', 'out/report.xml'], '/home/u/proj').junit).toBe('/home/u/proj/out/report.xml')
   })
@@ -47,7 +59,9 @@ describe('nawi run: arguments', () => {
     [['a.nawi.yaml', '--frobnicate'], 'Unknown flag "--frobnicate"'],
     [['a.nawi.yaml', '--junit', './a.nawi.yaml'], '--junit must name a report file, not the flow file.'],
     [['a.nawi.yaml', '--screenshots', 'some'], '--screenshots takes all, failed or off, got "some".'],
-    [['a.nawi.yaml', '--screenshots'], '--screenshots needs a value.']
+    [['a.nawi.yaml', '--screenshots'], '--screenshots needs a value.'],
+    [['a.nawi.yaml', '--target'], '--target needs a value.'],
+    [['a.nawi.yaml', '--target', '--no-launch'], '--target needs a value.']
   ])('rejects %j as a usage error', (argv, message) => {
     expect(() => parseRunArgs(argv, '/x'), `argv ${JSON.stringify(argv)}`).toThrow(RunUsageError)
     expect(() => parseRunArgs(argv, '/x')).toThrow(message)
@@ -130,6 +144,14 @@ describe('nawi run: output and exit code', () => {
       { id: 's4', action: 'wait', status: 'skipped' }
     ]
   }
+
+  it('names the device of an android run under the flow name, and whether the app was restarted', () => {
+    const avd = renderRun({ ...failed, device: { kind: 'avd', name: 'loop-api36', api: 36, launched_activity: '.MainActivity' } }).split('\n')
+    expect(avd.slice(0, 2), 'virtual device, API level and the activity started').toEqual(['Sign in', '  on virtual device loop-api36, API 36, started .MainActivity'])
+    const phone = renderRun({ ...failed, device: { kind: 'device', name: 'R5CT1234', api: null } }).split('\n')
+    expect(phone[1], 'a phone by serial; no API when unknown; launch off').toBe('  on R5CT1234, app as it was')
+    expect(renderRun(failed).split('\n')[1], 'browser runs have no device line').toMatch(/^  FAIL|^  ok/)
+  })
 
   it('prints one line per step with the failure reason and a summary', () => {
     expect(renderRun(failed)).toBe(

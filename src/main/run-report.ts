@@ -134,6 +134,10 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
   ]
   if (env.app_version) rows.push(['Nawi', env.app_version])
   if (env.browser) rows.push(['Browser', env.browser.product])
+  if (env.device) {
+    rows.push(['Device', `${env.device.name}${env.device.kind === 'avd' ? ' (virtual device)' : ''}${env.device.api !== null ? `, Android API ${env.device.api}` : ''}`])
+    rows.push(['App', env.device.launched_activity ? `${env.device.package} (started ${env.device.launched_activity})` : env.device.package])
+  }
   if (env.viewport) rows.push(['Viewport', `${env.viewport.width}x${env.viewport.height} at ${env.viewport.device_scale_factor}x`])
   if (record.final_url) rows.push(['Final page', record.final_url])
 

@@ -63,10 +63,10 @@ type Target = NonNullable<LiveStudyResult['target']>
 /** The connected device to study (or explore), or why there is none. Never boots one: it looks at what is already there. */
 export async function pickTarget(
   doctor: MobileDoctorReport,
-  host: StudyHost,
+  host: Pick<StudyHost, 'exec'>,
   adb: string,
   wanted: string | null,
-  verb: 'study' | 'explore' = 'study'
+  verb: 'study' | 'explore' | 'run' = 'study'
 ): Promise<Target | { error: string; fix: string }> {
   const online = doctor.devices.filter((d) => d.state === 'device')
   const asTarget = async (serial: string, api: number | null, emulator: boolean): Promise<Target> => {

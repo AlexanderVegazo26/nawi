@@ -293,7 +293,8 @@ describe('runFlowFile with a fake browser', () => {
     expect(await codeOf(runFlowFile({ file: desktop }, { roots: [root], openPage })), 'desktop flow').toBe('NOT_IMPLEMENTED')
     const android = join(root, 'phone.nawi.yaml')
     writeFileSync(android, 'version: 1\nname: a\ntarget: { kind: android, package: dev.nawi.shop }\nsteps:\n  - { id: s1, action: press, key: Back }\n')
-    await expect(runFlowFile({ file: android }, { roots: [root], openPage }), 'android flow').rejects.toThrow(/targets an Android app; run_flow does not replay Android flows/)
+    const noDevices = { env: {}, platform: 'linux' as const, arch: 'x64', home: root, kvmPath: join(root, 'kvm'), exec: async () => ({ code: null, stdout: '', stderr: '', error: 'not_found' as const }), delay: async () => undefined, now: Date.now }
+    expect(await codeOf(runFlowFile({ file: android }, { roots: [root], openPage, androidHost: noDevices })), 'android flow without adb: no device, no browser').toBe('UNAVAILABLE')
     expect(await codeOf(runFlowFile({ file: join(root, 'f2.nawi.yaml') }, { roots: [root], openPage }))).toBe('NOT_FOUND')
     expect(log, 'no browser was opened').toEqual([])
   })

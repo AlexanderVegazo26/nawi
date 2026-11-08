@@ -55,9 +55,9 @@ const DEEP_LINK_TIMEOUT_MS = 60_000
 /** A deep link is a URI with a scheme, on one line. */
 const DEEP_LINK_RE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\s\x00-\x1f\x7f]+$/
 
-const failed = (r: ExecResult): boolean => r.code !== 0 || !!r.error
+export const failed = (r: ExecResult): boolean => r.code !== 0 || !!r.error
 /** Why adb failed, in Nawi's words: the device's own output could echo a typed value. */
-const why = (r: ExecResult): string =>
+export const why = (r: ExecResult): string =>
   r.error === 'timeout' ? 'the device did not answer' : r.error === 'not_found' ? 'adb could not be started' : `adb exited with code ${r.code ?? 'unknown'}`
 
 const toUiLocator = (s: Selector): UiLocator | null =>

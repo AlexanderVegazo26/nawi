@@ -28,6 +28,8 @@ import {
   type ShotFiles
 } from './run-record'
 import { toHtmlReport } from './run-report'
+import { defaultAndroidRunHost, prepareAndroidRun, type AndroidRunHost } from './mobile/flow-device'
+import { replayAndroidFlow } from './mobile/flow-replay'
 
 /**
  * Roadmap F3b: run a flow file from the app (MCP `run_flow`, CLI `nawi run`).
@@ -46,6 +48,9 @@ import { toHtmlReport } from './run-report'
  *   existing DevTools endpoint on this machine (FR-SEC.1: a run never drives a
  *   browser over the network). On an attached browser the run opens its own tab
  *   and closes it afterwards; it never takes over a tab the user has open.
+ * - **Android (roadmap M5b):** a flow with `target.kind: android` runs on a
+ *   connected device or running emulator (never booted here), its app started
+ *   fresh from the launcher unless the caller says not to (mobile/flow-device.ts).
  * - **Inputs:** `${env.*}` and `${secret.*}` come only from the call. The app
  *   never hands its own `process.env` to a flow; the CLI sends exactly the
  *   variables the flow names, from the shell that ran it.
@@ -69,9 +74,13 @@ export interface FlowRunRequest {
   stepTimeoutMs?: number
   /**
    * Page screenshots around each step for the run record (F4b2). Default
-   * `all` when a record is kept; never taken without one.
+   * `all` when a record is kept; never taken without one. Browser flows only.
    */
   screenshots?: StepScreenshots
+  /** Android flows: the adb serial or running AVD name to run on; default the only device connected. */
+  device?: string
+  /** Android flows: force-stop and start the app from its launcher first (default true); false runs on the app as it is. */
+  launch?: boolean
 }
 
 /** A page the run may drive, and how to let go of it. */
@@ -112,6 +121,8 @@ export interface RunFlowDeps {
    * record's `heal_of`, so the record is not read as a run of the file itself.
    */
   healOf?: string
+  /** Android flows: adb, the clock and delays (tests pass a fake adb). Default: the real ones. */
+  androidHost?: AndroidRunHost
 }
 
 /** Console errors and failed requests per step in `run_flow`'s answer; the run record keeps up to 20 of each. */
@@ -134,6 +145,8 @@ export interface FlowRunReport {
   opening?: FlowRun['opening']
   /** The page's URL when the run ended, scrubbed. */
   final_url?: string
+  /** Android flows: the device the run used and the activity it started. */
+  device?: RunEnvironment['device']
   /** Set when the run record was saved. */
   run_id?: string
   /** The run record's folder (run.json, junit.xml, steps/). */
@@ -404,6 +417,13 @@ async function browserFacts(page: BrowserPage): Promise<Pick<RunEnvironment, 'br
   return out
 }
 
+/** run_flow's device options that repeat an android run (same device, same launch setting); none for a browser run. */
+export function androidReplayOf(record: { environment?: { device?: { name?: unknown; launched_activity?: unknown } } }): Pick<FlowRunRequest, 'device' | 'launch'> {
+  const d = record.environment?.device
+  if (!d || typeof d.name !== 'string') return {}
+  return { device: d.name, ...(d.launched_activity === undefined ? { launch: false as const } : {}) }
+}
+
 /** Reads, checks and replays one flow file. Step failures are a `failed` report, not a throw. */
 export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {}): Promise<FlowRunReport> {
   const real = await resolveFlowFile(request.file, deps.roots)
@@ -415,14 +435,19 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
     })
   }
   const flow = withVars(parsed.flow, request.vars)
-  if (flow.target.kind !== 'browser') {
+  if (flow.target.kind === 'desktop') {
     throw new ToolError(
       'NOT_IMPLEMENTED',
-      flow.target.kind === 'android'
-        ? 'This flow targets an Android app; run_flow does not replay Android flows on a device in this build yet.'
-        : 'This flow targets a desktop app; replaying desktop flows needs computer-use replay, which this build does not have yet.',
+      'This flow targets a desktop app; replaying desktop flows needs computer-use replay, which this build does not have yet.',
       { file: request.file }
     )
+  }
+  const android = flow.target.kind === 'android'
+  if (android && request.cdpEndpoint !== undefined) {
+    throw new ToolError('INVALID_ARGUMENTS', 'cdp_endpoint is for browser flows; this flow targets an Android app (pick its device with target).', { file: request.file })
+  }
+  if (!android && (request.device !== undefined || request.launch !== undefined)) {
+    throw new ToolError('INVALID_ARGUMENTS', 'target and launch are for Android flows; this flow targets a browser.', { file: request.file })
   }
 
   // Null-prototype copies: `${env.constructor}` must be "not provided", not Object's constructor.
@@ -433,8 +458,12 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
   const now = deps.now ?? Date.now
 
   /** Saves the run record when the app asked for one, and builds the reply. A failed save is reported, not thrown. */
-  const finish = async (run: FlowRun, facts: Pick<RunEnvironment, 'browser' | 'viewport'> = {}): Promise<FlowRunReport> => {
-    if (!deps.record) return report(request.file, flow, run)
+  const finish = async (run: FlowRun, facts: Pick<RunEnvironment, 'browser' | 'viewport' | 'device'> = {}): Promise<FlowRunReport> => {
+    const reply = (saved?: Parameters<typeof report>[3], recorded?: RecordedStep[]): FlowRunReport => ({
+      ...report(request.file, flow, run, saved, recorded),
+      ...(facts.device ? { device: facts.device } : {})
+    })
+    if (!deps.record) return reply()
     try {
       const runId = newRunId(run.startedAt)
       const { record, assets } = buildRunRecord({
@@ -457,9 +486,9 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       }
       const dir = await writeRunRecord(deps.record.dir, record, assets, html)
       await pruneRuns(deps.record.dir, deps.record.keep ?? DEFAULT_KEEP_RUNS).catch(() => undefined)
-      return report(request.file, flow, run, { run_id: runId, run_dir: dir }, record.steps)
+      return reply({ run_id: runId, run_dir: dir }, record.steps)
     } catch (error) {
-      return report(request.file, flow, run, { record_error: error instanceof Error ? error.message : String(error) })
+      return reply({ record_error: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -483,6 +512,30 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
   // Paused (or the caller left) while the file was being read: don't open a browser at all.
   if (deps.signal?.aborted) {
     return before(typeof deps.signal.reason === 'string' ? deps.signal.reason : 'the run was stopped')
+  }
+
+  if (flow.target.kind === 'android') {
+    const host = deps.androidHost ?? defaultAndroidRunHost()
+    const ready = await prepareAndroidRun({ package: flow.target.package, target: request.device, launch: request.launch, signal: deps.signal }, host)
+    if ('stopped' in ready) return before(typeof deps.signal?.reason === 'string' ? deps.signal.reason : 'the run was stopped')
+    if (!('adb' in ready)) {
+      throw new ToolError('UNAVAILABLE', `Could not get a device ready for the run: ${ready.error}.`, { file: request.file, fix: ready.fix })
+    }
+    const { target, launched } = ready
+    const run = await replayAndroidFlow(
+      { adb: ready.adb, serial: target.serial, flow, env, secret, defaultTimeoutMs: request.stepTimeoutMs, signal: deps.signal, onStep: deps.onStep },
+      host
+    )
+    return finish(run, {
+      device: {
+        kind: target.kind,
+        name: target.name,
+        serial: target.serial,
+        api: target.api,
+        package: flow.target.package,
+        ...(launched ? { launched_activity: launched.activity } : {})
+      }
+    })
   }
 
   const openPage = deps.openPage ?? defaultOpenPage(deps.launch)

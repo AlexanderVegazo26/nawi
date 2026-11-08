@@ -69,6 +69,8 @@ export interface RunEnvironment {
   browser?: { product: string; protocol_version?: string }
   /** The page's CSS viewport when the run ended. */
   viewport?: { width: number; height: number; device_scale_factor: number }
+  /** Android flows (roadmap M5b): the device or emulator the run used, and the activity it started (none with launch off). */
+  device?: { kind: 'device' | 'avd'; name: string; serial: string; api: number | null; package: string; launched_activity?: string }
 }
 
 type EvidenceKey = keyof StepEvidence
