@@ -1,10 +1,12 @@
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '../../shared/flow/interpolate'
 import { ANDROID_KEYS, locatorLayer, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
-import type { FlowRun, LocatorMiss, StepProgress, StepRun } from '../replay/replay'
-import { findAll, type UiLocator } from './blockers'
+import type { FlowRun, LocatorMiss, StepProgress, StepRun, StepScreenshots } from '../replay/replay'
+import { findAll } from './blockers'
 import type { Exec, ExecResult } from './doctor'
+import { startAndroidEvidence, toUiLocator, type AndroidEvidence } from './flow-evidence'
 import { center, type UiNode, type UiScreen } from './hierarchy'
 import { KEYBOARD_SHOWN_LINE, parseAmStart, readScreen } from './open'
+import type { BinaryExec } from './screen'
 import { shQuote } from './shell'
 import { coveredBy, typeLines, TYPABLE_RE } from './sign-in'
 
@@ -28,6 +30,8 @@ import { coveredBy, typeLines, TYPABLE_RE } from './sign-in'
 
 export interface AndroidReplayHost {
   exec: Exec
+  /** Takes the step screenshots (`screencap`); without it a run has none. */
+  execBinary?: BinaryExec
   delay(ms: number, signal?: AbortSignal): Promise<void>
   /** Epoch milliseconds (step timestamps and timeouts). */
   now(): number
@@ -43,6 +47,13 @@ export interface AndroidReplayRequest extends FlowInputs {
   signal?: AbortSignal
   /** Told about every step in order as it settles (no values, errors or screen text). */
   onStep?: (event: StepProgress) => void
+  /**
+   * Device screenshots around each step (roadmap M5b-2), like a browser run's: `all` = the screen before the first
+   * step and after every step, `failed` = after the failing step only; default `off`. Secret fields are masked.
+   */
+  stepScreenshots?: StepScreenshots
+  /** Keep each step's device log (the app's warnings and errors, `logcat`) in its record; default off. */
+  logcat?: boolean
 }
 
 export const DEFAULT_ANDROID_STEP_TIMEOUT_MS = 10_000
@@ -59,9 +70,6 @@ export const failed = (r: ExecResult): boolean => r.code !== 0 || !!r.error
 /** Why adb failed, in Nawi's words: the device's own output could echo a typed value. */
 export const why = (r: ExecResult): string =>
   r.error === 'timeout' ? 'the device did not answer' : r.error === 'not_found' ? 'adb could not be started' : `adb exited with code ${r.code ?? 'unknown'}`
-
-const toUiLocator = (s: Selector): UiLocator | null =>
-  'id' in s ? { resource_id: s.id } : 'desc' in s ? { content_desc: s.desc } : 'text' in s ? { text: s.text } : null
 
 const describeLocator = (s: Selector): string =>
   'id' in s ? `id=${s.id}` : 'desc' in s ? `desc=${JSON.stringify(s.desc)}` : 'text' in s ? `text=${JSON.stringify(s.text)}` : JSON.stringify(s)
@@ -152,6 +160,8 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
   }
 
   const shell = (line: string, timeoutMs = SHELL_TIMEOUT_MS): Promise<ExecResult> => host.exec(adb, ['-s', serial, 'shell', line], timeoutMs)
+  /** Locators of the fields this run typed a secret into: screenshots paint them over. */
+  const secretFields: Selector[][] = []
   const must = async (line: string, what: string): Promise<void> => {
     const r = await shell(line)
     if (failed(r)) throw new StepFailure(`could not ${what} on ${serial}: ${why(r)}`)
@@ -238,6 +248,8 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
           throw new StepFailure(`${describeLocator(step.target.selectors[index])} is a ${node.class.replace(/^.*\./, '')}, not a text field`)
         })
         matched(hit)
+        // Before typing: a screenshot taken from here on masks the field, even if typing then fails halfway.
+        if (interp.redact(value) !== value) secretFields.push(step.target.selectors)
         if (hit.node.text.length > MAX_CLEAR_CHARS) throw new StepFailure(`the field holds more than ${MAX_CLEAR_CHARS} characters, more than Nawi empties before typing`)
         for (const line of clearLines(hit.node.text.length)) await must(line, 'clear the field')
         for (const line of typeLines(value)) await must(line, 'type into the field')
@@ -307,6 +319,22 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
     }
   }
 
+  const shots = req.stepScreenshots ?? 'off'
+  const evidence: AndroidEvidence | null =
+    shots !== 'off' || req.logcat
+      ? await startAndroidEvidence(
+          { adb, serial, pkg, logcat: req.logcat === true, secretFields, usesSecrets: JSON.stringify(flow).includes('${secret.'), redact: interp.redact },
+          host
+        )
+      : null
+  /**
+   * Where the next step's device log starts: the previous log read, so what the app logs while a shot is taken or
+   * between steps (a crash just after a tap) lands in a step instead of between two.
+   */
+  let logSince: number | undefined
+  // The latest "after" shot; a disabled step in between changes nothing on the screen.
+  let lastAfter: string | undefined
+
   const steps: StepRun[] = []
   let failedStepId: string | undefined
   let error: string | undefined
@@ -335,6 +363,7 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
       notify(index, record)
       continue
     }
+    const before = evidence !== null && shots === 'all' ? (lastAfter ?? (await evidence.shot())) : undefined
     record.startedAt = host.now()
     try {
       await runStep(step, record)
@@ -356,6 +385,19 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
       failedStepId = step.id
     }
     record.durationMs = host.now() - record.startedAt
+    // A cancelled run stops collecting at once: shots and logs can take many seconds on a slow device.
+    if (evidence !== null && !signal?.aborted) {
+      const after = shots === 'all' || (shots === 'failed' && record.status === 'failed') ? await evidence.shot() : undefined
+      lastAfter = after
+      if (before !== undefined || after !== undefined) record.shots = { ...(before !== undefined ? { before } : {}), ...(after !== undefined ? { after } : {}) }
+      if (req.logcat) {
+        const since = logSince ?? record.startedAt
+        logSince = host.now()
+        const log = await evidence.stepLog(since)
+        if (log.lines.length > 0) record.logcat = log.lines
+        if (log.dropped > 0) record.logcatDropped = log.dropped
+      }
+    }
     notify(index, record)
   }
   const run: FlowRun = { status: failedStepId === undefined && error === undefined ? 'passed' : 'failed', startedAt, durationMs: host.now() - startedAt, steps }

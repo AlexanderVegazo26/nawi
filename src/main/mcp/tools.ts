@@ -735,7 +735,7 @@ const runFlow = defineTool({
     'with a count of the rest; the run record keeps up to 20 of each). ' +
     `Each run is saved as a run record (run_dir: run.json, junit.xml, report.html and step screenshots; the newest ${DEFAULT_KEEP_RUNS} are kept). ` +
     'With screenshots "all" (default) the record also has the page before and after each step (steps[].shots: ' +
-    'JPEG paths inside run_dir; fields that received a secret are masked); "failed" keeps only the page the ' +
+    'JPEG paths inside run_dir, PNG for an Android device\'s screen; fields that received a secret are masked); "failed" keeps only the page the ' +
     'failing step left, "off" none. ' +
     'Nawi launches a fresh browser with a throwaway profile (headed unless headless is true), or opens a new tab ' +
     'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +
@@ -743,7 +743,8 @@ const runFlow = defineTool({
     'Android flows run on the connected device or running emulator (target: its serial or AVD name when several are connected; none is ' +
     'booted, and the app must be installed: mobile_open does both). Nawi force-stops the app and starts it from its launcher so the run ' +
     'begins on its first screen, unless launch is false (then the steps act on the app as it is). The reply and record name the device ' +
-    '(device); Android runs have no step screenshots yet, and headless, cdp_endpoint and screenshots apply to browser flows only. A step ' +
+    '(device). An Android run\'s record also keeps each step\'s device log: the app\'s warnings and errors, and system lines naming its package ' +
+    '(steps[].logcat, first 3 in the reply); headless and cdp_endpoint apply to browser flows only. A step ' +
     'failure is a normal result with status "failed"; errors are for files, browsers or devices that cannot be used (detail.fix says what to do). ' +
     'Send a progressToken in _meta (and accept text/event-stream) to get a notifications/progress message as ' +
     'each step settles. Pausing agent access, cancelling the call (notifications/cancelled), or disconnecting ' +

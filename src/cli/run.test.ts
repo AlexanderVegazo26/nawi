@@ -222,6 +222,14 @@ describe('nawi run: output and exit code', () => {
     )
   })
 
+  it('prints up to three device log lines under an android step, then how many more', () => {
+    const log = (i: number) => ({ level: 'E', tag: 'Shop', message: `boom ${i}\n  at Main.kt:${i}` })
+    const out = renderRun({ flow: 'Shop', status: 'passed', duration_ms: 10, steps: [{ id: 's1', action: 'click', status: 'passed', durationMs: 10, logcat: [1, 2, 3, 4].map(log), logcatDropped: 2 }] })
+    expect(out).toContain(
+      ['  ok   s1 click (10 ms)', '       logcat E Shop: boom 1 at Main.kt:1', '       logcat E Shop: boom 2 at Main.kt:2', '       logcat E Shop: boom 3 at Main.kt:3', '       … 3 more device log lines'].join('\n')
+    )
+  })
+
   it('prints a run-level error (missing inputs, kill switch) before the summary', () => {
     const out = renderRun({ ...failed, error: 'the flow needs a value the run did not provide: ${env.X}', steps: [] })
     expect(out).toContain('error: the flow needs a value the run did not provide: ${env.X}\nFAILED: 0 passed')

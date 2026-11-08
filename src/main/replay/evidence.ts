@@ -64,7 +64,24 @@ export interface FailedRequest {
   error?: string
 }
 
+/**
+ * A warning or error the Android device logged during a step (roadmap M5b-2): from the flow's app (its uid), or naming
+ * its package (the system's "ANR in <package>"). Secrets scrubbed, message cut at MAX_LOGCAT_MESSAGE.
+ */
+export interface DeviceLogLine {
+  /** ISO time on the device's clock. */
+  at: string
+  /** W warning, E error, F fatal, A assert. */
+  level: 'W' | 'E' | 'F' | 'A'
+  tag: string
+  message: string
+}
+
 export interface StepEvidence {
+  /** Android runs: the device log of the step (see DeviceLogLine), in order. */
+  logcat?: DeviceLogLine[]
+  /** Log lines beyond the per-step cap. */
+  logcatDropped?: number
   consoleErrors?: ConsoleError[]
   /** Console errors beyond the per-step cap. */
   consoleErrorsDropped?: number

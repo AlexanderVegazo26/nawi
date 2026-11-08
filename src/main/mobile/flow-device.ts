@@ -3,6 +3,7 @@ import { failed, why, type AndroidReplayHost } from './flow-replay'
 import { defaultOpenHost, parseAmStart } from './open'
 import { TARGET_RE } from './profile'
 import { shQuote } from './shell'
+import { execBinary } from './screen'
 import { pickTarget, type LiveStudyResult } from './study-live'
 
 /**
@@ -20,10 +21,11 @@ import { pickTarget, type LiveStudyResult } from './study-live'
 
 export interface AndroidRunHost extends DoctorHost, AndroidReplayHost {}
 
-/** The real host: the doctor's adb lookup, real delays, and an epoch clock (step timestamps are epoch ms). */
+/** The real host: the doctor's adb lookup, screenshots, real delays, and an epoch clock (step timestamps are epoch ms). */
 export function defaultAndroidRunHost(): AndroidRunHost {
   return {
     ...defaultHost(),
+    execBinary,
     delay: defaultOpenHost().delay,
     now: Date.now
   }

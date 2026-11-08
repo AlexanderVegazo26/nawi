@@ -80,7 +80,7 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
   const evidence = (e: Parameters<typeof evidenceLines>[0]): string => {
     const lines = evidenceLines(e)
     if (lines.length === 0) return ''
-    return `<details><summary>Page evidence (${lines.length})</summary><ul>${lines.map((l) => `<li>${htmlEscape(l)}</li>`).join('')}</ul></details>`
+    return `<details><summary>Evidence (${lines.length})</summary><ul>${lines.map((l) => `<li>${htmlEscape(l)}</li>`).join('')}</ul></details>`
   }
 
   const step = (s: RecordedStep, index: number): string => {

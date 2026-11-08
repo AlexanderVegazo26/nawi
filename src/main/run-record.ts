@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import type { ConsoleError, FailedRequest, StepEvidence } from './replay/evidence'
+import type { ConsoleError, DeviceLogLine, FailedRequest, StepEvidence } from './replay/evidence'
 import type { FlowRun, StepRun } from './replay/replay'
 import { anchorMissText } from './replay/visual-anchor'
 
@@ -15,9 +15,12 @@ import { anchorMissText } from './replay/visual-anchor'
  *     runs/<run-id>/steps/NNN-<id>.png  screenshots the flow's `screenshot` steps took
  *     runs/<run-id>/steps/NNN-<id>.before.jpg / .after.jpg
  *                                       the page around each step (F4b2), when the run took them
+ *     runs/<run-id>/steps/NNN-<id>.before.png / .after.png
+ *                                       an Android device's screen around each step (M5b-2)
  *
  * Per step it also keeps what the page did meanwhile (F4b): console errors,
- * failed requests (status >= 400 or no response) and the URL after the step.
+ * failed requests (status >= 400 or no response) and the URL after the step;
+ * an Android run keeps the step's device log instead (`logcat`, M5b-2).
  * These are optional fields, so a reader of version 1 records keeps working.
  * So are AI1's: each matched locator names its layer (testid/id/role/text/css,
  * or `visual` with a `score` when the step's reference crop was found on screen,
@@ -53,7 +56,7 @@ export const RUN_ID_RE = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/
 const STEP_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'
 const STEP_ID_RE = new RegExp(`^${STEP_ID}$`)
 /** A screenshot file inside a run folder, relative to it (`steps/003-save.after.jpg`). */
-export const RUN_ASSET_RE = new RegExp(`^steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.jpg)$`)
+export const RUN_ASSET_RE = new RegExp(`^steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.(?:jpg|png))$`)
 /** Folders a write in progress uses; one older than this was left by a crash. */
 const STALE_TEMP_MS = 60 * 60 * 1000
 
@@ -77,6 +80,9 @@ type EvidenceKey = keyof StepEvidence
 
 /** The evidence as run.json spells it. */
 export interface RecordedEvidence {
+  /** Android runs (M5b-2): the app's warnings and errors in the device log during the step. */
+  logcat?: DeviceLogLine[]
+  logcat_dropped?: number
   console_errors?: ConsoleError[]
   console_errors_dropped?: number
   failed_requests?: FailedRequest[]
@@ -94,7 +100,7 @@ export interface RecordedStep
   /** Path of the step's screenshot, relative to the run folder. */
   screenshot?: string
   /**
-   * The page before and after the step (JPEG), relative to the run folder. A
+   * The page before and after the step (JPEG; an Android device's screen: PNG), relative to the run folder. A
    * step's `before` is usually the previous step's `after` file: the same
    * moment, stored once.
    */
@@ -140,6 +146,8 @@ export interface RunRecord {
 
 function recordedEvidence(e: Omit<StepEvidence, 'url'>): RecordedEvidence {
   return {
+    ...(e.logcat?.length ? { logcat: e.logcat } : {}),
+    ...(e.logcatDropped ? { logcat_dropped: e.logcatDropped } : {}),
     ...(e.consoleErrors?.length ? { console_errors: e.consoleErrors } : {}),
     ...(e.consoleErrorsDropped ? { console_errors_dropped: e.consoleErrorsDropped } : {}),
     ...(e.failedRequests?.length ? { failed_requests: e.failedRequests } : {}),
@@ -164,9 +172,11 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
   const stem = (index: number, id: string): string => `steps/${String(index + 1).padStart(3, '0')}${STEP_ID_RE.test(id) ? `-${id}` : ''}`
   /** File of each shot already written, by its base64 text: an identical shot is stored once. */
   const shotFiles = new Map<string, string>()
-  const shotFile = (data: string, name: string): string => {
+  const shotFile = (data: string, base: string): string => {
     const known = shotFiles.get(data)
     if (known !== undefined) return known
+    // Browser shots are JPEG; an Android device's screen is a PNG (base64 of the PNG signature).
+    const name = `${base}.${data.startsWith('iVBORw0KGgo') ? 'png' : 'jpg'}`
     assets.set(name, Buffer.from(data, 'base64'))
     shotFiles.set(data, name)
     return name
@@ -181,13 +191,15 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
       consoleErrorsDropped,
       failedRequests,
       failedRequestsDropped,
+      logcat,
+      logcatDropped,
       url,
       ...rest
     } = step
     const out: RecordedStep = {
       ...rest,
       ...(url !== undefined ? { url } : {}),
-      ...recordedEvidence({ consoleErrors, consoleErrorsDropped, failedRequests, failedRequestsDropped })
+      ...recordedEvidence({ consoleErrors, consoleErrorsDropped, failedRequests, failedRequestsDropped, logcat, logcatDropped })
     }
     if (startedAt !== undefined) out.started_at = new Date(startedAt).toISOString()
     if (durationMs !== undefined) out.duration_ms = durationMs
@@ -198,8 +210,8 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     }
     if (shots && (shots.before !== undefined || shots.after !== undefined)) {
       out.shots = {
-        ...(shots.before !== undefined ? { before: shotFile(shots.before, `${stem(index, step.id)}.before.jpg`) } : {}),
-        ...(shots.after !== undefined ? { after: shotFile(shots.after, `${stem(index, step.id)}.after.jpg`) } : {})
+        ...(shots.before !== undefined ? { before: shotFile(shots.before, `${stem(index, step.id)}.before`) } : {}),
+        ...(shots.after !== undefined ? { after: shotFile(shots.after, `${stem(index, step.id)}.after`) } : {})
       }
     }
     return out
@@ -287,9 +299,11 @@ function failureDetail(step: RecordedStep): string {
   return lines.join('\n')
 }
 
-/** Console errors and failed requests as text lines, for JUnit. */
+/** Console errors, failed requests and device log lines as text lines, for JUnit. */
 export function evidenceLines(e: RecordedEvidence): string[] {
   const lines: string[] = []
+  for (const l of e.logcat ?? []) lines.push(`logcat ${l.level} ${l.tag}: ${l.message}`)
+  if (e.logcat_dropped) lines.push(`(${e.logcat_dropped} more device log lines not kept)`)
   for (const c of e.console_errors ?? []) lines.push(`console ${c.source}: ${c.message}`)
   if (e.console_errors_dropped) lines.push(`(${e.console_errors_dropped} more console errors not kept)`)
   for (const r of e.failed_requests ?? []) {

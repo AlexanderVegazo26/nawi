@@ -732,8 +732,15 @@ alone.
   run begins on its first screen (`launch: false` / `--no-launch` acts on the
   app as it is), and saves the run record like a browser run, with the device,
   API level and started activity in `run.json`, `report.html` and the reply.
-  No per-step device screenshots or logcat in the record yet, and no recorder:
-  both are the next M5 parts.
+  The record also keeps the device's screen before and after each step
+  (`steps/NNN-<id>.before.png` / `.after.png`; `screenshots: failed|off` as
+  for browser runs) and each step's device log: the app's warnings and errors
+  plus system lines naming its package, such as an ANR (`steps[].logcat`, up
+  to 50 lines per step, secrets scrubbed; M5b-2, `src/main/mobile/flow-evidence.ts`).
+  Once a secret has been typed, every screenshot paints over the fields that
+  got it, any view showing it, and the on-screen keyboard while it is up (its
+  suggestions repeat what was typed); a shot that can't be masked is not taken.
+  No recorder yet: that is the next M5 part.
 
 ## Keyboard shortcuts
 
@@ -840,7 +847,7 @@ CDP selectors and the MCP projection/revision model.
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, typing, keys, deep links, waits, assertions; no per-step screenshots or logcat yet), but there is no recorder, inspector or
+  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record), but there is no recorder, inspector or
   input on that screen yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is

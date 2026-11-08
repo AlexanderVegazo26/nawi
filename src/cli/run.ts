@@ -197,6 +197,9 @@ interface ReportStep {
   consoleErrorsDropped?: number
   failedRequests?: Array<{ method: string; url: string; status?: number; error?: string }>
   failedRequestsDropped?: number
+  /** Android runs: the app's warnings and errors in the device log during the step. */
+  logcat?: Array<{ level: string; tag: string; message: string }>
+  logcatDropped?: number
   /** Screenshot paths inside run_dir. */
   shots?: { before?: string; after?: string }
 }
@@ -208,7 +211,7 @@ interface ReportDevice {
   launched_activity?: string
 }
 
-type ReportEvidence = Pick<ReportStep, 'consoleErrors' | 'consoleErrorsDropped' | 'failedRequests' | 'failedRequestsDropped'>
+type ReportEvidence = Pick<ReportStep, 'consoleErrors' | 'consoleErrorsDropped' | 'failedRequests' | 'failedRequestsDropped' | 'logcat' | 'logcatDropped'>
 
 export interface RunReport {
   flow: string
@@ -233,9 +236,13 @@ const oneLine = (text: string): string => {
   return flat.length > MAX_LINE_CHARS ? `${flat.slice(0, MAX_LINE_CHARS)}…` : flat
 }
 
-/** Console errors and failed requests under a step, a few of each, then how many more. */
+/** Console errors, failed requests and device log lines under a step, a few of each, then how many more. */
 function evidenceLines(e: ReportEvidence, indent: string): string[] {
   const lines: string[] = []
+  const logcat = e.logcat ?? []
+  for (const l of logcat.slice(0, SHOWN_PER_KIND)) lines.push(`${indent}logcat ${l.level} ${oneLine(l.tag)}: ${oneLine(l.message)}`)
+  const moreLog = Math.max(0, logcat.length - SHOWN_PER_KIND) + (e.logcatDropped ?? 0)
+  if (moreLog > 0) lines.push(`${indent}… ${moreLog} more device log line${moreLog === 1 ? '' : 's'}`)
   const consoleErrors = e.consoleErrors ?? []
   for (const c of consoleErrors.slice(0, SHOWN_PER_KIND)) lines.push(`${indent}console ${c.source}: ${oneLine(c.message)}`)
   const moreConsole = Math.max(0, consoleErrors.length - SHOWN_PER_KIND) + (e.consoleErrorsDropped ?? 0)

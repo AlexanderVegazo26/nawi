@@ -7,6 +7,7 @@ import { ToolError } from '../mcp/errors'
 import { readRunRecord } from '../run-record'
 import type { ExecResult } from './doctor'
 import { parseLauncher, prepareAndroidRun, type AndroidRunHost } from './flow-device'
+import { encodePng } from './png'
 
 /**
  * Roadmap M5b (first part): android flows through `run_flow` / `nawi run`. A fake adb simulates a small sign-in app on
@@ -59,6 +60,8 @@ interface Sim {
   goneFrom?: number
   /** Called with each device shell line before it is answered. */
   onShell?: (line: string) => void
+  /** Answers the evidence commands (M5b-2): device clock, app uid, these logcat lines, and a screenshot. */
+  evidence?: { logcat: string }
 }
 
 const ok = (stdout = ''): ExecResult => ({ code: 0, stdout, stderr: '' })
@@ -90,7 +93,17 @@ function simHost(sim: Sim): AndroidRunHost & { screen: () => Screen } {
   let deviceCommands = 0
   let running = sim.screen !== undefined
   const installed = sim.installed ?? [PKG]
+  // Each screenshot differs (a counter in its first pixel): identical images are stored once.
+  let shots = 0
   return {
+    ...(sim.evidence
+      ? {
+          execBinary: async (file: string, args: string[]) => {
+            calls.push([file.replace(sdkDir, '<sdk>'), ...args])
+            return { code: 0, stdout: encodePng({ width: 2, height: 2, rgb: new Uint8Array(12).fill(++shots, 0, 1) }), stderr: '' }
+          }
+        }
+      : {}),
     env: { ANDROID_HOME: sdkDir },
     platform: 'linux',
     arch: 'x64',
@@ -116,6 +129,9 @@ function simHost(sim: Sim): AndroidRunHost & { screen: () => Screen } {
       if (cmd[0] !== 'shell') return failed(`unexpected ${cmd.join(' ')}`)
       const line = cmd[1]
       sim.onShell?.(line)
+      if (sim.evidence && line === 'date +%s%3N') return ok(`${clock}\n`)
+      if (sim.evidence && line.startsWith('cmd package list packages -U ')) return ok(`package:${PKG} uid:10234\n`)
+      if (sim.evidence && line.startsWith('logcat ')) return ok(sim.evidence.logcat)
       if (line.startsWith('getprop ro.build')) return ok(`${d.api ?? 34}\nx86_64\n`)
       if (line.startsWith('uiautomator dump')) return ok(dump(screen))
       if (line.startsWith('dumpsys input_method')) return ok('mInputShown=false\n')
@@ -152,10 +168,10 @@ function simHost(sim: Sim): AndroidRunHost & { screen: () => Screen } {
   }
 }
 
-/** The shell lines sent to the device, without screen reads, keyboard checks, getprop and `emu avd name`. */
+/** The shell lines sent to the device, without screen reads, keyboard checks, getprop, `emu avd name` and evidence reads (M5b-2). */
 const shellLines = (): string[] =>
   calls
-    .filter((c) => c[1] === '-s' && c[3] === 'shell' && !/^(uiautomator dump|dumpsys input_method|getprop )/.test(c[4]))
+    .filter((c) => c[1] === '-s' && c[3] === 'shell' && !/^(uiautomator dump|dumpsys input_method|getprop |date |cmd package list |logcat )/.test(c[4]))
     .map((c) => `${c[2]}: ${c[4]}`)
 
 const FLOW = `version: 1
@@ -212,6 +228,30 @@ describe('runFlowFile on an android flow', () => {
     expect(html, 'report.html names the device').toContain('<dt>Device</dt><dd>loop-api36 (virtual device), Android API 36</dd>')
     expect(html, 'report.html names the app and the activity started').toContain(`<dt>App</dt><dd>${PKG} (started .MainActivity)</dd>`)
     expect(existsSync(join(report.run_dir!, 'junit.xml')), 'junit.xml is written like for browser runs').toBe(true)
+  })
+
+  it('saves the device screen around each step and the app\'s log lines in the record, and asks for neither without one', async () => {
+    const logcat = `  ${Math.floor(START / 1000)}.500 10234  4321  4321 E Shop: could not load the welcome banner\n`
+    const host = simHost({ devices: [{ serial: 'emulator-5560', avd: 'loop-api36', api: 36 }], evidence: { logcat } })
+    const runs = join(root, 'runs')
+    const report = await runFlowFile({ file: flowFile() }, { roots: [root], androidHost: host, now: host.now, record: { dir: runs } })
+    expect(report.status, `run failed: ${report.error}`).toBe('passed')
+    expect(report.steps[0].shots, 'the reply points at PNG files inside run_dir').toEqual({ before: 'steps/001-tap.before.png', after: 'steps/001-tap.after.png' })
+    expect(report.steps[0].logcat?.[0], 'the reply carries the step\'s first log lines').toMatchObject({ level: 'E', tag: 'Shop', message: 'could not load the welcome banner' })
+    const record = await readRunRecord(runs, report.run_id!)
+    expect(record?.steps[1].shots, 'the second step starts from the first one\'s after shot').toEqual({ before: 'steps/001-tap.after.png', after: 'steps/002-check.after.png' })
+    expect(record?.steps[0].logcat, 'run.json keeps the log lines').toHaveLength(1)
+    expect(existsSync(join(report.run_dir!, 'steps', '002-check.after.png'))).toBe(true)
+    expect(readFileSync(join(report.run_dir!, 'report.html'), 'utf8')).toContain('logcat E Shop: could not load the welcome banner')
+
+    calls.length = 0
+    const off = await runFlowFile({ file: flowFile(), screenshots: 'off' }, { roots: [root], androidHost: host, now: host.now, record: { dir: runs } })
+    expect(off.steps.some((st) => st.shots), 'screenshots off: none').toBe(false)
+    expect(calls.some((c) => c.includes('screencap')), 'screenshots off: no screencap').toBe(false)
+    calls.length = 0
+    const unrecorded = await runFlowFile({ file: flowFile() }, { roots: [root], androidHost: host })
+    expect(unrecorded.status).toBe('passed')
+    expect(calls.some((c) => c.includes('screencap') || /^(logcat|date) /.test(c[4] ?? '')), 'no record: no evidence asked of the device').toBe(false)
   })
 
   it('with launch false acts on the app as it is: no launcher lookup, force-stop or start', async () => {

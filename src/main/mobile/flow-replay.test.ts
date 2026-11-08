@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseFlow, type Flow } from '../../shared/flow'
 import type { ExecResult } from './doctor'
 import { replayAndroidFlow, type AndroidReplayHost, type AndroidReplayRequest } from './flow-replay'
+import { decodePng, encodePng } from './png'
 
 /**
  * The Android replayer (roadmap M5a) against a simulated shop app behind a fake adb: every screen is a uiautomator
@@ -80,6 +81,8 @@ function node(pkg: string, c: Control, text: string, inner = ''): string {
 }
 
 const ok = (stdout = ''): ExecResult => ({ code: 0, stdout, stderr: '' })
+/** How far the fake device's epoch clock is ahead of the test's fake host clock (which starts at 1_000_000). */
+const DEVICE_AHEAD_MS = 1_794_137_000_000
 
 interface DeviceOptions {
   /** Changes the app before a screen read (1-based count of reads so far). */
@@ -90,12 +93,19 @@ interface DeviceOptions {
   deepLink?: (url: string) => { stdout: string; go?: string }
   /** `input text` fails in adb. */
   typeFails?: boolean
+  /**
+   * Answers the evidence commands (M5b-2): `date`, the package's uid, `logcat` (these lines, whatever the time asked),
+   * and screenshots of the current screen: every view's box in its own colour (text fields red), the rest white.
+   */
+  evidence?: { logcat?: string; keyboardWindow?: string }
 }
 
 interface Device {
   host: AndroidReplayHost
-  /** Every shell line, in order, minus the screen reads and keyboard checks. */
+  /** Every shell line, in order, minus the screen reads, keyboard checks and evidence commands. */
   lines: string[]
+  /** The evidence commands (date, uid, logcat) and `screencap` calls, in order. */
+  evidenceLines: string[]
   /** Text typed into each field, by resource id name. */
   typed: Record<string, string>
   stack: string[]
@@ -105,6 +115,7 @@ function device(start = 'login', over: DeviceOptions = {}): Device {
   const screens = app()
   const stack = [start]
   const lines: string[] = []
+  const evidenceLines: string[] = []
   const typed: Record<string, string> = {}
   const readsOf: Record<string, number> = {}
   let reads = 0
@@ -129,6 +140,13 @@ function device(start = 'login', over: DeviceOptions = {}): Device {
       const line = args[3] ?? ''
       if (line.startsWith('uiautomator dump')) return ok(dump())
       if (line.startsWith('dumpsys input_method')) return ok(`    mInputShown=${keyboard}\n`)
+      if (over.evidence && line === 'dumpsys window InputMethod') return ok(over.evidence.keyboardWindow ?? '    touchable region=SkRegion((0,1517,1080,2400))\n')
+      if (over.evidence && /^(date |cmd package list packages|logcat )/.test(line)) {
+        evidenceLines.push(line)
+        if (line.startsWith('date ')) return ok(`${clock + DEVICE_AHEAD_MS}\n`)
+        if (line.startsWith('cmd package')) return ok(`package:${PKG} uid:10234\npackage:${PKG}.debug uid:10235\n`)
+        return ok(over.evidence.logcat ?? '')
+      }
       lines.push(line)
       if (line === 'input keyevent KEYCODE_BACK') {
         if (keyboard) keyboard = false
@@ -168,7 +186,19 @@ function device(start = 'login', over: DeviceOptions = {}): Device {
     },
     now: () => clock
   }
-  return { host, lines, typed, stack }
+  if (over.evidence) {
+    host.execBinary = async (_file, args) => {
+      evidenceLines.push(args.slice(2).join(' '))
+      const [w, h] = [1080, 2400]
+      const rgb = new Uint8Array(w * h * 3).fill(255)
+      for (const c of visible(top())) {
+        const colour = c.cls === 'android.widget.EditText' ? [255, 0, 0] : [0, 0, 255]
+        for (let y = c.bounds[1]; y < c.bounds[3]; y++) for (let x = c.bounds[0]; x < c.bounds[2]; x++) rgb.set(colour, (y * w + x) * 3)
+      }
+      return { code: 0, stdout: encodePng({ width: w, height: h, rgb }), stderr: '' }
+    }
+  }
+  return { host, lines, evidenceLines, typed, stack }
 }
 
 function flow(steps: string, extra = ''): Flow {
@@ -380,5 +410,140 @@ describe('replayAndroidFlow', () => {
     if (!web.ok) throw new Error('fixture')
     const w = await replayAndroidFlow({ ...REQ, flow: web.flow }, device().host)
     expect(w.error).toBe('this replayer runs android flows; the flow targets a browser')
+  })
+})
+
+/** The colour at (x, y) of a base64 PNG shot. */
+function pixel(shot: string | undefined, x: number, y: number): number[] {
+  const png = decodePng(Buffer.from(shot ?? '', 'base64'))
+  if (!png.ok) throw new Error(`shot is not a PNG: ${png.error}`)
+  const at = (y * png.image.width + x) * 3
+  return [...png.image.rgb.subarray(at, at + 3)]
+}
+
+describe('replayAndroidFlow evidence (roadmap M5b-2)', () => {
+  const RED = [255, 0, 0]
+  const MASK = [0x5f, 0x63, 0x68]
+
+  it('records the screen before the first step and after every step, a step\'s before being the previous after', async () => {
+    const d = device('login', { evidence: {} })
+    const r = await run(SIGN_IN, d, { stepScreenshots: 'all' })
+    expect(r.status).toBe('passed')
+    for (const [i, s] of r.steps.entries()) {
+      expect(s.shots?.after, `step ${s.id} has an after shot`).toMatch(/^iVBORw0KGgo/)
+      if (i > 0) expect(s.shots?.before, `step ${s.id}'s before is step ${r.steps[i - 1].id}'s after`).toBe(r.steps[i - 1].shots?.after)
+    }
+    expect(r.steps[0].shots?.before, 'the first step has its own before shot').toMatch(/^iVBORw0KGgo/)
+    expect(d.evidenceLines.filter((l) => l.startsWith('exec-out screencap')), 'one screencap per step plus the first before').toHaveLength(r.steps.length + 1)
+    expect(pixel(r.steps[2].shots?.before, 540, 375), 'the email field (no secret) is shown as it is').toEqual(RED)
+    expect(d.lines, 'evidence commands never mix with the steps\' own').not.toContain(expect.stringMatching(/screencap|logcat/))
+  })
+
+  it('paints over a field the run typed a secret into, in every shot from that step on, but not before', async () => {
+    const d = device('login', { evidence: {} })
+    const r = await run(SIGN_IN, d, { stepScreenshots: 'all' })
+    const [, s2] = r.steps
+    expect(pixel(s2.shots?.before, 540, 575), 'before the secret is typed the password field is unmasked').toEqual(RED)
+    expect(pixel(s2.shots?.after, 540, 575), 'after the secret is typed the password field is masked').toEqual(MASK)
+    expect(pixel(s2.shots?.after, 540, 375), 'the email field next to it stays visible').toEqual(RED)
+  })
+
+  it('paints over the on-screen keyboard after a secret was typed (its suggestions repeat it), and skips the shot when its area is unknown', async () => {
+    const steps = flow(`  - { id: pw, action: fill, target: { selectors: [{ id: "${ID('password')}" }] }, value: "\${secret.pw}" }\n`)
+    const d = device('login', { evidence: {}, keyboardOnFocus: true })
+    const r = await run(steps, d, { stepScreenshots: 'all' })
+    expect(r.status).toBe('passed')
+    expect(pixel(r.steps[0].shots?.after, 540, 2000), 'keyboard area (touchable region from the window manager)').toEqual(MASK)
+    expect(pixel(r.steps[0].shots?.after, 540, 1400), 'above the keyboard stays visible').toEqual([255, 255, 255])
+    const unknown = device('login', { evidence: { keyboardWindow: 'no region here\n' }, keyboardOnFocus: true })
+    const r2 = await run(steps, unknown, { stepScreenshots: 'all' })
+    expect(r2.steps[0].shots?.after, 'keyboard up, area unknown: no shot').toBeUndefined()
+  })
+
+  it('masks the keyboard from the first shot when the flow uses a secret anywhere, before any secret field is filled', async () => {
+    const steps = flow(`  - { id: email, action: click, target: { selectors: [{ id: "${ID('email')}" }] } }
+  - { id: pw, action: fill, target: { selectors: [{ id: "${ID('password')}" }] }, value: "\${secret.pw}" }
+`)
+    const r = await run(steps, device('login', { evidence: {}, keyboardOnFocus: true }), { stepScreenshots: 'all' })
+    expect(pixel(r.steps[0].shots?.after, 540, 2000), 'keyboard up after the first tap, flow has a secret: masked').toEqual(MASK)
+    const plain = await run(flow(`  - { id: email, action: click, target: { selectors: [{ id: "${ID('email')}" }] } }\n`), device('login', { evidence: {}, keyboardOnFocus: true }), { stepScreenshots: 'all' })
+    expect(pixel(plain.steps[0].shots?.after, 540, 2000), 'a flow without secrets is shot as it is').toEqual([255, 255, 255])
+  })
+
+  it('collects nothing more once the run is cancelled during a step', async () => {
+    const stop = new AbortController()
+    const d = device('login', { evidence: {} })
+    const exec = d.host.exec
+    d.host.exec = async (file, args, t) => {
+      if ((args[3] ?? '').startsWith('input tap')) stop.abort('paused')
+      return exec(file, args, t)
+    }
+    const r = await run(SIGN_IN, d, { stepScreenshots: 'all', logcat: true, signal: stop.signal })
+    expect(r.error).toMatch(/stopped before step s2/)
+    expect(d.evidenceLines.filter((l) => l.startsWith('exec-out screencap')), 'only the before shot of the first step').toHaveLength(1)
+    expect(d.evidenceLines.some((l) => l.startsWith('logcat ')), 'no log read after the stop').toBe(false)
+    expect(r.steps[0].shots?.after).toBeUndefined()
+  })
+
+  it('takes no shot it cannot mask: a screen that cannot be read after a secret was typed leaves the step without one', async () => {
+    let failReads = false
+    const d = device('login', { evidence: {} })
+    const exec = d.host.exec
+    d.host.exec = async (file, args, t) => (failReads && (args[3] ?? '').startsWith('uiautomator dump') ? { code: 1, stdout: '', stderr: 'ERROR: null root node', error: 'failed' } : exec(file, args, t))
+    const steps = flow(`  - { id: pw, action: fill, target: { selectors: [{ id: "${ID('password')}" }] }, value: "\${secret.pw}" }
+  - { id: wait, action: wait, ms: 10 }
+`)
+    const onStep = (e: { id: string }): void => {
+      if (e.id === 'pw') failReads = true
+    }
+    const r = await run(steps, d, { stepScreenshots: 'all', onStep })
+    expect(r.status).toBe('passed')
+    expect(r.steps[0].shots?.after, 'the screen could be read when the secret step ended').toBeDefined()
+    expect(r.steps[1].shots?.before, 'the next step starts from that shot').toBe(r.steps[0].shots?.after)
+    expect(r.steps[1].shots?.after, 'with a secret typed and no readable screen, no shot').toBeUndefined()
+  })
+
+  it('with screenshots "failed" keeps only the screen the failing step left', async () => {
+    const d = device('login', { evidence: {} })
+    const r = await run(
+      flow(`  - { id: ok, action: click, target: { selectors: [{ text: Sign in }] } }
+  - { id: gone, action: click, timeout_ms: 500, target: { selectors: [{ text: Nowhere }] } }
+`),
+      d,
+      { stepScreenshots: 'failed' }
+    )
+    expect(r.steps.map((s) => s.status)).toEqual(['passed', 'failed'])
+    expect(r.steps[0].shots, 'a passed step has none').toBeUndefined()
+    expect(r.steps[1].shots?.before).toBeUndefined()
+    expect(r.steps[1].shots?.after, 'the failed step has the screen it left').toMatch(/^iVBORw0KGgo/)
+  })
+
+  it('keeps each step\'s device log from the step\'s start on the device clock: the app\'s lines and ANRs naming it, secrets scrubbed', async () => {
+    const logcat = [
+      '--------- beginning of crash',
+      "  1794138163.237 10234  4000  4000 E AndroidRuntime: FATAL EXCEPTION: main, password s3cr3t 'pw'",
+      '  1794138163.238  1000   700   712 E ActivityManager: ANR in dev.nawi.shop (dev.nawi.shop/.Main)',
+      '  1794138163.239  1000   700   712 W WifiService: Empty or null ScanResult list',
+      '  1794138163.240 10235  4100  4100 E Shop: from dev.nawi.shop.debug, another app'
+    ].join('\n')
+    const d = device('login', { evidence: { logcat } })
+    const r = await run(SIGN_IN, d, { logcat: true })
+    expect(r.status).toBe('passed')
+    expect(r.steps[0].shots, 'logcat alone takes no screenshots').toBeUndefined()
+    expect(r.steps[0].logcat).toEqual([
+      { at: '2026-11-08T11:42:43.237Z', level: 'E', tag: 'AndroidRuntime', message: 'FATAL EXCEPTION: main, password ${secret.pw}' },
+      { at: '2026-11-08T11:42:43.238Z', level: 'E', tag: 'ActivityManager', message: 'ANR in dev.nawi.shop (dev.nawi.shop/.Main)' }
+    ])
+    const logs = d.evidenceLines.filter((l) => l.startsWith('logcat '))
+    expect(logs, 'one log read per step').toHaveLength(r.steps.length)
+    // The step's start on the device's clock: the host's plus the offset read once (the fake answers instantly).
+    const device0 = (r.steps[0].startedAt ?? 0) + DEVICE_AHEAD_MS
+    expect(logs[0]).toBe(`logcat -d -v epoch,uid -t ${Math.floor(device0 / 1000)}.${String(device0 % 1000).padStart(3, '0')} '*:W'`)
+    // Each later step's log starts where the previous read began, so nothing logged between two steps is lost.
+    const since = (l: string): number => Math.round(Number(/-t (\d+\.\d{3})/.exec(l)?.[1]) * 1000)
+    for (let i = 1; i < logs.length; i++) {
+      expect(since(logs[i]), `step ${i + 1}'s log starts no later than the step`).toBeLessThanOrEqual((r.steps[i].startedAt ?? 0) + DEVICE_AHEAD_MS)
+      expect(since(logs[i]), `step ${i + 1}'s log starts no earlier than step ${i}'s`).toBeGreaterThanOrEqual(since(logs[i - 1]))
+    }
   })
 })

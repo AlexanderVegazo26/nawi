@@ -14,7 +14,7 @@ import { within } from '../flow-run'
  *     nawi://runs/<run-id>/run.json
  *     nawi://runs/<run-id>/report.html
  *     nawi://runs/<run-id>/junit.xml
- *     nawi://runs/<run-id>/steps/<NNN-step>.png | .before.jpg | .after.jpg
+ *     nawi://runs/<run-id>/steps/<NNN-step>.png | .before.jpg | .after.jpg | .before.png | .after.png (Android)
  *
  * `resources/list` names the record and report of the newest runs;
  * `resources/templates/list` gives the URI patterns for any run (the ids come
@@ -89,7 +89,7 @@ export const RESOURCE_TEMPLATES: ResourceTemplate[] = [
     name: 'run-screenshot',
     title: 'Run screenshot',
     description:
-      "A screenshot from the run: a step's `screenshot`, `shots.before` or `shots.after` path in run.json (steps/003-save.after.jpg)."
+      "A screenshot from the run: a step's `screenshot`, `shots.before` or `shots.after` path in run.json (steps/003-save.after.jpg; Android device screens are .png)."
   }
 ]
 

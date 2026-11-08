@@ -7,6 +7,7 @@ import { toHtmlReport } from './run-report'
 import {
   HEAL_REPLAY_MARKER,
   KEPT_HEAL_REPLAYS,
+  RUN_ASSET_RE,
   RUN_ID_RE,
   buildRunRecord,
   readRunRecord,
@@ -204,6 +205,45 @@ describe('page evidence in the record (F4b)', () => {
     expect(toJUnitXml(record(run).record)).toContain(
       'type="run_failed">could not open the flow&apos;s target: did not finish loading\n  console exception: ReferenceError: boot is not defined</error>'
     )
+  })
+})
+
+describe('buildRunRecord: android device evidence (M5b-2)', () => {
+  const png = (tag: string): string => Buffer.concat([PNG, Buffer.from(tag, 'hex')]).toString('base64')
+  const LOG = { at: '2026-11-08T11:42:43.237Z', level: 'E' as const, tag: 'AndroidRuntime', message: 'FATAL EXCEPTION: main' }
+  const run: FlowRun = {
+    status: 'failed',
+    startedAt: T0,
+    durationMs: 900,
+    failedStepId: 'tap',
+    steps: [{ id: 'tap', action: 'click', status: 'failed', error: 'gone', shots: { before: png('01'), after: png('02') }, logcat: [LOG], logcatDropped: 4 }]
+  }
+
+  it('writes a device screen as .before/.after.png, which writeRunRecord and the asset pattern accept', async () => {
+    const { record: r, assets } = record(run)
+    expect(r.steps[0].shots).toEqual({ before: 'steps/001-tap.before.png', after: 'steps/001-tap.after.png' })
+    for (const name of assets.keys()) expect(RUN_ASSET_RE.test(name), `${name} is a run asset`).toBe(true)
+    expect(RUN_ASSET_RE.test('steps/001-tap.after.gif'), 'only jpg and png').toBe(false)
+    const runs = join(mkdtempSync(join(tmpdir(), 'nawi-android-shots-')), 'runs')
+    try {
+      const dir = await writeRunRecord(runs, r, assets)
+      expect(readdirSync(join(dir, 'steps')).sort()).toEqual(['001-tap.after.png', '001-tap.before.png'])
+      expect(readFileSync(join(dir, 'steps', '001-tap.after.png')).subarray(0, 8)).toEqual(PNG.subarray(0, 8))
+    } finally {
+      rmSync(join(runs, '..'), { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the device log as logcat / logcat_dropped, and puts it in JUnit and the HTML report', () => {
+    const { record: r, assets } = record(run)
+    expect(r.steps[0]).toMatchObject({ logcat: [LOG], logcat_dropped: 4 })
+    expect(Object.keys(r.steps[0]), 'no camelCase evidence keys in run.json').not.toContain('logcatDropped')
+    expect(toJUnitXml(r)).toContain(
+      'gone\n  screenshot after the step: steps/001-tap.after.png (in the run folder)\n  logcat E AndroidRuntime: FATAL EXCEPTION: main\n  (4 more device log lines not kept)</failure>'
+    )
+    const html = toHtmlReport(r, assets)
+    expect(html).toContain('<li>logcat E AndroidRuntime: FATAL EXCEPTION: main</li>')
+    expect(html, 'the device screen embedded as a PNG').toContain('data:image/png;base64,')
   })
 })
 

@@ -125,7 +125,7 @@ export interface RunFlowDeps {
   androidHost?: AndroidRunHost
 }
 
-/** Console errors and failed requests per step in `run_flow`'s answer; the run record keeps up to 20 of each. */
+/** Console errors, failed requests and device log lines per step in `run_flow`'s answer; the run record keeps more (20 of each kind, 50 log lines). */
 export const REPORTED_EVIDENCE_PER_STEP = 3
 
 /**
@@ -345,6 +345,10 @@ export function trimEvidence<T extends Omit<StepEvidence, 'url'>>(e: T): T {
     out.failedRequestsDropped = (out.failedRequestsDropped ?? 0) + out.failedRequests.length - n
     out.failedRequests = out.failedRequests.slice(0, n)
   }
+  if (out.logcat && out.logcat.length > n) {
+    out.logcatDropped = (out.logcatDropped ?? 0) + out.logcat.length - n
+    out.logcat = out.logcat.slice(0, n)
+  }
   return out
 }
 
@@ -514,6 +518,7 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
     return before(typeof deps.signal.reason === 'string' ? deps.signal.reason : 'the run was stopped')
   }
 
+  const recording = deps.record !== undefined
   if (flow.target.kind === 'android') {
     const host = deps.androidHost ?? defaultAndroidRunHost()
     const ready = await prepareAndroidRun({ package: flow.target.package, target: request.device, launch: request.launch, signal: deps.signal }, host)
@@ -523,7 +528,19 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
     }
     const { target, launched } = ready
     const run = await replayAndroidFlow(
-      { adb: ready.adb, serial: target.serial, flow, env, secret, defaultTimeoutMs: request.stepTimeoutMs, signal: deps.signal, onStep: deps.onStep },
+      {
+        adb: ready.adb,
+        serial: target.serial,
+        flow,
+        env,
+        secret,
+        defaultTimeoutMs: request.stepTimeoutMs,
+        signal: deps.signal,
+        onStep: deps.onStep,
+        // Screenshots and the device log live only in the record: none without one.
+        stepScreenshots: recording ? (request.screenshots ?? 'all') : 'off',
+        logcat: recording
+      },
       host
     )
     return finish(run, {
@@ -557,7 +574,7 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       secret,
       defaultTimeoutMs: request.stepTimeoutMs,
       // Shots live only in the record: none without one.
-      stepScreenshots: deps.record ? (request.screenshots ?? 'all') : 'off',
+      stepScreenshots: recording ? (request.screenshots ?? 'all') : 'off',
       signal: deps.signal,
       onStep: deps.onStep,
       loadAsset: (path) => readFlowAsset(real, path),
