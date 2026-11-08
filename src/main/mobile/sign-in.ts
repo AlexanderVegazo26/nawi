@@ -44,7 +44,7 @@ export const MAX_SIGN_IN_FIELDS = 5
 /** Longest value typed (a long passphrase fits; `input text` gets slow beyond this). */
 export const MAX_SIGN_IN_VALUE = 256
 /** What `input text` can type: printable ASCII (the device's key map has no keys for the rest). */
-const TYPABLE_RE = /^[\x20-\x7e]*$/
+export const TYPABLE_RE = /^[\x20-\x7e]*$/
 
 export interface SignInInputs {
   env?: Readonly<Record<string, string | undefined>>
@@ -133,10 +133,18 @@ export function locateOnApp(screen: UiScreen, pkg: string, loc: UiLocator, what:
   const b = node.bounds
   if (b === null || b.right <= b.left || b.bottom <= b.top) return { ok: false, why: `the ${what} (${describe(loc)}) has no size on screen` }
   const at = center(b)
-  // Something of another package (the on-screen keyboard, a prompt) drawn over that point would get the tap instead.
-  const cover = screen.nodes.find((n) => n.parent === null && n.package !== pkg && n.package !== '' && n.bounds !== null && at.x >= n.bounds.left && at.x < n.bounds.right && at.y >= n.bounds.top && at.y < n.bounds.bottom)
-  if (cover) return { ok: false, why: `the ${what} (${describe(loc)}) is covered by ${cover.package}` }
+  const cover = coveredBy(screen, pkg, at)
+  if (cover) return { ok: false, why: `the ${what} (${describe(loc)}) is covered by ${cover}` }
   return { ok: true, node, at }
+}
+
+/**
+ * The package of a window of another app (the on-screen keyboard, a prompt) drawn over `at`, which would get a tap
+ * there instead of `pkg`; null when nothing covers it.
+ */
+export function coveredBy(screen: UiScreen, pkg: string, at: Point): string | null {
+  const cover = screen.nodes.find((n) => n.parent === null && n.package !== pkg && n.package !== '' && n.bounds !== null && at.x >= n.bounds.left && at.x < n.bounds.right && at.y >= n.bounds.top && at.y < n.bounds.bottom)
+  return cover ? cover.package : null
 }
 
 /** Whether a sign-in step can start on this screen: the app is in front, not Android's permission prompt. */

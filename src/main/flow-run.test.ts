@@ -282,7 +282,7 @@ describe('runFlowFile with a fake browser', () => {
     expect(readdirSync(runs).sort()).toEqual(ids.slice(1))
   })
 
-  it('does not open a browser for an invalid flow file or a desktop target', async () => {
+  it('does not open a browser for an invalid flow file, a desktop or an android target', async () => {
     const bad = join(root, 'bad.nawi.yaml')
     writeFileSync(bad, 'version: 1\nname: x\n')
     const desktop = join(root, 'desk.nawi.yaml')
@@ -291,6 +291,9 @@ describe('runFlowFile with a fake browser', () => {
     const openPage = fakePage(log, async () => ({}) as never)
     expect(await codeOf(runFlowFile({ file: bad }, { roots: [root], openPage })), 'invalid flow').toBe('INVALID_ARGUMENTS')
     expect(await codeOf(runFlowFile({ file: desktop }, { roots: [root], openPage })), 'desktop flow').toBe('NOT_IMPLEMENTED')
+    const android = join(root, 'phone.nawi.yaml')
+    writeFileSync(android, 'version: 1\nname: a\ntarget: { kind: android, package: dev.nawi.shop }\nsteps:\n  - { id: s1, action: press, key: Back }\n')
+    await expect(runFlowFile({ file: android }, { roots: [root], openPage }), 'android flow').rejects.toThrow(/targets an Android app; run_flow does not replay Android flows/)
     expect(await codeOf(runFlowFile({ file: join(root, 'f2.nawi.yaml') }, { roots: [root], openPage }))).toBe('NOT_FOUND')
     expect(log, 'no browser was opened').toEqual([])
   })

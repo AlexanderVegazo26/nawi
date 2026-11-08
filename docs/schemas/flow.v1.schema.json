@@ -52,6 +52,25 @@
             "app"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "android"
+            },
+            "package": {
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+$"
+            }
+          },
+          "required": [
+            "kind",
+            "package"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -127,6 +146,20 @@
                           },
                           "required": [
                             "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
                           ],
                           "additionalProperties": false
                         },
@@ -281,6 +314,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "role": {
                               "type": "string",
                               "pattern": "\\S"
@@ -423,6 +470,20 @@
                           },
                           "required": [
                             "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
                           ],
                           "additionalProperties": false
                         },
@@ -581,6 +642,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "role": {
                               "type": "string",
                               "pattern": "\\S"
@@ -733,6 +808,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "role": {
                               "type": "string",
                               "pattern": "\\S"
@@ -879,6 +968,20 @@
                           },
                           "required": [
                             "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
                           ],
                           "additionalProperties": false
                         },
@@ -1085,6 +1188,20 @@
                         {
                           "type": "object",
                           "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
                             "role": {
                               "type": "string",
                               "pattern": "\\S"
@@ -1231,6 +1348,20 @@
                           },
                           "required": [
                             "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
                           ],
                           "additionalProperties": false
                         },
@@ -1397,6 +1528,20 @@
                           },
                           "required": [
                             "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desc": {
+                              "type": "string",
+                              "maxLength": 500,
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "desc"
                           ],
                           "additionalProperties": false
                         },

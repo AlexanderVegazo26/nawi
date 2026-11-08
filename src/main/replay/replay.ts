@@ -269,6 +269,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export function describeSelector(selector: Selector): string {
   if ('testid' in selector) return `testid=${selector.testid}`
   if ('id' in selector) return `id=${selector.id}`
+  if ('desc' in selector) return `desc=${JSON.stringify(selector.desc)}`
   if ('css' in selector) return `css=${selector.css}`
   // JSON quoting: a text with quotes or line breaks stays one readable, pasteable token.
   if ('text' in selector) return `text=${JSON.stringify(selector.text)}`
@@ -480,8 +481,11 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
     steps: notRun()
   })
 
-  if (flow.target.kind !== 'browser') {
+  if (flow.target.kind === 'desktop') {
     return abort('desktop targets need computer-use replay, which this build does not have yet (roadmap F7)')
+  }
+  if (flow.target.kind === 'android') {
+    return abort('android flows are replayed on a device by the Android replayer (src/main/mobile/flow-replay.ts), not in a browser')
   }
 
   const openTarget = options.openTarget !== false

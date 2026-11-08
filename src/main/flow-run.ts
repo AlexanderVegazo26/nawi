@@ -418,7 +418,9 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
   if (flow.target.kind !== 'browser') {
     throw new ToolError(
       'NOT_IMPLEMENTED',
-      'This flow targets a desktop app; replaying desktop flows needs computer-use replay, which this build does not have yet.',
+      flow.target.kind === 'android'
+        ? 'This flow targets an Android app; run_flow does not replay Android flows on a device in this build yet.'
+        : 'This flow targets a desktop app; replaying desktop flows needs computer-use replay, which this build does not have yet.',
       { file: request.file }
     )
   }

@@ -63,6 +63,9 @@ const varName = z
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'must be a letter or "_" followed by letters, digits or "_"')
   .refine((n) => !RESERVED_KEYS.has(n), { message: 'is a reserved name (__proto__, constructor, prototype)' })
 
+/** An Android application id (`com.example.app`): the `package` of an android flow target. */
+export const ANDROID_PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/
+
 /** Longest `{ text }` locator a flow accepts. */
 export const MAX_TEXT_LOCATOR_CHARS = 500
 
@@ -72,23 +75,29 @@ export const MAX_TEXT_LOCATOR_CHARS = 500
  * can fall back when the first no longer matches (roadmap AI1: layered
  * locators). `text` is the element's whole visible text, whitespace runs
  * folded and trimmed; it matches the innermost element showing exactly that.
+ *
+ * Android flows (roadmap M5) use `id` for the view's resource id
+ * (`com.example:id/save`), `desc` for its content description and `text` for
+ * its text, each compared exactly; `desc` exists only there.
  */
 export const SelectorSchema = z.union([
   z.strictObject({ testid: nonEmpty }),
   z.strictObject({ id: nonEmpty }),
+  z.strictObject({ desc: nonEmpty.max(MAX_TEXT_LOCATOR_CHARS) }),
   z.strictObject({ role: nonEmpty, name: z.string().optional() }),
   z.strictObject({ text: nonEmpty.max(MAX_TEXT_LOCATOR_CHARS) }),
   z.strictObject({ css: nonEmpty })
 ])
 
 /** The kinds of locator a step can list (its "layers"), most stable first. */
-export const LOCATOR_LAYERS = ['testid', 'id', 'role', 'text', 'css'] as const
+export const LOCATOR_LAYERS = ['testid', 'id', 'desc', 'role', 'text', 'css'] as const
 export type LocatorLayer = (typeof LOCATOR_LAYERS)[number]
 
 /** Which layer a locator belongs to, for run records ("matched by role"). */
 export function locatorLayer(selector: Selector): LocatorLayer {
   if ('testid' in selector) return 'testid'
   if ('id' in selector) return 'id'
+  if ('desc' in selector) return 'desc'
   if ('role' in selector) return 'role'
   if ('text' in selector) return 'text'
   return 'css'
@@ -207,8 +216,38 @@ export const StepSchema = z.discriminatedUnion('action', [
 
 export const FlowTargetSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('browser'), url: nonEmpty }),
-  z.strictObject({ kind: z.literal('desktop'), app: nonEmpty })
+  z.strictObject({ kind: z.literal('desktop'), app: nonEmpty }),
+  /** An installed Android app on a device or emulator (roadmap M5); steps act only on its own windows. */
+  z.strictObject({
+    kind: z.literal('android'),
+    package: z.string().max(255).regex(ANDROID_PACKAGE_RE, 'must be an Android package name such as com.example.app')
+  })
 ])
+
+/**
+ * What an android flow can do today (roadmap M5a): tap, type, Android's keys,
+ * deep links, waits and element assertions. The rest is refused by parseFlow
+ * with a message, instead of being skipped at replay.
+ */
+export const ANDROID_ACTIONS = ['click', 'fill', 'press', 'navigate', 'wait', 'assert'] as const satisfies readonly FlowAction[]
+
+/** Keys an android `press` step may name, and the key event each sends. */
+export const ANDROID_KEYS: Readonly<Record<string, string>> = {
+  Back: 'KEYCODE_BACK',
+  Home: 'KEYCODE_HOME',
+  AppSwitch: 'KEYCODE_APP_SWITCH',
+  Enter: 'KEYCODE_ENTER',
+  Tab: 'KEYCODE_TAB',
+  Escape: 'KEYCODE_ESCAPE',
+  Backspace: 'KEYCODE_DEL',
+  Delete: 'KEYCODE_FORWARD_DEL',
+  ArrowUp: 'KEYCODE_DPAD_UP',
+  ArrowDown: 'KEYCODE_DPAD_DOWN',
+  ArrowLeft: 'KEYCODE_DPAD_LEFT',
+  ArrowRight: 'KEYCODE_DPAD_RIGHT'
+}
+
+const ANDROID_LAYERS: ReadonlySet<LocatorLayer> = new Set(['id', 'desc', 'text'])
 
 const FlowShape = z.strictObject({
   version: z.literal(FLOW_VERSION, { error: `must be ${FLOW_VERSION} (the only flow format version this build reads)` }),
@@ -276,6 +315,7 @@ export const FlowSchema = FlowShape.superRefine((flow, ctx) => {
       ctx.addIssue({ code: 'custom', path: ['target', 'url'], message })
     }
   }
+  const android = flow.target.kind === 'android'
 
   const firstIndex = new Map<string, number>()
   flow.steps.forEach((step, i) => {
@@ -297,6 +337,16 @@ export const FlowSchema = FlowShape.superRefine((flow, ctx) => {
       }
     }
 
+    for (const message of android ? androidStepProblems(step) : []) {
+      ctx.addIssue({ code: 'custom', path: ['steps', i, ...message.path], message: message.text })
+    }
+    const stepTarget = 'target' in step ? step.target : undefined
+    stepTarget?.selectors.forEach((selector, k) => {
+      if (!android && 'desc' in selector) {
+        ctx.addIssue({ code: 'custom', path: ['steps', i, 'target', 'selectors', k], message: 'desc (an Android content description) is only for android flows' })
+      }
+    })
+
     if (step.action === 'assert') {
       for (const field of INTERPOLATED_EXPECT_FIELDS) {
         const value = step.expect[field]
@@ -308,6 +358,28 @@ export const FlowSchema = FlowShape.superRefine((flow, ctx) => {
     }
   })
 })
+
+/** Why an android flow can't run `step` as written: each with the path under the step it is about. */
+function androidStepProblems(step: FlowStep): Array<{ path: Array<string | number>; text: string }> {
+  const out: Array<{ path: Array<string | number>; text: string }> = []
+  if (!(ANDROID_ACTIONS as readonly string[]).includes(step.action)) {
+    out.push({ path: ['action'], text: `"${step.action}" steps are not supported in android flows yet; use one of ${ANDROID_ACTIONS.join(', ')}` })
+    return out
+  }
+  const t = 'target' in step ? step.target : undefined
+  t?.selectors.forEach((selector, k) => {
+    const layer = locatorLayer(selector)
+    if (!ANDROID_LAYERS.has(layer)) out.push({ path: ['target', 'selectors', k], text: `android flows find views by id (resource id), desc (content description) or text, not ${layer}` })
+  })
+  if (t?.image !== undefined) out.push({ path: ['target', 'image'], text: 'reference crops are not used by android flows yet' })
+  if (t?.bbox !== undefined) out.push({ path: ['target', 'bbox'], text: 'bbox is not used by android flows yet' })
+  if (step.action === 'press') {
+    if (t !== undefined) out.push({ path: ['target'], text: 'an android press sends the key to the app as it is; tap a field first with a click step' })
+    if (!Object.prototype.hasOwnProperty.call(ANDROID_KEYS, step.key)) out.push({ path: ['key'], text: `android flows can press ${Object.keys(ANDROID_KEYS).join(', ')}` })
+  }
+  if (step.action === 'assert' && step.expect.url !== undefined) out.push({ path: ['expect', 'url'], text: 'an Android app has no URL to check; assert on a view instead' })
+  return out
+}
 
 /**
  * The published JSON Schema for editors (`# yaml-language-server: $schema=...`)

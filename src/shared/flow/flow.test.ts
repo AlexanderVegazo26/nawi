@@ -231,7 +231,7 @@ describe('flow files — validation errors carry path and line:col', () => {
   })
 
   it('locatorLayer names each locator kind, in the ranked order LOCATOR_LAYERS lists', () => {
-    const layers = ([{ testid: 'a' }, { id: 'b' }, { role: 'button', name: 'Go' }, { text: 'Go' }, { css: '.go' }] as Selector[]).map(locatorLayer)
+    const layers = ([{ testid: 'a' }, { id: 'b' }, { desc: 'Go' }, { role: 'button', name: 'Go' }, { text: 'Go' }, { css: '.go' }] as Selector[]).map(locatorLayer)
     expect(layers).toEqual([...LOCATOR_LAYERS])
   })
 
@@ -253,6 +253,59 @@ describe('flow files — validation errors carry path and line:col', () => {
   it('formats errors as file:line:col path: message', () => {
     const errors = errorsOf(loginWith('version: 1', 'version: 2'))
     expect(formatFlowErrors(errors, 'login.nawi.yaml')).toMatch(/^login\.nawi\.yaml:2:10 version: /)
+  })
+})
+
+const ANDROID = `version: 1
+name: Order
+target: { kind: android, package: dev.nawi.shop }
+steps:
+  - { id: s1, action: click, target: { selectors: [ { id: "dev.nawi.shop:id/cart" }, { desc: Cart }, { text: Cart } ] } }
+  - { id: s2, action: fill, target: { selectors: [ { desc: Email } ] }, value: "\${env.EMAIL}" }
+  - { id: s3, action: press, key: Back }
+  - { id: s4, action: navigate, url: "shop://orders/2" }
+  - { id: s5, action: wait, ms: 100 }
+  - { id: s6, action: assert, target: { selectors: [ { text: Shipped } ] }, expect: { visible: true } }
+`
+
+/** ANDROID with its line for step `id` replaced. */
+function androidWith(id: string, step: string): string {
+  const line = ANDROID.split('\n').find((l) => l.startsWith(`  - { id: ${id},`))
+  expect(line, `ANDROID fixture has no step ${id}`).toBeDefined()
+  return ANDROID.replace(line as string, step)
+}
+
+describe('flow files — android target (roadmap M5)', () => {
+  it('parses an android flow: package target, id/desc/text locators, keys, deep links and assertions', () => {
+    const r = parseFlow(ANDROID)
+    if (!r.ok) throw new Error(`ANDROID should parse:\n${formatFlowErrors(r.errors)}`)
+    expect(r.flow.target).toEqual({ kind: 'android', package: 'dev.nawi.shop' })
+    expect(r.flow.steps[0]).toMatchObject({ target: { selectors: [{ id: 'dev.nawi.shop:id/cart' }, { desc: 'Cart' }, { text: 'Cart' }] } })
+    expect(stringifyFlow(r.flow)).toContain('{ desc: Cart }')
+  })
+
+  it('rejects a package name that is not an Android application id', () => {
+    const e = onlyError(ANDROID.replace('package: dev.nawi.shop', 'package: "shop; rm -rf /"'))
+    expect(e).toMatchObject({ path: 'target.package', message: 'must be an Android package name such as com.example.app' })
+  })
+
+  it.each([
+    ['a step it cannot run yet', '  - { id: s1, action: hover, target: { selectors: [ { text: Cart } ] } }', 'steps[0].action', /"hover" steps are not supported in android flows yet/],
+    ['a web locator', '  - { id: s1, action: click, target: { selectors: [ { css: ".cart" } ] } }', 'steps[0].target.selectors[0]', /android flows find views by id \(resource id\), desc \(content description\) or text, not css/],
+    ['a reference crop', '  - { id: s1, action: click, target: { selectors: [ { text: Cart } ], image: cart.png } }', 'steps[0].target.image', /reference crops are not used by android flows yet/],
+    ['a key Android has no event for', '  - { id: s3, action: press, key: F5 }', 'steps[2].key', /android flows can press Back, Home, AppSwitch/],
+    ['a press aimed at a view', '  - { id: s3, action: press, key: Enter, target: { selectors: [ { text: Cart } ] } }', 'steps[2].target', /tap a field first with a click step/],
+    ['a URL assertion', '  - { id: s6, action: assert, target: { selectors: [ { text: Shipped } ] }, expect: { url: "shop://x" } }', 'steps[5].expect.url', /has no URL to check/]
+  ])('rejects %s, at the field', (_what, step, path, message) => {
+    const id = /id: (s\d)/.exec(step)?.[1] as string
+    const e = onlyError(androidWith(id, step))
+    expect(e.path).toBe(path)
+    expect(e.message).toMatch(message)
+  })
+
+  it('rejects a desc locator in a browser flow', () => {
+    const e = onlyError(loginWith('{ role: textbox, name: Email }', '{ desc: Email }'))
+    expect(e).toMatchObject({ path: 'steps[0].target.selectors[1]', message: 'desc (an Android content description) is only for android flows' })
   })
 })
 

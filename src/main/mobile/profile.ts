@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { Document, parseDocument } from 'yaml'
 import { z } from 'zod'
 import { insideRoots } from '../confine'
+import { ANDROID_PACKAGE_RE } from '../../shared/flow/schema'
 import { formatPath } from '../../shared/flow/yaml'
 import { MAX_MOBILE_PROFILE_BYTES, MOBILE_PROFILE_SUFFIX } from '../../shared/mobile'
 import { APP_FRAMEWORKS, READ_STRATEGIES } from './framework'
@@ -28,7 +29,7 @@ export const PROFILE_SUFFIX = MOBILE_PROFILE_SUFFIX
 export const MAX_PROFILE_BYTES = MAX_MOBILE_PROFILE_BYTES
 
 /** Android package name: dot-separated segments that start with a letter (the manifest rule). */
-export const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/
+export const PACKAGE_RE = ANDROID_PACKAGE_RE
 /** A fully qualified class (`$` for nested classes). */
 export const CLASS_RE = /^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)+$/
 /** A permission name (`android.permission.CAMERA`, `com.example.permission.X`). */

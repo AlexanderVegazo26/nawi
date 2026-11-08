@@ -342,7 +342,8 @@ alone.
 - **Export** — PNG/JPEG with annotations flattened, copy-to-clipboard, or save the
   original asset untouched. **Stills only** — see Known gaps.
 - **Flow file format** (`*.nawi.yaml`, version 1) — the editable, versionable
-  form of a recorded process: a target (browser URL or desktop app), `vars`, and
+  form of a recorded process: a target (browser URL, desktop app, or an
+  Android app by its `package`), `vars`, and
   steps (`click`, `fill`, `press`, `select`, `hover`, `scroll`, `navigate`,
   `wait`, `assert`, `screenshot`), each target carrying several ranked locators
   in layers (test id, id, role + accessible name, visible `text`, CSS) plus an
@@ -352,7 +353,11 @@ alone.
   errors reported as `file:line:col path: message`), writes it back with the
   author's comments kept, and publishes a JSON Schema at
   [`docs/schemas/flow.v1.schema.json`](docs/schemas/flow.v1.schema.json) for
-  editor validation (`# yaml-language-server: $schema=...`). Secrets are
+  editor validation (`# yaml-language-server: $schema=...`). Android flows
+  (`target: { kind: android, package: com.example.app }`) find views by `id`
+  (resource id), `desc` (content description) or `text`, and can `click`,
+  `fill`, `press` Android keys (Back, Home, Enter...), `navigate` to a deep link,
+  `wait` and `assert`; anything else is refused at parse time. Secrets are
   referenced as `${secret.name}`, never stored. Example:
   `src/shared/flow/__fixtures__/create-invoice.nawi.yaml`.
 - **Recording → flow** (`export_flow` over MCP, `nawi export-flow` on the CLI) —
@@ -711,6 +716,16 @@ alone.
   live screen is shown next to the steps (`adb exec-out screencap`, one frame at
   a time, paused while the view is hidden; only for a device the window opened
   an app on). The profile is saved as with `mobile_open`.
+- **Android flow replay engine** (`src/main/mobile/flow-replay.ts`, roadmap M5,
+  first part): runs an android flow on a device over adb with the same run
+  shape as browser replay. Each step reads the screen and tries its locators in
+  order on the app's own windows (first one that finds exactly one view wins;
+  an earlier one that found nothing marks the match as a fallback), waits until
+  the view is there, enabled, sized and not under another app's window, hides
+  the on-screen keyboard before a tap, empties a field before typing, opens deep
+  links in the flow's own app, and keeps typed secrets out of what it reports.
+  Not yet reachable from `run_flow`/`nawi run` (they answer `NOT_IMPLEMENTED`
+  for android flows), and no recorder yet: both are the next M5 parts.
 
 ## Keyboard shortcuts
 
