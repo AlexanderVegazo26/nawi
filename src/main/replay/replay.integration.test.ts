@@ -833,6 +833,49 @@ steps:
       )
     })
 
+    it('takes no crop screenshot while an assertion still waits on its URL, then finds the element by its crop once the URL matches', async () => {
+      const save = await cropOf('save')
+      /** The real client, recording the page's URL hash at every lossless (crop lookup) screenshot. */
+      const shotsAt: string[] = []
+      const watching = {
+        send: async <T,>(method: string, params?: Record<string, unknown>, sid?: string): Promise<T> => {
+          if (method === 'Page.captureScreenshot' && params?.format === 'png') {
+            const at = await client.send<{ result: { value: unknown } }>('Runtime.evaluate', { expression: 'location.hash', returnByValue: true }, sid)
+            shotsAt.push(String(at.result.value))
+          }
+          return client.send<T>(method, params, sid)
+        },
+        on: client.on.bind(client)
+      }
+      const check = (timeout_ms: number): Flow =>
+        flow(
+          [
+            {
+              id: 'check',
+              action: 'assert',
+              timeout_ms,
+              target: { selectors: [{ id: 'renamed-save' }], image: 'save.png' },
+              expect: { url: `${ANCHOR}#ready`, text: 'Save' }
+            }
+          ],
+          ANCHOR
+        )
+      const loadAsset = assets({ 'save.png': save })
+
+      const never = await replayFlow(watching, check(900), { sessionId, loadAsset })
+      expect(never.status, why(never)).toBe('failed')
+      expect(never.steps[0].error, why(never)).toMatch(/^assertion failed after 900 ms: expected URL ".*#ready", got ".*anchor\.html"; no locator matched/)
+      expect(shotsAt, 'the URL never matched, so the crop was never looked for (old code: one screenshot every 250 ms)').toEqual([])
+
+      // The page reaches the expected URL a little later (a hash change keeps the page and its helpers).
+      await read(`setTimeout(() => { location.hash = 'ready' }, 700)`)
+      const later = await replayFlow(watching, check(4_000), { sessionId, loadAsset, openTarget: false })
+      expect(later.status, why(later)).toBe('passed')
+      expect(later.steps[0].matched, why(later)).toMatchObject({ layer: 'visual' })
+      expect(shotsAt.length, 'the crop was looked for once the URL matched').toBeGreaterThan(0)
+      expect(shotsAt, 'every crop screenshot came after the URL matched').toEqual(shotsAt.map(() => '#ready'))
+    }, 20_000)
+
     /** A viewport region as a PNG, through the page's own screenshot (for elements no locator can single out). */
     const cropOfBox = async (x: number, y: number, width: number, height: number): Promise<Uint8Array> => {
       const shot = await client.send<{ data: string }>(

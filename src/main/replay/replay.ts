@@ -778,21 +778,23 @@ class StepRunner {
    * found at. Between looks it keeps asking about the element that point
    * resolved to (pinned), so a match that is covered or disabled keeps
    * reporting that. The answer carries the locator list it came from
-   * (`locators`); null = the page helpers are not installed yet.
+   * (`locators`); null = the page helpers are not installed yet. A call with
+   * `look` false asks only the locators and the pinned point: no screenshot
+   * (an assert whose URL doesn't match yet can't pass whatever the crop shows).
    */
   private anchoredPoll(
     selectors: Selector[],
     ask: (locators: PageLocator[]) => Promise<PageAnswer | null>,
     image: string | undefined
-  ): () => Promise<PageAnswer | null> {
+  ): (look?: boolean) => Promise<PageAnswer | null> {
     let nextLook = -Infinity
     let anchored: PageLocator[] | undefined
-    return async () => {
+    return async (look = true) => {
       const own = await ask(selectors)
       if (own) own.locators = selectors
       if (!own || own.found || image === undefined || this.anchorsGaveUp) return own
       // Every locator missed: look at the screen again when due (wall clock: the run's clock may be a test's fake).
-      if (performance.now() >= nextLook) {
+      if (look && performance.now() >= nextLook) {
         nextLook = performance.now() + VISUAL_EVERY_MS
         const result = await this.findOnScreen(image)
         this.visual = { image, result }
@@ -1065,6 +1067,7 @@ class StepRunner {
     let last: PageAnswer | null = null
     const passed = await until(deadline, this.now, async () => {
       problems = []
+      let urlMatches = true
       if (wantUrl !== undefined) {
         let url: string | null = null
         try {
@@ -1072,10 +1075,14 @@ class StepRunner {
         } catch (error) {
           if (!TRANSIENT.test(String((error as Error).message))) throw error
         }
-        if (url !== wantUrl) problems.push(`expected URL ${shown(wantUrl, 500)}, got ${shown(url, 500)}`)
+        if (url !== wantUrl) {
+          urlMatches = false
+          problems.push(`expected URL ${shown(wantUrl, 500)}, got ${shown(url, 500)}`)
+        }
       }
       if (step.target) {
-        last = await lookup()
+        // Still the wrong URL: the step can't pass yet, so don't screenshot the page for its crop on every poll.
+        last = await lookup(urlMatches)
         if (!last) {
           problems.push('the page was not ready')
         } else if (!last.found) {
