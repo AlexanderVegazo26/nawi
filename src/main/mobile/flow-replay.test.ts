@@ -783,6 +783,142 @@ describe('replayAndroidFlow long press (roadmap M5d-3)', () => {
   })
 })
 
+describe('replayAndroidFlow rotate (roadmap M5d-4)', () => {
+  const TURN = flow(
+    `  - { id: s1, action: rotate, orientation: landscape, intent: Turn the phone sideways }
+  - { id: s2, action: click, target: { selectors: [{ text: "Order #2" }] } }
+  - { id: s3, action: rotate, orientation: reverse-portrait }
+  - { id: s4, action: rotate, orientation: portrait }
+`
+  )
+  const START = ['wm size', 'settings get system accelerometer_rotation', 'settings get system user_rotation']
+  const RESTORE = ['settings delete system user_rotation', 'settings put system accelerometer_rotation 1']
+
+  it('turns the screen by locking the rotation, waits until the screen shows it, three runs alike', async () => {
+    const outcomes: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const d = device('orders', { rotation: { lagReads: 2 } })
+      const seen: number[] = []
+      const r = await run(TURN, d, { onStep: () => seen.push(d.rotation()) })
+      expect(r.status, `run ${i + 1}: ${JSON.stringify(r.steps.find((s) => s.status === 'failed'))}`).toBe('passed')
+      expect(seen, 'the screen after each step: landscape (1), still landscape, upside down (2), upright (0)').toEqual([1, 1, 2, 0])
+      outcomes.push(JSON.stringify({ lines: d.lines, steps: r.steps.map((s) => [s.id, s.status]) }))
+    }
+    expect(new Set(outcomes).size, 'three replays must send the same commands').toBe(1)
+    const d = device('orders')
+    await run(TURN, d)
+    expect(d.lines, 'size and settings read once, before the first change; settings put back when the run ends').toEqual([
+      ...START,
+      'settings put system accelerometer_rotation 0',
+      'settings put system user_rotation 1',
+      'input tap 540 525',
+      'settings put system accelerometer_rotation 0',
+      'settings put system user_rotation 2',
+      'settings put system accelerometer_rotation 0',
+      'settings put system user_rotation 0',
+      ...RESTORE
+    ])
+    expect(d.settings, 'auto-rotate on again, no locked rotation, as the device was').toEqual({ accelerometer_rotation: '1', user_rotation: 'null' })
+  })
+
+  it('maps orientations through the natural size: on a landscape tablet portrait is three quarter turns', async () => {
+    const d = device('orders', { rotation: { wmSize: 'Physical size: 2560x1600\n' } })
+    const r = await run(flow(`  - { id: s1, action: rotate, orientation: portrait }\n  - { id: s2, action: rotate, orientation: reverse-landscape }\n`), d)
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    expect(d.lines.filter((l) => l.startsWith('settings put system user_rotation'))).toEqual(['settings put system user_rotation 3', 'settings put system user_rotation 2'])
+  })
+
+  it('puts back the settings the device had (auto-rotate off, locked sideways), not a default', async () => {
+    const d = device('orders', { rotation: { auto: '0', user: '3' } })
+    const r = await run(flow(`  - { id: s1, action: rotate, orientation: portrait }\n`), d)
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    expect(d.lines.slice(-2)).toEqual(['settings put system user_rotation 3', 'settings put system accelerometer_rotation 0'])
+    expect(d.settings).toEqual({ accelerometer_rotation: '0', user_rotation: '3' })
+  })
+
+  it('fails the step at its timeout when the app keeps its own orientation, naming it, and still restores the device', async () => {
+    const d = device('orders', { rotation: { fixed: 0 } })
+    const r = await run(flow(`  - { id: s1, action: rotate, orientation: landscape, timeout_ms: 2000 }\n  - { id: s2, action: click, target: { selectors: [{ text: "Order #2" }] } }\n`), d)
+    expect(r.steps.map((s) => s.status)).toEqual(['failed', 'not_run'])
+    expect(r.steps[0].error).toBe(
+      'the screen is still portrait, not landscape: dev.nawi.shop may fix its own orientation (android:screenOrientation), which Android keeps whatever the device\'s rotation'
+    )
+    expect(r.error, 'a restore that worked adds nothing to the run').toBeUndefined()
+    expect(d.lines.slice(-2)).toEqual(RESTORE)
+    expect(d.settings).toEqual({ accelerometer_rotation: '1', user_rotation: 'null' })
+  })
+
+  it('changes nothing when a setting or the screen size cannot be read: a value it cannot read it could not put back', async () => {
+    for (const getFails of ['accelerometer_rotation', 'user_rotation'] as const) {
+      const d = device('orders', { rotation: { getFails } })
+      const r = await run(TURN, d)
+      expect(r.steps[0].status).toBe('failed')
+      expect(r.steps[0].error).toBe(`could not read the screen rotation setting of emulator-5560 (settings get system ${getFails}): adb exited with code 1`)
+      expect(d.lines.filter((l) => !l.startsWith('settings get') && l !== 'wm size'), `${getFails}: nothing changed, nothing to restore`).toEqual([])
+    }
+    const junk = device('orders', { rotation: { user: '7' } })
+    expect((await run(TURN, junk)).steps[0].error).toBe('could not read the screen rotation setting of emulator-5560 (settings get system user_rotation): unexpected value')
+    const noSize = device('orders', { rotation: { wmSize: 'no display\n' } })
+    expect((await run(TURN, noSize)).steps[0].error).toBe('could not read the screen size of emulator-5560 (wm size)')
+    expect(noSize.lines).toEqual(['wm size'])
+  })
+
+  it('restores the settings when a change fails halfway, and when the run is cancelled mid-wait', async () => {
+    const half = device('orders', { rotation: { writeFails: [{ name: 'user_rotation', nth: 1 }] } })
+    const r = await run(TURN, half)
+    expect(r.steps[0].error).toBe('could not turn the screen to landscape on emulator-5560: adb exited with code 1')
+    expect(half.settings, 'auto-rotate was turned off before the failure, and back on after').toEqual({ accelerometer_rotation: '1', user_rotation: 'null' })
+
+    // Cancelled while the first step waits for a rotation that never shows (the app keeps portrait).
+    const stop = new AbortController()
+    const d = device('orders', { rotation: { fixed: 0 } })
+    let reads = 0
+    const exec = d.host.exec
+    d.host.exec = async (file, args, t) => {
+      if ((args[3] ?? '').startsWith('uiautomator dump') && ++reads === 3) stop.abort('person pressed Stop')
+      return exec(file, args, t)
+    }
+    const c = await run(TURN, d, { signal: stop.signal })
+    expect(c.error).toBe('stopped during step s1: person pressed Stop')
+    expect(d.lines.slice(-2), 'a cancelled run still puts the device back').toEqual(RESTORE)
+  })
+
+  it('fails the run, after its steps, when the settings cannot be put back, naming each setting it could not restore', async () => {
+    // TURN writes user_rotation 3 times; the 4th write is the restore.
+    const d = device('orders', { rotation: { writeFails: [{ name: 'user_rotation', nth: 4 }] } })
+    const r = await run(TURN, d)
+    expect(r.steps.map((s) => s.status), 'every step passed').toEqual(['passed', 'passed', 'passed', 'passed'])
+    expect(r.status).toBe('failed')
+    expect(r.error).toBe(
+      'could not put the screen rotation of emulator-5560 back (settings delete system user_rotation: adb exited with code 1); its rotation stays as the run left it until it is set by hand'
+    )
+    expect(d.settings.accelerometer_rotation, 'auto-rotate is put back even though the locked rotation was not').toBe('1')
+
+    const both = device('orders', { rotation: { writeFails: [{ name: 'user_rotation', nth: 4 }, { name: 'accelerometer_rotation', nth: 4 }] } })
+    expect((await run(TURN, both)).error).toBe(
+      'could not put the screen rotation of emulator-5560 back (settings delete system user_rotation: adb exited with code 1; settings put system accelerometer_rotation 1: adb exited with code 1); its rotation stays as the run left it until it is set by hand'
+    )
+  })
+
+  it('keeps a run\'s own error when putting the settings back throws too, and still tries both settings', async () => {
+    const d = device('orders')
+    const exec = d.host.exec
+    d.host.exec = async (file, args, t) => {
+      if ((args[3] ?? '').startsWith('settings delete')) throw new Error('adb went away')
+      return exec(file, args, t)
+    }
+    const r = await run(TURN, d)
+    expect(r.error).toBe('could not put the screen rotation of emulator-5560 back (settings delete system user_rotation: adb exited with code unknown); its rotation stays as the run left it until it is set by hand')
+    expect(d.settings.accelerometer_rotation).toBe('1')
+  })
+
+  it('needs no settings and no screen size in a flow without rotate steps', async () => {
+    const d = device('orders')
+    await run(flow(`  - { id: s1, action: click, target: { selectors: [{ text: "Order #2" }] } }\n`), d)
+    expect(d.lines).toEqual(['input tap 540 525'])
+  })
+})
+
 describe('planSwipes', () => {
   const box = { left: 0, top: 300, right: 1080, bottom: 1800 }
 

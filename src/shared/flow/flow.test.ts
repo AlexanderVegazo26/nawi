@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { FLOW_ACTIONS, LOCATOR_LAYERS, locatorLayer, type Flow, type FlowStep, type Selector } from './schema'
+import { ANDROID_ORIENTATIONS, FLOW_ACTIONS, LOCATOR_LAYERS, locatorLayer, type Flow, type FlowStep, type Selector } from './schema'
 import { formatFlowDocument, formatFlowErrors, parseFlow, stringifyFlow, type FlowError } from './yaml'
 
 const LOGIN = `# login flow
@@ -304,6 +304,15 @@ describe('flow files — android target (roadmap M5)', () => {
     expect(stringifyFlow(r.flow)).toContain('hold_ms: 800')
   })
 
+  it('parses android rotate steps in every orientation, written back as they were (M5d-4)', () => {
+    for (const orientation of ['portrait', 'landscape', 'reverse-portrait', 'reverse-landscape']) {
+      const r = parseFlow(androidWith('s1', `  - { id: s1, action: rotate, orientation: ${orientation}, intent: Turn the phone }`))
+      if (!r.ok) throw new Error(`a rotate to ${orientation} should parse in an android flow:\n${formatFlowErrors(r.errors)}`)
+      expect(r.flow.steps[0], orientation).toEqual({ id: 's1', action: 'rotate', orientation, intent: 'Turn the phone' })
+      expect(stringifyFlow(r.flow)).toContain(`orientation: ${orientation}`)
+    }
+  })
+
   it('rejects a package name that is not an Android application id', () => {
     const e = onlyError(ANDROID.replace('package: dev.nawi.shop', 'package: "shop; rm -rf /"'))
     expect(e).toMatchObject({ path: 'target.package', message: 'must be an Android package name such as com.example.app' })
@@ -323,6 +332,9 @@ describe('flow files — android target (roadmap M5)', () => {
     ['a long press in fractions of a ms', '  - { id: s1, action: click, hold_ms: 800.5, target: { selectors: [ { text: Cart } ] } }', 'steps[0].hold_ms', /expected int/],
     ['a long press longer than 10 s', '  - { id: s1, action: click, hold_ms: 10001, target: { selectors: [ { text: Cart } ] } }', 'steps[0].hold_ms', /10000/],
     ['hold_ms on a step that is not a click', '  - { id: s2, action: fill, hold_ms: 800, target: { selectors: [ { desc: Email } ] }, value: x }', 'steps[1].hold_ms', /hold_ms/],
+    ['a rotate to an orientation that is not one', '  - { id: s1, action: rotate, orientation: sideways }', 'steps[0].orientation', /portrait.*landscape.*reverse-portrait.*reverse-landscape/],
+    ['a rotate with no orientation', '  - { id: s1, action: rotate }', 'steps[0].orientation', /expected one of "portrait"/],
+    ['a rotate aimed at a view', '  - { id: s1, action: rotate, orientation: landscape, target: { selectors: [ { text: Cart } ] } }', 'steps[0].target', /unknown key "target"/],
     ['a scroll too short to be a swipe', '  - { id: s5, action: scroll, target: { selectors: [ { text: Deals } ] }, delta: [30, 30] }', 'steps[4].delta', /moves at least 48 px: a shorter swipe is a tap/]
   ])('rejects %s, at the field', (_what, step, path, message) => {
     const id = /id: (s\d)/.exec(step)?.[1] as string
@@ -334,6 +346,11 @@ describe('flow files — android target (roadmap M5)', () => {
   it('rejects hold_ms (a long press) in a browser flow', () => {
     const e = onlyError(loginWith('  - { id: s2, action: press, key: Enter }', '  - { id: s2, action: click, hold_ms: 800, target: { selectors: [ { text: Sign in } ] } }'))
     expect(e).toMatchObject({ path: 'steps[1].hold_ms', message: 'hold_ms (a long press) is only for android flows yet' })
+  })
+
+  it('rejects a rotate step in a browser flow (turning the device is for android flows)', () => {
+    const e = onlyError(loginWith('  - { id: s2, action: press, key: Enter }', '  - { id: s2, action: rotate, orientation: landscape }'))
+    expect(e).toMatchObject({ path: 'steps[1].action', message: 'rotate (turning the device) is only for android flows' })
   })
 
   it('rejects a desc locator in a browser flow', () => {
@@ -444,6 +461,8 @@ function stepFor(id: string, action: (typeof FLOW_ACTIONS)[number]): fc.Arbitrar
         )
       case 'screenshot':
         return fc.record({ target }, { requiredKeys: [] })
+      case 'rotate':
+        return fc.record({ orientation: fc.constantFrom(...ANDROID_ORIENTATIONS) })
     }
   })()
   return fc.tuple(common, extra).map(([c, e]) => ({ id, action, ...c, ...e }) as FlowStep)
@@ -458,7 +477,8 @@ const flowArb: fc.Arbitrary<Flow> = fc
       fc.record({ kind: fc.constant('desktop' as const), app: visible })
     ),
     fc.dictionary(name, fc.oneof(tricky.filter((s) => !s.includes('${')), fc.constant('${env.X}')), { maxKeys: 3 }),
-    fc.array(fc.constantFrom(...FLOW_ACTIONS), { maxLength: 8 })
+    // Android-only actions are refused in the browser and desktop flows this draws (their own tests cover them).
+    fc.array(fc.constantFrom(...FLOW_ACTIONS.filter((a) => a !== 'rotate')), { maxLength: 8 })
   )
   .chain(([flowName, description, flowTarget, vars, actions]) =>
     fc.tuple(...actions.map((a, i) => stepFor(`s${i + 1}`, a))).map((steps) => {

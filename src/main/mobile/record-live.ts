@@ -11,6 +11,7 @@ import { LONG_PRESS_TIMEOUT_LINE, parseLongPressTimeout } from './long-press'
 import { readScreen } from './open'
 import { PACKAGE_RE, TARGET_RE } from './profile'
 import { flowFromAndroidRecording, GestureReader, inside, parseTouchPanels, toScreen, type DisplayInfo, type RawInput, type RecordedEvent, type Snapshot } from './record'
+import { DISPLAY_ROTATION_LINE, parseDisplayRotation, parseWmSize } from './rotation'
 import { parseDensity } from './study'
 import { appPackage, pickTarget } from './study-live'
 
@@ -85,6 +86,12 @@ export function defaultRecordLiveHost(): RecordLiveHost {
 export const SETTLE_MS = 300
 /** While nobody touches the device, how often its screen is read again (late-loading content). */
 export const REFRESH_MS = 5_000
+/**
+ * How often, while the device is quiet, the recorder takes a quick look at the screen's rotation (M5d-4): turning the
+ * device sends no touch or key, so without it a touch after the screen turned would be read on the unturned screen
+ * until the next refresh. A changed rotation makes the screen unknown until it is read again.
+ */
+export const ROTATION_PROBE_MS = 1_000
 /** How often the loop looks at the clock, the stream and the cancel signal. */
 export const POLL_MS = 50
 /** After a failed screen read, how long before the next try. */
@@ -131,15 +138,6 @@ export interface LiveRecordResult {
   flow: Flow | null
   flow_yaml: string | null
   warnings: string[]
-}
-
-/** `wm size`: the override when one is set (what the app draws with), else the physical size; natural orientation. */
-export function parseWmSize(stdout: string): { width: number; height: number } | null {
-  const read = (label: string): { width: number; height: number } | null => {
-    const m = new RegExp(`^${label} size:\\s*(\\d{2,5})x(\\d{2,5})\\s*$`, 'm').exec(stdout)
-    return m ? { width: Number(m[1]), height: Number(m[2]) } : null
-  }
-  return read('Override') ?? read('Physical')
 }
 
 const firstLine = (s: string): string => s.trim().split(/\r?\n/)[0]?.trim().slice(0, 200) ?? ''
@@ -231,6 +229,12 @@ export async function recordAndroidLive(req: LiveRecordRequest, host: RecordLive
   /** Last time the device sent anything (a finger moving counts, not only finished touches). */
   let lastActivityAt = host.now()
   let lastReadAt = host.now()
+  /**
+   * The rotation the last quick look saw, and when it looked. Only a change between two looks counts: the look and
+   * the screen read may name the same screen differently on some devices, and that must not read the screen forever.
+   */
+  let probedRotation = null as number | null
+  let lastProbeAt = Number.NEGATIVE_INFINITY
   let dirty = true
   let readFailed = false
   let readFailures = 0
@@ -316,6 +320,18 @@ export async function recordAndroidLive(req: LiveRecordRequest, host: RecordLive
           typedSinceRead = true
         }
         if (wasDirty) req.onReady?.(inputs)
+        continue
+      }
+      if (quiet && !dirty && current !== null && host.now() - lastProbeAt >= ROTATION_PROBE_MS) {
+        lastProbeAt = host.now()
+        const probe = await shell(DISPLAY_ROTATION_LINE)
+        const rotation = failed(probe) ? null : parseDisplayRotation(probe.stdout)
+        if (rotation !== null && probedRotation !== null && rotation !== probedRotation) {
+          // The screen turned: touches from now on wait for the turned screen's read (held, like after any change).
+          stale = true
+          dirty = true
+        }
+        if (rotation !== null) probedRotation = rotation
         continue
       }
       await host.delay(POLL_MS, signal)

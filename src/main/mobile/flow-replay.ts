@@ -1,5 +1,5 @@
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '../../shared/flow/interpolate'
-import { ANDROID_KEYS, ANDROID_MIN_SWIPE_PX, locatorLayer, MAX_HOLD_MS, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
+import { ANDROID_KEYS, ANDROID_MIN_SWIPE_PX, locatorLayer, MAX_HOLD_MS, type AndroidOrientation, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
 import type { DeviceLogLine } from '../replay/evidence'
 import type { FlowRun, LocatorMiss, StepProgress, StepRun, StepScreenshots } from '../replay/replay'
 import { findAll } from './blockers'
@@ -9,6 +9,16 @@ import { MAX_LOGCAT_LINES, readDeviceClockOffset, startAndroidEvidence, toUiLoca
 import { center, isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
 import { LONG_PRESS_TIMEOUT_LINE, parseLongPressTimeout, shortestHold } from './long-press'
 import { KEYBOARD_SHOWN_LINE, parseAmStart, readScreen } from './open'
+import {
+  AUTO_ROTATE_SETTING,
+  orientationOf,
+  parseRotationSetting,
+  parseWmSize,
+  restoreLine,
+  rotationFor,
+  USER_ROTATION_SETTING,
+  type NaturalSize
+} from './rotation'
 import type { BinaryExec } from './screen'
 import { shQuote } from './shell'
 import { coveredBy, typeLines, TYPABLE_RE } from './sign-in'
@@ -70,6 +80,8 @@ export const ANDROID_POLL_MS = 250
 /** After Back hides the on-screen keyboard, how long the app takes to lay itself out again. */
 export const KEYBOARD_SETTLE_MS = 500
 const SHELL_TIMEOUT_MS = 30_000
+/** Putting the rotation settings back runs after a cancel too, when the device may be gone: no 30 s waits then. */
+const RESTORE_TIMEOUT_MS = 5_000
 const DEEP_LINK_TIMEOUT_MS = 60_000
 /** How long the app gets after the last step's action before the run looks for a crash one last time. */
 export const LAST_STEP_CRASH_SETTLE_MS = 1_000
@@ -406,6 +418,76 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
     return longPressTimeout
   }
 
+  /** The device's natural screen size (`wm size`), read once per run by the first rotate step. */
+  let natural = null as NaturalSize | null
+  /**
+   * The rotation settings as they were before the run's first rotate step changed them (null = the device had no
+   * value): the run puts them back when it ends, however it ends, so a run never leaves the device turned.
+   */
+  let savedRotation = null as { auto: number | null; user: number | null } | null
+  const readRotationSetting = async (name: string, allowed: readonly number[]): Promise<number | null> => {
+    const r = await shell(`settings get system ${name}`)
+    const value = failed(r) ? undefined : parseRotationSetting(r.stdout, allowed)
+    if (value === undefined) {
+      throw new StepFailure(`could not read the screen rotation setting of ${serial} (settings get system ${name})${failed(r) ? `: ${why(r)}` : ': unexpected value'}`)
+    }
+    return value
+  }
+  /**
+   * Turn the screen to `orientation` (roadmap M5d-4): auto-rotate off, the locked rotation set, then wait until the
+   * screen shows it (the dump's rotation). An app that fixes its own orientation keeps it whatever the device says:
+   * the step fails at its timeout naming that, instead of passing with the screen unturned.
+   */
+  const rotateTo = async (orientation: AndroidOrientation, deadline: number): Promise<void> => {
+    if (natural === null) {
+      const r = await shell('wm size')
+      const size = failed(r) ? null : parseWmSize(r.stdout)
+      if (size === null) throw new StepFailure(`could not read the screen size of ${serial} (wm size)${failed(r) ? `: ${why(r)}` : ''}`)
+      natural = size
+    }
+    const size = natural
+    const want = rotationFor(orientation, size)
+    if (savedRotation === null) {
+      // Both read before either changes: a setting that can't be read can't be put back.
+      const auto = await readRotationSetting(AUTO_ROTATE_SETTING, [0, 1])
+      const user = await readRotationSetting(USER_ROTATION_SETTING, [0, 1, 2, 3])
+      savedRotation = { auto, user }
+    }
+    // Only the setting names and a rotation from rotationFor (0..3) reach the shell here.
+    await must(`settings put system ${AUTO_ROTATE_SETTING} 0`, 'turn auto-rotate off')
+    await must(`settings put system ${USER_ROTATION_SETTING} ${want}`, `turn the screen to ${orientation}`)
+    await poll<null>(deadline, (screen) =>
+      screen.rotation === want
+        ? { ok: null }
+        : {
+            wait: `the screen is still ${orientationOf(screen.rotation, size) ?? `at rotation ${screen.rotation}`}, not ${orientation}: ${pkg} may fix its own orientation (android:screenOrientation), which Android keeps whatever the device's rotation`
+          }
+    )
+  }
+  /**
+   * Put the rotation settings back as the run found them; why not, if a setting could not be put back. Both are tried
+   * whatever happens to the first: auto-rotate back on matters even when the locked rotation could not be restored.
+   */
+  const restoreRotation = async (): Promise<string | null> => {
+    if (savedRotation === null) return null
+    const problems: string[] = []
+    // The locked rotation first, then auto-rotate: turning auto-rotate back on last hands the screen to the sensor.
+    for (const [name, value] of [
+      [USER_ROTATION_SETTING, savedRotation.user],
+      [AUTO_ROTATE_SETTING, savedRotation.auto]
+    ] as const) {
+      const line = restoreLine(name, value)
+      let r: ExecResult
+      try {
+        r = await shell(line, RESTORE_TIMEOUT_MS)
+      } catch (e) {
+        r = { code: null, stdout: '', stderr: String(e), error: 'failed' }
+      }
+      if (failed(r)) problems.push(`${line}: ${why(r)}`)
+    }
+    return problems.length === 0 ? null : `could not put the screen rotation of ${serial} back (${problems.join('; ')}); its rotation stays as the run left it until it is set by hand`
+  }
+
   /**
    * Tap the step's view, first hiding the on-screen keyboard; with `holdMs`, keep the finger on it that long (a long
    * press: `input swipe` that starts and ends on the same point and lifts after holdMs).
@@ -699,6 +781,9 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
           await host.delay(ANDROID_POLL_MS, signal)
         }
       }
+      case 'rotate':
+        await rotateTo(step.orientation, deadline)
+        return
       default:
         throw new StepFailure(`"${step.action}" steps are not supported in android flows yet`)
     }
@@ -732,90 +817,97 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
       // A progress listener never affects the run.
     }
   }
-  for (const [index, step] of flow.steps.entries()) {
-    const record: StepRun = { id: step.id, action: step.action, status: 'not_run' }
-    if (step.intent !== undefined) record.intent = interp.redact(step.intent)
-    steps.push(record)
-    if (failedStepId !== undefined || error !== undefined) {
-      notify(index, record)
-      continue
-    }
-    if (signal?.aborted) {
-      error = `stopped before step ${step.id}: ${String(signal.reason ?? 'cancelled')}`
-      notify(index, record)
-      continue
-    }
-    if (step.disabled) {
-      record.status = 'skipped'
-      notify(index, record)
-      continue
-    }
-    const before = evidence !== null && shots === 'all' ? (lastAfter ?? (await evidence.shot())) : undefined
-    record.startedAt = host.now()
-    let crash: CrashFound | null = null
-    try {
-      await runStep(step, record)
-      record.status = 'passed'
-    } catch (e) {
-      if (e instanceof AppCrashed) crash = e.found
-      if (e instanceof Stopped) {
-        // Cancelled while waiting: like a step after the stop, it did not run to an outcome.
-        delete record.matched
-        delete record.misses
-        delete record.startedAt
-        error = `stopped during step ${step.id}: ${String(signal?.reason ?? 'cancelled')}`
+  let restoreError: string | null = null
+  try {
+    for (const [index, step] of flow.steps.entries()) {
+      const record: StepRun = { id: step.id, action: step.action, status: 'not_run' }
+      if (step.intent !== undefined) record.intent = interp.redact(step.intent)
+      steps.push(record)
+      if (failedStepId !== undefined || error !== undefined) {
         notify(index, record)
         continue
       }
-      if (!(e instanceof StepFailure)) throw e
-      record.status = 'failed'
-      record.error = e.message
-      if (e.misses && e.misses.length > 0) record.misses = e.misses
-      failedStepId = step.id
-    }
-    // A crash the step's own checks did not see (the app died after the action, or its window stayed up): it fails
-    // the step whatever the step's result, and is named first, since it explains a step that failed too. After the
-    // last step the app gets a moment first: no later step would notice a crash its action caused.
-    const last = index === lastRunnable
-    if (crash === null && last && record.status === 'passed' && !signal?.aborted) await host.delay(LAST_STEP_CRASH_SETTLE_MS, signal)
-    if (crash === null && !signal?.aborted) {
-      crash = await checkCrash({ last })
-      if (crash !== null) {
-        const said = crashMessage(crash.crash)
-        record.error = record.status === 'failed' ? `${said} (the step: ${record.error})` : said
+      if (signal?.aborted) {
+        error = `stopped before step ${step.id}: ${String(signal.reason ?? 'cancelled')}`
+        notify(index, record)
+        continue
+      }
+      if (step.disabled) {
+        record.status = 'skipped'
+        notify(index, record)
+        continue
+      }
+      const before = evidence !== null && shots === 'all' ? (lastAfter ?? (await evidence.shot())) : undefined
+      record.startedAt = host.now()
+      let crash: CrashFound | null = null
+      try {
+        await runStep(step, record)
+        record.status = 'passed'
+      } catch (e) {
+        if (e instanceof AppCrashed) crash = e.found
+        if (e instanceof Stopped) {
+          // Cancelled while waiting: like a step after the stop, it did not run to an outcome.
+          delete record.matched
+          delete record.misses
+          delete record.startedAt
+          error = `stopped during step ${step.id}: ${String(signal?.reason ?? 'cancelled')}`
+          notify(index, record)
+          continue
+        }
+        if (!(e instanceof StepFailure)) throw e
         record.status = 'failed'
+        record.error = e.message
+        if (e.misses && e.misses.length > 0) record.misses = e.misses
         failedStepId = step.id
       }
-    }
-    if (crash !== null) record.crash = crash.crash
-    record.durationMs = host.now() - record.startedAt
-    let logLines: DeviceLogLine[] = []
-    let logDropped = 0
-    // A cancelled run stops collecting at once: shots and logs can take many seconds on a slow device.
-    if (evidence !== null && !signal?.aborted) {
-      const after = shots === 'all' || (shots === 'failed' && record.status === 'failed') ? await evidence.shot() : undefined
-      lastAfter = after
-      if (before !== undefined || after !== undefined) record.shots = { ...(before !== undefined ? { before } : {}), ...(after !== undefined ? { after } : {}) }
-      if (req.logcat) {
-        const since = logSince ?? record.startedAt
-        logSince = host.now()
-        const log = await evidence.stepLog(since)
-        logLines = log.lines
-        logDropped = log.dropped
+      // A crash the step's own checks did not see (the app died after the action, or its window stayed up): it fails
+      // the step whatever the step's result, and is named first, since it explains a step that failed too. After the
+      // last step the app gets a moment first: no later step would notice a crash its action caused.
+      const last = index === lastRunnable
+      if (crash === null && last && record.status === 'passed' && !signal?.aborted) await host.delay(LAST_STEP_CRASH_SETTLE_MS, signal)
+      if (crash === null && !signal?.aborted) {
+        crash = await checkCrash({ last })
+        if (crash !== null) {
+          const said = crashMessage(crash.crash)
+          record.error = record.status === 'failed' ? `${said} (the step: ${record.error})` : said
+          record.status = 'failed'
+          failedStepId = step.id
+        }
       }
+      if (crash !== null) record.crash = crash.crash
+      record.durationMs = host.now() - record.startedAt
+      let logLines: DeviceLogLine[] = []
+      let logDropped = 0
+      // A cancelled run stops collecting at once: shots and logs can take many seconds on a slow device.
+      if (evidence !== null && !signal?.aborted) {
+        const after = shots === 'all' || (shots === 'failed' && record.status === 'failed') ? await evidence.shot() : undefined
+        lastAfter = after
+        if (before !== undefined || after !== undefined) record.shots = { ...(before !== undefined ? { before } : {}), ...(after !== undefined ? { after } : {}) }
+        if (req.logcat) {
+          const since = logSince ?? record.startedAt
+          logSince = host.now()
+          const log = await evidence.stepLog(since)
+          logLines = log.lines
+          logDropped = log.dropped
+        }
+      }
+      if (crash !== null) {
+        // The crash's own lines lead the step's log (kept even without logcat), then the step's other lines once.
+        const own = crash.lineKeys
+        const rest = logLines.filter((l) => !own.has(logLineKey(l)))
+        const room = Math.max(0, MAX_LOGCAT_LINES - crash.log.length)
+        logLines = [...crash.log, ...rest.slice(0, room)]
+        logDropped += crash.dropped + Math.max(0, rest.length - room)
+      }
+      if (logLines.length > 0) record.logcat = logLines
+      if (logDropped > 0) record.logcatDropped = logDropped
+      notify(index, record)
     }
-    if (crash !== null) {
-      // The crash's own lines lead the step's log (kept even without logcat), then the step's other lines once.
-      const own = crash.lineKeys
-      const rest = logLines.filter((l) => !own.has(logLineKey(l)))
-      const room = Math.max(0, MAX_LOGCAT_LINES - crash.log.length)
-      logLines = [...crash.log, ...rest.slice(0, room)]
-      logDropped += crash.dropped + Math.max(0, rest.length - room)
-    }
-    if (logLines.length > 0) record.logcat = logLines
-    if (logDropped > 0) record.logcatDropped = logDropped
-    notify(index, record)
+  } finally {
+    // Also after a cancel or a thrown error: the device is the person's, and the next run expects it as it was.
+    restoreError = await restoreRotation()
   }
+  if (restoreError !== null) error = error === undefined ? restoreError : `${error}; ${restoreError}`
   const run: FlowRun = { status: failedStepId === undefined && error === undefined ? 'passed' : 'failed', startedAt, durationMs: host.now() - startedAt, steps }
   if (failedStepId !== undefined) run.failedStepId = failedStepId
   if (error !== undefined) run.error = error

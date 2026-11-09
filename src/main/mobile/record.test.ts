@@ -465,12 +465,80 @@ describe('flowFromAndroidRecording on single screens', () => {
     ])
   })
 
-  it('resolves a tap on a rotated screen at the rotated point', () => {
+  it('resolves a tap on a rotated screen at the rotated point, after turning the screen there first', () => {
     // Landscape (rotation 1): the natural point (2000 px down, 100 px from the left) is (2000, 979) on screen.
     const wide: V = { cls: 'android.widget.Button', id: 'com.example.app:id/play', clickable: true, b: [1900, 900, 2100, 1050] }
     const before: Snapshot = { screen: screenOf([wide], 1), keyboard: null }
     const r = rec([{ input: stroke(100, 2000), before }], before)
-    expect(r.flow.steps).toMatchObject([{ action: 'click', target: { selectors: [{ id: 'com.example.app:id/play' }] } }])
+    expect(r.flow.steps, 'a recording that starts sideways replays sideways').toMatchObject([
+      { action: 'rotate', orientation: 'landscape' },
+      { action: 'click', target: { selectors: [{ id: 'com.example.app:id/play' }] } }
+    ])
+  })
+
+  it('records the screen turning between two touches as a rotate step, in order, and only when it turned, starting from where it started (M5d-4)', () => {
+    const at = (views: V[], rotation: number): Snapshot => ({ screen: screenOf(views, rotation), keyboard: null })
+    // Save is at the top of the natural screen: (540, 150) in portrait.
+    const r = rec(
+      [
+        { input: stroke(540, 150), before: at([SAVE], 0) },
+        { input: stroke(540, 150), before: at([SAVE], 0) },
+        { input: pressKey('KEY_BACK'), before: at([SAVE], 2) },
+        { input: pressKey('KEY_BACK'), before: at([SAVE], 3) }
+      ],
+      at([SAVE], 0)
+    )
+    expect(r.flow.steps.map((s) => (s.action === 'rotate' ? `rotate ${s.orientation}: ${s.intent}` : s.action))).toEqual([
+      'rotate portrait: Turn the screen to portrait',
+      'click',
+      'click',
+      'rotate reverse-portrait: Turn the screen to reverse-portrait',
+      'press',
+      'rotate reverse-landscape: Turn the screen to reverse-landscape',
+      'press',
+      'rotate portrait: Turn the screen to portrait'
+    ])
+    expect(r.flow.steps.map((s) => s.id), 'rotate steps are numbered with the rest').toEqual(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'])
+    expect(r.warnings).toEqual([])
+  })
+
+  it('names orientations by the device\'s natural size: a landscape tablet at three quarter turns is in portrait', () => {
+    const tablet = (rotation: number): Snapshot => ({ screen: screenOf([], rotation), keyboard: null })
+    const r = flowFromAndroidRecording({ package: 'com.example.app', display: { width: 2560, height: 1600, density: 320 }, events: [{ input: pressKey('KEY_BACK'), before: tablet(0) }], after: tablet(3) })
+    expect(r.flow.steps).toMatchObject([{ action: 'rotate', orientation: 'landscape' }, { action: 'press' }, { action: 'rotate', orientation: 'portrait' }])
+  })
+
+  it('keeps a fill whole when the screen turns while the person types into the field', () => {
+    const typed = (text: string, rotation: number): Snapshot => ({ screen: screenOf([NAME(text, true), SAVE], rotation), keyboard: null })
+    const r = rec(
+      [
+        { input: stroke(540, 350), before: typed('', 0) },
+        // Sideways (rotation 1) the natural point (929, 540) is (540, 150) on screen: on Save.
+        { input: stroke(929, 540), before: typed('Ana', 1) }
+      ],
+      typed('Ana', 1)
+    )
+    expect(r.flow.steps.map((s) => s.action)).toEqual(['rotate', 'fill', 'rotate', 'click'])
+    expect(r.flow.steps[1]).toMatchObject({ action: 'fill', value: 'Ana' })
+  })
+
+  it('keeps typing that goes on after the screen turned in the same fill, and a tapped field\'s click whole', () => {
+    // Sideways the keyboard lies along the bottom of the turned screen; the natural point (179, 1000) is (1000, 900) on it.
+    const SIDEWAYS_KEYBOARD = { left: 0, top: 600, right: 2400, bottom: 1080 }
+    const at = (text: string, rotation: number, keyboard: boolean): Snapshot => ({ screen: screenOf([NAME(text, true), SAVE], rotation), keyboard: keyboard ? [rotation === 0 ? KEYBOARD : SIDEWAYS_KEYBOARD] : null })
+    const r = rec(
+      [
+        { input: stroke(540, 350), before: at('', 0, false) },
+        { input: stroke(179, 1000), before: at('An', 1, true) }
+      ],
+      at('Ana', 1, true)
+    )
+    expect(r.flow.steps.map((s) => (s.action === 'fill' ? `fill ${s.value}` : s.action === 'rotate' ? `rotate ${s.orientation}` : s.action)), 'one fill with the whole text').toEqual([
+      'rotate portrait',
+      'fill Ana',
+      'rotate landscape'
+    ])
+    expect(r.warnings).toEqual([])
   })
 
   it('never uses a blank text or description as a locator, so the flow still parses', () => {

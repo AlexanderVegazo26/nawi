@@ -1436,8 +1436,10 @@ const mobileRecord = defineTool({
     'does before a replay; launch: false records from the screen it shows now), then the device\'s touches and keys ' +
     'are read live (`adb shell getevent`) while the person uses the app: taps become click steps on the view under ' +
     'the finger (resource id, content description and text locators, each kept only when it finds that view alone), ' +
-    'typing becomes one fill step per field with the final text, Back/Home/Enter become press steps. A password ' +
-    'field\'s text is never read: its fill types ${secret.<name>} at run time. Long presses, swipes, taps on other ' +
+    'typing becomes one fill step per field with the final text, Back/Home/Enter become press steps, a touch resting ' +
+    'past the device\'s touch & hold delay becomes a click with hold_ms (a long press), and the screen turning becomes a ' +
+    'rotate step (a recording that turns the screen starts with one to where it started). A password ' +
+    'field\'s text is never read: its fill types ${secret.<name>} at run time. Swipes, taps on other ' +
     'apps (a permission prompt) and touches that came before the screen after the previous tap was read (a read takes ' +
     'about 2 seconds) are not steps: warnings say which and why. Recording stops after idle_seconds without a touch ' +
     '(once something was recorded), after max_seconds, when cancelled (or agent access is paused: what was recorded ' +

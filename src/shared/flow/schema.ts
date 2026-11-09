@@ -31,7 +31,8 @@ export const FLOW_ACTIONS = [
   'navigate',
   'wait',
   'assert',
-  'screenshot'
+  'screenshot',
+  'rotate'
 ] as const
 
 export type FlowAction = (typeof FLOW_ACTIONS)[number]
@@ -183,6 +184,13 @@ const optionalTarget = StepTargetSchema.optional()
  */
 export const MAX_HOLD_MS = 10_000
 
+/**
+ * Where an android `rotate` step turns the screen (roadmap M5d-4). `portrait` and `landscape` are the device's own
+ * upright ways of holding it; the `reverse-` ones are those turned half a turn (upside down).
+ */
+export const ANDROID_ORIENTATIONS = ['portrait', 'landscape', 'reverse-portrait', 'reverse-landscape'] as const
+export type AndroidOrientation = (typeof ANDROID_ORIENTATIONS)[number]
+
 export const StepSchema = z.discriminatedUnion('action', [
   z.strictObject({
     ...common,
@@ -223,7 +231,9 @@ export const StepSchema = z.discriminatedUnion('action', [
           s.expect.text === undefined),
       { message: 'an element assertion needs a target (only expect.url can be checked without one)' }
     ),
-  z.strictObject({ ...common, action: z.literal('screenshot'), target: optionalTarget })
+  z.strictObject({ ...common, action: z.literal('screenshot'), target: optionalTarget }),
+  /** Turn the device's screen (roadmap M5d-4). Android flows only. */
+  z.strictObject({ ...common, action: z.literal('rotate'), orientation: z.enum(ANDROID_ORIENTATIONS) })
 ])
 
 export const FlowTargetSchema = z.discriminatedUnion('kind', [
@@ -237,12 +247,12 @@ export const FlowTargetSchema = z.discriminatedUnion('kind', [
 ])
 
 /**
- * What an android flow can do today (roadmap M5a, M5d-2, M5d-3): tap or long press (`hold_ms`), type, Android's
- * keys, scroll (a list until a view is on screen, a pager or the app's list by
- * a delta), deep links, waits and element assertions. The rest is refused by
- * parseFlow with a message, instead of being skipped at replay.
+ * What an android flow can do today (roadmap M5a, M5d-2, M5d-3, M5d-4): tap or long press (`hold_ms`), type,
+ * Android's keys, scroll (a list until a view is on screen, a pager or the app's list by a delta), deep links, waits,
+ * element assertions and turning the screen. The rest is refused by parseFlow with a message, instead of being
+ * skipped at replay.
  */
-export const ANDROID_ACTIONS = ['click', 'fill', 'press', 'scroll', 'navigate', 'wait', 'assert'] as const satisfies readonly FlowAction[]
+export const ANDROID_ACTIONS = ['click', 'fill', 'press', 'scroll', 'navigate', 'wait', 'assert', 'rotate'] as const satisfies readonly FlowAction[]
 
 /** Keys an android `press` step may name, and the key event each sends. */
 export const ANDROID_KEYS: Readonly<Record<string, string>> = {
@@ -369,6 +379,9 @@ export const FlowSchema = FlowShape.superRefine((flow, ctx) => {
     }
     if (!android && step.action === 'click' && step.hold_ms !== undefined) {
       ctx.addIssue({ code: 'custom', path: ['steps', i, 'hold_ms'], message: 'hold_ms (a long press) is only for android flows yet' })
+    }
+    if (!android && step.action === 'rotate') {
+      ctx.addIssue({ code: 'custom', path: ['steps', i, 'action'], message: 'rotate (turning the device) is only for android flows' })
     }
     const stepTarget = 'target' in step ? step.target : undefined
     stepTarget?.selectors.forEach((selector, k) => {

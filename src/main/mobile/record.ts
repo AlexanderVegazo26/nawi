@@ -3,6 +3,7 @@ import { parseFlow, stringifyFlow } from '../../shared/flow/yaml'
 import { labelOf, PERMISSION_PACKAGES } from './blockers'
 import { isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
 import { DEFAULT_LONG_PRESS_TIMEOUT_MS, shortestHold } from './long-press'
+import { orientationOf } from './rotation'
 
 /**
  * Roadmap M5c, first slice: turn what a person did on an Android device into an android flow (`target.kind: android`)
@@ -502,9 +503,31 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     }
   }
 
+  /**
+   * The screen turned (roadmap M5d-4): a rotate step to where it shows now. Added to the steps as they stand, without
+   * closing the field being typed into: typing that goes on after the turn stays one fill. A flow that turns the
+   * screen also starts with a rotate to where the recording started (added at the end), so its first steps replay
+   * on the screen they were recorded on whichever way the device stands.
+   */
+  const rotate = (r: number): FlowStep | null => {
+    const orientation = orientationOf(r, rec.display)
+    return orientation === null ? null : { id: '', action: 'rotate', intent: `Turn the screen to ${orientation}`, orientation }
+  }
+  const firstRotation = (rec.events[0]?.before ?? rec.after).screen.rotation
+  let rotation = firstRotation
+  let turns = 0
+  const turned = (snap: Snapshot): void => {
+    const step = rotate(snap.screen.rotation)
+    if (snap.screen.rotation === rotation || step === null) return
+    rotation = snap.screen.rotation
+    turns++
+    steps.push(step)
+  }
+
   const snapshots = [...rec.events.map((e) => e.before), rec.after]
   for (const [k, { input, before }] of rec.events.entries()) {
     if (k > 0) typing(snapshots[k - 1], before)
+    turned(before)
     if (input.kind === 'key') {
       const press = KEY_STEPS[input.key]
       if (DEVICE_KEYS.test(input.key)) warnings.push(`The ${input.key.slice(4).toLowerCase()} key is not recorded: it changes the device, not the app.`)
@@ -579,8 +602,13 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     }
     push({ id: '', action: 'click', intent: label ? `Tap "${label}"` : 'Tap the view', target: { selectors: loc.selectors } })
   }
-  if (rec.events.length > 0) typing(snapshots[rec.events.length - 1], rec.after)
+  if (rec.events.length > 0) {
+    typing(snapshots[rec.events.length - 1], rec.after)
+    turned(rec.after)
+  }
   flushFocus()
+  const start = rotate(firstRotation)
+  if (start !== null && (turns > 0 || firstRotation !== 0)) steps.unshift(start)
 
   // A literal "${" would be read as a placeholder at run time; a value replay can't type is refused there with its own message.
   const kept = steps.filter((s) => {

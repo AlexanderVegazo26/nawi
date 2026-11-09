@@ -1002,6 +1002,9 @@ class StepRunner {
         )
         return { ...(at ?? { found: true, index: -1, tried: [] }), png: shot.data } as PageAnswer
       }
+      case 'rotate':
+        // parseFlow refuses it in browser flows; a flow built in code still fails the step rather than skipping it.
+        throw new StepFailure('rotate (turning the device) is only for android flows')
     }
   }
 

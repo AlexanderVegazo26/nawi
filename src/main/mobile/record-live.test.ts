@@ -7,7 +7,8 @@ import type { ExecResult } from './doctor'
 import { keyLines, touchLines } from './fixtures/getevent'
 import { device, ID, PKG, type Device } from './fixtures/shop-app'
 import { replayAndroidFlow } from './flow-replay'
-import { parseWmSize, recordAndroidLive, spawnStream, type LiveRecordRequest, type RecordLiveHost } from './record-live'
+import { recordAndroidLive, spawnStream, type LiveRecordRequest, type RecordLiveHost } from './record-live'
+import { DISPLAY_ROTATION_LINE, parseWmSize } from './rotation'
 
 /**
  * Roadmap M5c, second slice: the live recorder. A simulated person uses the fake shop app while the recorder streams
@@ -91,6 +92,8 @@ interface Sim {
   reads: () => number
   /** When each screen read started, ms after the stream started (before it: negative). */
   readTimes: number[]
+  /** When each quick look at the rotation (M5d-4) was taken, ms after the stream started. */
+  probes: number[]
 }
 
 function sim(acts: Act[], opts: Options = {}): Sim {
@@ -105,6 +108,7 @@ function sim(acts: Act[], opts: Options = {}): Sim {
   const stream: Sim['stream'] = { args: null, stopped: false, startedAt: null }
   let inFront = opts.inFront ?? 'app'
   const readTimes: number[] = []
+  const probes: number[] = []
 
   /** Deliver every gesture whose time has come, in order: kernel lines first, then the app reacts. */
   const deliver = async (): Promise<void> => {
@@ -156,6 +160,10 @@ function sim(acts: Act[], opts: Options = {}): Sim {
       }
       if (line.startsWith('dumpsys input_method')) return opts.keyboardShown ?? d.host.exec(file, args, 30_000)
       if (line === 'dumpsys window InputMethod') return ok(opts.keyboardWindow ?? '      touchable region=SkRegion((0,1517,1080,2400))\n')
+      if (line === DISPLAY_ROTATION_LINE) {
+        probes.push(startedAt === null ? -1 : clock - startedAt)
+        return d.host.exec(file, args, 30_000)
+      }
       shell.push(line)
       if (line.startsWith('cmd package resolve-activity') && line.includes('category.HOME')) return ok(`priority=0\n${LAUNCHER}/.Launcher\n`)
       if (line === `pm path '${PKG}'`) return ok(`package:/data/app/${PKG}/base.apk\n`)
@@ -194,7 +202,7 @@ function sim(acts: Act[], opts: Options = {}): Sim {
       }
     }
   }
-  return { host, d, shell, stream, reads: () => reads, readTimes }
+  return { host, d, shell, stream, reads: () => reads, readTimes, probes }
 }
 
 const sh = (d: Device, line: string): Promise<ExecResult> => d.host.exec('adb', ['-s', SERIAL, 'shell', line], 30_000)
@@ -312,6 +320,39 @@ describe('recordAndroidLive', () => {
       'A touch or key press was not recorded: it came before Nawi had read the screen after the previous touch. Wait for the screen to settle (about 2 seconds) after each tap that changes it.'
     ])
     expect(s.d.stack, 'the device did get to the cart').toEqual(['login', 'orders', 'cart'])
+  })
+
+  it('notices the screen turning between touches: a rotate step, and a touch right after the turn waits for the turned screen (M5d-4)', async () => {
+    const turn = async (d: Device): Promise<void> => {
+      await sh(d, 'settings put system accelerometer_rotation 0')
+      await sh(d, 'settings put system user_rotation 1')
+    }
+    // Sign in at 6.5 s; the phone is turned sideways at 9.5 s (no touch, no key); then the cart, which is at (980, 170)
+    // on the turned screen, (909, 980) of the natural one the panel reports.
+    const session = (tapAt: number): Act[] => [
+      ...new Person().tap(200, 800).acts,
+      { at: 9_500, lines: '', act: turn },
+      { at: tapAt, lines: touchLines(200_000, [909, 980], 80, [[910, 981]]), act: (d) => sh(d, 'input tap 980 170') }
+    ]
+    const later = sim(session(14_000), { keyboardOnFocus: false })
+    const r = await record(later)
+    expect(r.flow?.steps.map((st) => (st.action === 'rotate' ? `rotate ${st.orientation}` : st.intent)), JSON.stringify(r.warnings)).toEqual([
+      'rotate portrait',
+      'Tap "Sign in"',
+      'rotate landscape',
+      'Tap "Cart"'
+    ])
+    expect(r.warnings).toEqual([])
+    expect(later.probes.length, 'looked at the rotation while quiet').toBeGreaterThan(0)
+    expect(Math.min(...later.probes.filter((t) => t > 9_500)) - 9_500, 'the first look after the turn comes within about a second').toBeLessThanOrEqual(1_100)
+
+    // 1.5 s after the turn: the turned screen is still being read, so the tap is not recorded (rather than recorded
+    // on the unturned screen), and the warning says so.
+    const soon = await record(sim(session(11_000), { keyboardOnFocus: false }))
+    expect(soon.flow?.steps.map((st) => (st.action === 'rotate' ? `rotate ${st.orientation}` : st.intent))).toEqual(['rotate portrait', 'Tap "Sign in"', 'rotate landscape'])
+    expect(soon.warnings).toEqual([
+      'A touch or key press was not recorded: it came before Nawi had read the screen after the previous touch. Wait for the screen to settle (about 2 seconds) after each tap that changes it.'
+    ])
   })
 
   it('a Back pressed before the screen was read is not recorded either (the keyboard may have been up)', async () => {

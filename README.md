@@ -722,7 +722,10 @@ alone.
   that view alone; typing becomes one fill per field with its final text (a
   password field types `${secret.<name>}` at run time, its text is never
   read); a touch resting past the device's touch & hold delay becomes a click
-  with `hold_ms` (how long the finger rested); Back, Home and Enter become presses. A screen read takes about 2 s:
+  with `hold_ms` (how long the finger rested); Back, Home and Enter become presses; the screen turning
+  becomes a `rotate` step (the recorder looks at the screen's rotation every second while the device is quiet,
+  and a touch before the turned screen is read is not recorded; a flow that turns the screen starts with a
+  rotate to where the recording started, so it replays alike however the device stands). A screen read takes about 2 s:
   a touch that comes before the read after the previous screen change is not
   recorded, and the warnings say so (as they do for swipes and taps on
   Android's permission prompt). Stops after the idle time without a
@@ -757,6 +760,15 @@ alone.
   view that long (600 ms to 10 s). The device's own touch & hold delay is read
   first: a hold less than 100 ms past it fails the step before anything is
   pressed, since the app could take it for a tap.
+  A `rotate` step (M5d-4, `src/main/mobile/rotation.ts`) turns the screen to
+  `orientation: portrait | landscape | reverse-portrait | reverse-landscape`
+  (the device's own upright ways, so on a tablet that lies in landscape,
+  portrait is a quarter turn): it turns auto-rotate off, locks the rotation
+  and waits until the screen shows it. An app that fixes its own orientation
+  keeps it, and the step fails at its timeout saying so. The run reads both
+  rotation settings before its first change and puts them back when it ends,
+  also after a failure or a cancel; a run whose settings could not be put
+  back fails, naming the setting.
   `run_flow` / `nawi run` use it for android flows (M5b,
   `src/main/mobile/flow-device.ts`): the run goes to the connected device or
   running emulator (`target` / `--target <serial|avd>` when several are
@@ -792,7 +804,7 @@ alone.
   it finds that view alone), typing as one `fill` per field read from the
   field's text (a password becomes `${secret.<name>}`, never its value), and
   Back, Home and Enter as presses, a long press as a click with `hold_ms`
-  (M5d-3); taps on another app's window and swipes are reported, not recorded. `mobile_record` / `nawi mobile-record`
+  (M5d-3), a turned screen as a `rotate` step (M5d-4); taps on another app's window and swipes are reported, not recorded. `mobile_record` / `nawi mobile-record`
   (M5c-2) runs it live on a device.
 
 ## Keyboard shortcuts
@@ -911,9 +923,10 @@ CDP selectors and the MCP projection/revision model.
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, long presses, typing, keys, scrolling to a view or by a delta, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
-  taps, long presses, typing, Back/Home/Enter; swipes are not recorded as scroll steps yet, and there are no rotation or deep link steps yet, and a tap must wait for the screen
-  read after the previous screen change, about 2 s), but there is no inspector or input on that screen yet and the recorder
+  (`nawi run`: taps, long presses, typing, keys, scrolling to a view or by a delta, turning the screen, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
+  taps, long presses, typing, Back/Home/Enter, the screen turning; swipes are not recorded as scroll steps yet, there are no deep link,
+  background/restore or permission-dialog steps yet, and a tap must wait for the screen
+  read after the previous screen change, about 2 s, which also goes for a touch right after the screen turned), but there is no inspector or input on that screen yet and the recorder
   is not in the Mobile view yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when
   learned (`--learn-onboarding`) or saved in the profile, and a sign-in form is

@@ -1,6 +1,7 @@
 import type { ExecResult } from '../doctor'
 import type { AndroidReplayHost } from '../flow-replay'
 import { encodePng } from '../png'
+import { DISPLAY_ROTATION_LINE } from '../rotation'
 
 /**
  * A simulated shop app behind a fake adb, shared by the Android replayer (roadmap M5a) and recorder (M5c) tests: every
@@ -161,6 +162,22 @@ export interface DeviceOptions {
   longPressTimeout?: string
   /** `settings get secure long_press_timeout` fails (adb error). */
   longPressTimeoutFails?: boolean
+  /**
+   * Roadmap M5d-4, turning the screen: what `wm size` prints (default a 1080x2400 phone), the rotation settings'
+   * starting values as `settings get system` prints them (default auto-rotate on, no locked rotation: `1` / `null`),
+   * an app that `fixed` its own rotation (the screen stays there whatever the settings), how many screen reads a new
+   * rotation takes to show (`lagReads`, default 0), an adb failure reading one setting, and failing writes: the
+   * `nth` (1-based) put or delete of a setting fails, so a test names exactly which change or restore breaks.
+   */
+  rotation?: {
+    wmSize?: string
+    auto?: string
+    user?: string
+    fixed?: number
+    lagReads?: number
+    getFails?: 'accelerometer_rotation' | 'user_rotation'
+    writeFails?: Array<{ name: 'accelerometer_rotation' | 'user_rotation'; nth: number }>
+  }
 }
 
 export interface Device {
@@ -176,6 +193,10 @@ export interface Device {
   stack: string[]
   /** Scroll offset of each scrollable view that moved, by resource id (M5d-2). */
   offsets: Record<string, number>
+  /** The rotation settings now, as `settings get system` would print them (M5d-4). */
+  settings: Record<'accelerometer_rotation' | 'user_rotation', string>
+  /** The rotation the screen shows now (the dump's `rotation`). */
+  rotation(): number
 }
 
 export function device(start = 'login', over: DeviceOptions = {}): Device {
@@ -191,6 +212,23 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
   const readsOf: Record<string, number> = {}
   const offsets: Offsets = {}
   let reads = 0
+  const rot = over.rotation ?? {}
+  const settings: Device['settings'] = { accelerometer_rotation: rot.auto ?? '1', user_rotation: rot.user ?? 'null' }
+  /** What the settings ask for: the locked rotation with auto-rotate off, else the sensor's (the phone held upright). */
+  const asked = (): number => (settings.accelerometer_rotation === '0' && /^[0-3]$/.test(settings.user_rotation) ? Number(settings.user_rotation) : 0)
+  let shown = rot.fixed ?? asked()
+  /** Puts and deletes of each setting so far (writeFails counts them). */
+  const writes = { accelerometer_rotation: 0, user_rotation: 0 }
+  /** Screen reads left before a change of rotation shows (lagReads). */
+  let lag = 0
+  const rotationNow = (): number => {
+    const want = rot.fixed ?? asked()
+    if (want !== shown) {
+      if (lag > 0) lag--
+      else shown = want
+    }
+    return shown
+  }
   let clock = 1_000_000
   let keyboard = false
   let focused: string | null = null
@@ -208,7 +246,7 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
     // Once the app died, the window on screen is the launcher's.
     let windows = node(top() === 'launcher' ? 'com.android.launcher3' : PKG, { cls: 'android.widget.FrameLayout', bounds: [0, 0, 1080, 2400] }, '', inner)
     if (spec.overlay) windows += node(spec.overlay.pkg, { cls: 'android.widget.FrameLayout', bounds: spec.overlay.bounds }, '', node(spec.overlay.pkg, { cls: 'android.widget.Button', text: 'Allow', bounds: spec.overlay.bounds }, 'Allow'))
-    return `UI hierchary dumped to: /data/local/tmp/x.xml\n<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">${windows}</hierarchy>`
+    return `UI hierchary dumped to: /data/local/tmp/x.xml\n<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="${rotationNow()}">${windows}</hierarchy>`
   }
   const host: AndroidReplayHost = {
     exec: async (_file, args) => {
@@ -252,6 +290,21 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
         const answer = over.deepLink?.(am[1]) ?? { stdout: 'Starting: Intent { act=android.intent.action.VIEW }\nStatus: ok\nTotalTime: 120\n' }
         if (answer.go) stack.push(answer.go)
         return ok(answer.stdout)
+      }
+      if (line === 'wm size') return ok(rot.wmSize ?? 'Physical size: 1080x2400\n')
+      // The recorder's quick look (M5d-4): the rotation the screen shows now, not one still waiting for lagReads.
+      if (line === DISPLAY_ROTATION_LINE) return ok(`mDisplayRotation=ROTATION_${(lag > 0 ? shown : (rot.fixed ?? asked())) * 90}\n`)
+      const setting = /^settings (get|put|delete) system (accelerometer_rotation|user_rotation)(?: (\d+))?$/.exec(line)
+      if (setting) {
+        const [, verb, name, value] = setting as unknown as [string, string, 'accelerometer_rotation' | 'user_rotation', string | undefined]
+        const fail: ExecResult = { code: 1, stdout: '', stderr: 'cmd: Failure calling service settings', error: 'failed' }
+        if (verb === 'get') return rot.getFails === name ? fail : ok(`${settings[name]}\n`)
+        writes[name]++
+        if (rot.writeFails?.some((w) => w.name === name && w.nth === writes[name])) return fail
+        const before = asked()
+        settings[name] = verb === 'delete' ? 'null' : value!
+        if (asked() !== before) lag = rot.lagReads ?? 0
+        return ok()
       }
       if (line === 'settings get secure long_press_timeout') {
         return over.longPressTimeoutFails ? { code: 1, stdout: '', stderr: 'cmd: Failure calling service settings', error: 'failed' } : ok(`${over.longPressTimeout ?? 'null'}\n`)
@@ -316,5 +369,5 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       return { code: 0, stdout: encodePng({ width: w, height: h, rgb }), stderr: '' }
     }
   }
-  return { host, lines, evidenceLines, crashReads, typed, stack, offsets }
+  return { host, lines, evidenceLines, crashReads, typed, stack, offsets, settings, rotation: () => shown }
 }
