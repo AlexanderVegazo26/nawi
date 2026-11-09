@@ -1,4 +1,4 @@
-import { ANDROID_KEYS, FLOW_VERSION, MAX_HOLD_MS, MAX_INTENT_CHARS, MAX_TEXT_LOCATOR_CHARS, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
+import { ANDROID_KEYS, FLOW_VERSION, MAX_BACKGROUND_MS, MAX_HOLD_MS, MAX_INTENT_CHARS, MAX_TEXT_LOCATOR_CHARS, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
 import { parseFlow, stringifyFlow } from '../../shared/flow/yaml'
 import { labelOf, PERMISSION_PACKAGES } from './blockers'
 import { isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
@@ -28,6 +28,12 @@ import { orientationOf } from './rotation'
  *   each tap on its own).
  * - A long press becomes a click with `hold_ms` (M5d-3): the time the finger rested, rounded up to 100 ms, at least
  *   the device's long-press timeout plus the replayer's margin, at most MAX_HOLD_MS; it goes to the view a tap would.
+ * - Leaving the app and coming back to it (its icon, its card in the app switcher) becomes one `background` step
+ *   (M5d-5) whose `ms` is the time from leaving to the touch that brought the app back, to the nearest 100 ms. It
+ *   left with Home or the app switcher once a screen of other apps shows after the key, or without a key when the
+ *   screen after an input shows other apps only (gesture navigation's swipe up: its swipe is no warning then). What
+ *   was touched on the way (the launcher, the app switcher, another app) is not a step. A Home that left the app on
+ *   screen, or after which the recording ended away from the app, stays a press step.
  * - Multi-finger gestures have no android step yet, and swipes are not turned into the `scroll` steps android flows
  *   have since M5d-2: both are warnings, not steps.
  */
@@ -524,8 +530,60 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     steps.push(step)
   }
 
+  /**
+   * The app left the screen (M5d-5): through Home or the app switcher (`key`; `left` once a screen of other apps showed
+   * after it), or without a key (`key` null, left at once): gesture navigation's swipe up, a tap that opened another
+   * app. `t` = when it went, `back` = the end of the last input while it was away (the touch that brought it back).
+   */
+  let away = null as { key: string | null; t: number; left: boolean; back: number } | null
+  const shows = (screen: UiScreen): boolean => screen.nodes.some((n) => n.package === pkg)
+  /** A screen of other apps only; an empty read (between two windows) says nothing about where the app is. */
+  const elsewhere = (screen: UiScreen): boolean => screen.nodes.length > 0 && !shows(screen)
+  /** The app is in front again, or the recording ended: the background step, or the key press when it never left. */
+  const settleAway = (): void => {
+    if (away === null) return
+    const { key, t, left, back } = away
+    away = null
+    if (!left) {
+      if (key !== null) push({ id: '', action: 'press', key })
+      return
+    }
+    const spent = Math.max(0, Math.round((back - t) / 100) * 100)
+    const ms = Math.min(MAX_BACKGROUND_MS, spent)
+    if (spent > MAX_BACKGROUND_MS) warnings.push(`The app was in the background for ${Math.round(spent / 1000)} s: the step keeps it there ${MAX_BACKGROUND_MS / 60_000} minutes, the longest a flow does.`)
+    push({ id: '', action: 'background', intent: `Leave the app in the background for ${(ms / 1000).toFixed(1)} s, then come back to it`, ms })
+  }
+  /** Where the previous input's swipe warning is: dropped when that swipe turns out to have been the Home gesture. */
+  let swipeWarning = null as number | null
+  /** When the previous input ended (device ms). */
+  let lastEnd = 0
+
   const snapshots = [...rec.events.map((e) => e.before), rec.after]
   for (const [k, { input, before }] of rec.events.entries()) {
+    const end = input.kind === 'key' ? input.t : input.t1
+    const swipedBefore = swipeWarning
+    swipeWarning = null
+    if (away === null && k > 0 && shows(snapshots[k - 1].screen) && elsewhere(before.screen)) {
+      // Gone without Home or the app switcher: gesture navigation's swipe up (not a scroll to warn about), or a tap.
+      if (swipedBefore !== null) warnings.splice(swipedBefore, 1)
+      away = { key: null, t: lastEnd, left: true, back: lastEnd }
+    }
+    lastEnd = end
+    if (away !== null) {
+      // Away from the app: the launcher, the app switcher or another app; nothing done there is a step of this flow.
+      if (elsewhere(before.screen)) {
+        away.left = true
+        away.back = end
+        continue
+      }
+      if (before.screen.nodes.length === 0) {
+        away.back = end
+        warnings.push(`${input.kind === 'key' ? `The ${input.key.slice(4).toLowerCase()} key` : 'A touch'} right after leaving the app is not recorded: the screen could not be read then.`)
+        continue
+      }
+      settleAway()
+    }
+    // After a background step: the screen before is another app's, so this finds no typing (none is done away).
     if (k > 0) typing(snapshots[k - 1], before)
     turned(before)
     if (input.kind === 'key') {
@@ -534,6 +592,11 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
       // Back while the keyboard is up only closes the keyboard; the replayer closes it before each tap itself.
       if (!press || (press === 'Back' && before.keyboard !== null)) continue
       if (!(press in ANDROID_KEYS)) continue
+      if (press === 'Home' || press === 'AppSwitch') {
+        // Whether this leaves the app shows on the next screens: a background step once the app is back.
+        away = { key: press, t: input.t, left: false, back: input.t }
+        continue
+      }
       push({ id: '', action: 'press', key: press })
       continue
     }
@@ -555,6 +618,7 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     if (kind === 'swipe' || kind === 'multi') {
       const what = kind === 'swipe' ? 'A swipe' : `A ${input.pointers}-finger gesture`
       const why = kind === 'swipe' ? 'the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand)' : 'android flows have no step for it yet'
+      if (kind === 'swipe') swipeWarning = warnings.length
       warnings.push(`${what} at ${where}${on} is not recorded: ${why}.`)
       continue
     }
@@ -603,6 +667,9 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     push({ id: '', action: 'click', intent: label ? `Tap "${label}"` : 'Tap the view', target: { selectors: loc.selectors } })
   }
   if (rec.events.length > 0) {
+    // Still away when the recording ended: the flow ends where the person left it, with the key they pressed.
+    if (away !== null && !shows(rec.after.screen)) away.left = false
+    settleAway()
     typing(snapshots[rec.events.length - 1], rec.after)
     turned(rec.after)
   }

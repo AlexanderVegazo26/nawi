@@ -241,6 +241,23 @@ export function installFix(code: string, pkg: string, serial: string, file: stri
   }
 }
 
+/** The shell line that names `pkg`'s launcher activity (`package/activity`, read with parseLauncher). */
+export const launcherLine = (pkg: string): string =>
+  `cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${shQuote(pkg)}`
+
+/** What `cmd package resolve-activity` names when several activities match: the system chooser, not one of the app's. */
+export const CHOOSER_RE = /^android\/com\.android\.internal\.app\.\w*(Resolver|Chooser)\w*$/
+
+/** Whether the resolve-activity answer names the system chooser: the app has several launcher activities. */
+export const severalLaunchers = (stdout: string): boolean => CHOOSER_RE.test(stdout.trim().split(/\r?\n/).pop()?.trim() ?? '')
+
+/** `cmd package resolve-activity --brief` ends with `package/activity`; anything else is not a launcher of `pkg`. */
+export function parseLauncher(stdout: string, pkg: string): string | null {
+  const last = stdout.trim().split(/\r?\n/).pop()?.trim() ?? ''
+  const m = /^([A-Za-z][\w.]*)\/([\w.$]+)$/.exec(last)
+  return m && m[1] === pkg ? `${m[1]}/${m[2]}` : null
+}
+
 /** Parse `am start -W` output: ok + TotalTime, or the error line. */
 export function parseAmStart(stdout: string, stderr: string): { ok: true; totalTimeMs: number | null } | { ok: false; error: string } {
   const text = `${stdout}\n${stderr}`

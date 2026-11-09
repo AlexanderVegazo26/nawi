@@ -1679,6 +1679,45 @@
               "orientation"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
+              "note": {
+                "type": "string"
+              },
+              "disabled": {
+                "type": "boolean"
+              },
+              "timeout_ms": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 600000
+              },
+              "action": {
+                "type": "string",
+                "const": "background"
+              },
+              "ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 600000
+              }
+            },
+            "required": [
+              "id",
+              "action"
+            ],
+            "additionalProperties": false
           }
         ]
       }

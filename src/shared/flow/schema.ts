@@ -32,7 +32,8 @@ export const FLOW_ACTIONS = [
   'wait',
   'assert',
   'screenshot',
-  'rotate'
+  'rotate',
+  'background'
 ] as const
 
 export type FlowAction = (typeof FLOW_ACTIONS)[number]
@@ -191,6 +192,11 @@ export const MAX_HOLD_MS = 10_000
 export const ANDROID_ORIENTATIONS = ['portrait', 'landscape', 'reverse-portrait', 'reverse-landscape'] as const
 export type AndroidOrientation = (typeof ANDROID_ORIENTATIONS)[number]
 
+/** How long an android `background` step keeps the app in the background when the step does not say (`ms`). */
+export const DEFAULT_BACKGROUND_MS = 1_000
+/** The longest a `background` step keeps the app away, like the longest `wait`. */
+export const MAX_BACKGROUND_MS = 600_000
+
 export const StepSchema = z.discriminatedUnion('action', [
   z.strictObject({
     ...common,
@@ -233,7 +239,12 @@ export const StepSchema = z.discriminatedUnion('action', [
     ),
   z.strictObject({ ...common, action: z.literal('screenshot'), target: optionalTarget }),
   /** Turn the device's screen (roadmap M5d-4). Android flows only. */
-  z.strictObject({ ...common, action: z.literal('rotate'), orientation: z.enum(ANDROID_ORIENTATIONS) })
+  z.strictObject({ ...common, action: z.literal('rotate'), orientation: z.enum(ANDROID_ORIENTATIONS) }),
+  /**
+   * Send the app to the background (Home) and bring it back after `ms` (default DEFAULT_BACKGROUND_MS) the way its
+   * launcher icon does, to its task as it was (roadmap M5d-5). Android flows only.
+   */
+  z.strictObject({ ...common, action: z.literal('background'), ms: z.number().int().nonnegative().max(MAX_BACKGROUND_MS).optional() })
 ])
 
 export const FlowTargetSchema = z.discriminatedUnion('kind', [
@@ -247,12 +258,12 @@ export const FlowTargetSchema = z.discriminatedUnion('kind', [
 ])
 
 /**
- * What an android flow can do today (roadmap M5a, M5d-2, M5d-3, M5d-4): tap or long press (`hold_ms`), type,
+ * What an android flow can do today (roadmap M5a, M5d-2, M5d-3, M5d-4, M5d-5): tap or long press (`hold_ms`), type,
  * Android's keys, scroll (a list until a view is on screen, a pager or the app's list by a delta), deep links, waits,
- * element assertions and turning the screen. The rest is refused by parseFlow with a message, instead of being
+ * element assertions, turning the screen and sending the app to the background and back. The rest is refused by parseFlow with a message, instead of being
  * skipped at replay.
  */
-export const ANDROID_ACTIONS = ['click', 'fill', 'press', 'scroll', 'navigate', 'wait', 'assert', 'rotate'] as const satisfies readonly FlowAction[]
+export const ANDROID_ACTIONS = ['click', 'fill', 'press', 'scroll', 'navigate', 'wait', 'assert', 'rotate', 'background'] as const satisfies readonly FlowAction[]
 
 /** Keys an android `press` step may name, and the key event each sends. */
 export const ANDROID_KEYS: Readonly<Record<string, string>> = {
@@ -382,6 +393,9 @@ export const FlowSchema = FlowShape.superRefine((flow, ctx) => {
     }
     if (!android && step.action === 'rotate') {
       ctx.addIssue({ code: 'custom', path: ['steps', i, 'action'], message: 'rotate (turning the device) is only for android flows' })
+    }
+    if (!android && step.action === 'background') {
+      ctx.addIssue({ code: 'custom', path: ['steps', i, 'action'], message: 'background (sending the app to the background and back) is only for android flows' })
     }
     const stepTarget = 'target' in step ? step.target : undefined
     stepTarget?.selectors.forEach((selector, k) => {

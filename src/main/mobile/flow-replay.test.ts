@@ -3,7 +3,7 @@ import { parseFlow, type Flow } from '../../shared/flow'
 import { planSwipes, replayAndroidFlow, type AndroidReplayRequest } from './flow-replay'
 import { crashLogLine } from './crash'
 import { anr, javaCrash, nativeCrash } from './fixtures/crash-logs'
-import { DEVICE_AHEAD_MS, device, ID, PKG, type Device } from './fixtures/shop-app'
+import { DEVICE_AHEAD_MS, device, ID, PKG, SHOP_LAUNCHER, type Device } from './fixtures/shop-app'
 import { decodePng } from './png'
 
 /**
@@ -916,6 +916,115 @@ describe('replayAndroidFlow rotate (roadmap M5d-4)', () => {
     const d = device('orders')
     await run(flow(`  - { id: s1, action: click, target: { selectors: [{ text: "Order #2" }] } }\n`), d)
     expect(d.lines).toEqual(['input tap 540 525'])
+  })
+})
+
+describe('replayAndroidFlow background (roadmap M5d-5)', () => {
+  const AWAY = flow(
+    `  - { id: b1, action: background, ms: 3000, intent: Leave the app for a while }
+  - { id: b2, action: assert, target: { selectors: [{ id: "${ID('status')}" }] }, expect: { text: Shipped to Ana } }
+  - { id: b3, action: click, target: { selectors: [{ text: Track }] } }
+`
+  )
+  const RESOLVE = `cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER '${PKG}'`
+  const RESTORE = `am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -f 0x10200000 -n '${SHOP_LAUNCHER}'`
+
+  it('sends the app home, leaves it away for ms, brings its task back as it was, three runs alike', async () => {
+    const outcomes: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const d = device('order', { background: { returnReads: 2 } })
+      const awayAfter: boolean[] = []
+      const r = await run(AWAY, d, { onStep: () => awayAfter.push(d.away()) })
+      expect(r.status, `run ${i + 1}: ${JSON.stringify(r.steps.find((s) => s.status === 'failed'))}`).toBe('passed')
+      expect(awayAfter, 'the app is back in front after the background step and stays there').toEqual([false, false, false])
+      expect(d.stack, 'the order screen was kept while away (the task came back, not a fresh start)').toEqual(['order'])
+      outcomes.push(JSON.stringify({ lines: d.lines, steps: r.steps.map((s) => [s.id, s.status, s.durationMs]) }))
+    }
+    expect(new Set(outcomes).size, 'three replays must send the same commands and take the same time').toBe(1)
+    const d = device('order')
+    const r = await run(AWAY, d)
+    expect(d.lines, 'launcher read before Home, then Home, then the launcher intent that brings the task back').toEqual([RESOLVE, 'input keyevent KEYCODE_HOME', RESTORE, 'input tap 540 375'])
+    const b1 = r.steps[0].durationMs ?? 0
+    expect(b1, `the app stays away the step's 3000 ms, plus a few screen reads (took ${b1} ms)`).toBeGreaterThanOrEqual(3_000)
+    expect(b1).toBeLessThan(3_000 + 1_000)
+  })
+
+  it('stays away 1 s when the step has no ms, and reads the launcher only once per run', async () => {
+    const d = device('order')
+    // A last step's duration also holds the run's final crash settle (1 s), so the steps measured here are not last.
+    const r = await run(flow(`  - { id: b1, action: background }\n  - { id: b2, action: background, ms: 0 }\n  - { id: b3, action: click, target: { selectors: [{ text: Track }] } }\n`), d)
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    expect(r.steps[0].durationMs ?? 0, 'DEFAULT_BACKGROUND_MS').toBeGreaterThanOrEqual(1_000)
+    expect(r.steps[1].durationMs ?? 0, 'ms: 0 goes straight back once the app has left').toBeLessThan(1_000)
+    expect(d.lines.filter((l) => l === RESOLVE), 'the launcher component is read once per run').toHaveLength(1)
+    expect(d.lines.filter((l) => l === RESTORE)).toHaveLength(2)
+  })
+
+  it('fails at its timeout without trying to bring the app back when Home leaves it on screen (pinned)', async () => {
+    const d = device('order', { background: { pinned: true } })
+    const r = await run(flow('  - { id: b1, action: background, ms: 500, timeout_ms: 2000 }\n  - { id: b2, action: click, target: { selectors: [{ text: Track }] } }\n'), d)
+    expect(r.failedStepId).toBe('b1')
+    expect(r.steps[0].error).toBe(
+      `${PKG} is still on screen after Home: the device may be pinned to it (screen pinning, a kiosk app), or it went on in picture-in-picture, which background steps do not handle yet`
+    )
+    expect(r.steps[1].status).toBe('not_run')
+    expect(d.lines, 'no restore when the app never left').toEqual([RESOLVE, 'input keyevent KEYCODE_HOME'])
+    const blank = device('order', { background: { pinned: true, emptyReads: 2 } })
+    const r2 = await run(flow('  - { id: b1, action: background, ms: 500, timeout_ms: 2000 }\n'), blank)
+    expect(r2.steps[0].status, 'an empty screen read right after Home is not the app gone').toBe('failed')
+    expect(blank.lines).toEqual([RESOLVE, 'input keyevent KEYCODE_HOME'])
+    const unpinned = device('order', { background: { emptyReads: 2 } })
+    const r3 = await run(flow('  - { id: b1, action: background, ms: 500 }\n'), unpinned)
+    expect(r3.status, 'empty reads, then the launcher: the app left').toBe('passed')
+  })
+
+  it('does not send the app away when its launcher cannot be named (none, or several = the system chooser)', async () => {
+    const chooser = device('order', { background: { launcher: { code: 0, stdout: 'android/com.android.internal.app.ResolverActivity\n', stderr: '' } } })
+    const r = await run(flow('  - { id: b1, action: background }\n'), chooser)
+    expect(r.steps[0].error).toBe(`${PKG} has several launcher activities on emulator-5560, so Nawi could not tell how to bring it back from the background`)
+    expect(chooser.lines, 'Home is never pressed: the app stays in front').toEqual([RESOLVE])
+    expect(chooser.away()).toBe(false)
+    const broken = device('order', { background: { launcher: { code: 1, stdout: '', stderr: 'cmd: Failure calling service package', error: 'failed' } } })
+    const r2 = await run(flow('  - { id: b1, action: background }\n'), broken)
+    expect(r2.steps[0].error).toBe(`could not find the launcher activity of ${PKG} on emulator-5560: adb exited with code 1`)
+    expect(broken.lines).toEqual([RESOLVE])
+  })
+
+  it('passes when Android ended the app while it was away: it starts again on its first screen, as for a person', async () => {
+    const login = device('login', { background: { restore: { killed: true } } })
+    login.stack.push('orders')
+    const r2 = await run(flow(`  - { id: b1, action: background }\n  - { id: b2, action: assert, target: { selectors: [{ text: Sign in }] }, expect: { visible: true } }\n`), login)
+    expect(r2.status, JSON.stringify(r2.steps)).toBe('passed')
+    expect(login.stack, 'a process death drops the screens the person had opened').toEqual(['login'])
+  })
+
+  it('fails with the reason when the app does not come back: am start says why, adb fails, or it never shows', async () => {
+    const said = device('order', { background: { restore: { stays: true, stdout: 'Starting: Intent {}\nError: Activity not started, unable to resolve Intent\n' } } })
+    const r1 = await run(flow('  - { id: b1, action: background }\n'), said)
+    expect(r1.steps[0].error).toBe(`${PKG} did not come back from the background: Error: Activity not started, unable to resolve Intent`)
+    const adbDown = device('order', { background: { restore: { fails: true } } })
+    const r2 = await run(flow('  - { id: b1, action: background }\n'), adbDown)
+    expect(r2.steps[0].error).toBe(`could not bring ${PKG} back from the background on emulator-5560: adb exited with code 1`)
+    const refused = device('order', { background: { restore: { fails: true, stdout: 'Starting: Intent {}\nError: Activity class {dev.nawi.shop/.MainActivity} does not exist.\n' } } })
+    const r4 = await run(flow('  - { id: b1, action: background }\n'), refused)
+    expect(r4.steps[0].error, 'am start\'s own reason wins over its exit code').toBe(`${PKG} did not come back from the background: Error: Activity class {dev.nawi.shop/.MainActivity} does not exist.`)
+    const hidden = device('order', { background: { restore: { stays: true } } })
+    const r3 = await run(flow('  - { id: b1, action: background, ms: 0, timeout_ms: 1500 }\n'), hidden)
+    expect(r3.steps[0].error).toBe(`${PKG} is not back on screen after it was brought back from the background`)
+    expect(r3.steps[0].durationMs ?? 0, 'waits its timeout for the app to show').toBeGreaterThanOrEqual(1_500)
+  })
+
+  it('a stop while the app is away ends the run there, without bringing it back', async () => {
+    const d = device('order')
+    const stop = new AbortController()
+    const host = { ...d.host, delay: async (ms: number, signal?: AbortSignal) => {
+      if (ms === 5_000) stop.abort('user stop')
+      return d.host.delay(ms, signal)
+    } }
+    const r = await replayAndroidFlow({ ...REQ, flow: flow('  - { id: b1, action: background, ms: 5000 }\n  - { id: b2, action: click, target: { selectors: [{ text: Track }] } }\n'), signal: stop.signal }, host)
+    expect(r).toMatchObject({ status: 'failed', error: 'stopped during step b1: user stop' })
+    expect(r.steps.map((s) => s.status)).toEqual(['not_run', 'not_run'])
+    expect(d.lines).toEqual([RESOLVE, 'input keyevent KEYCODE_HOME'])
   })
 })
 

@@ -313,6 +313,18 @@ describe('flow files — android target (roadmap M5)', () => {
     }
   })
 
+  it('parses android background steps with and without ms, written back as they were (M5d-5)', () => {
+    const r = parseFlow(androidWith('s1', '  - { id: s1, action: background, ms: 3000, intent: Leave the app a while }'))
+    if (!r.ok) throw new Error(`a background step should parse in an android flow:\n${formatFlowErrors(r.errors)}`)
+    expect(r.flow.steps[0], 'a background step keeps its ms').toEqual({ id: 's1', action: 'background', ms: 3000, intent: 'Leave the app a while' })
+    expect(stringifyFlow(r.flow)).toContain('ms: 3000')
+    const bare = parseFlow(androidWith('s1', '  - { id: s1, action: background }'))
+    if (!bare.ok) throw new Error(`a background step without ms should parse:\n${formatFlowErrors(bare.errors)}`)
+    expect(bare.flow.steps[0], 'ms is optional (the replayer leaves the app away 1 s then)').toEqual({ id: 's1', action: 'background' })
+    const zero = parseFlow(androidWith('s1', '  - { id: s1, action: background, ms: 0 }'))
+    expect(zero.ok, 'ms: 0 = Home and straight back, a valid step').toBe(true)
+  })
+
   it('rejects a package name that is not an Android application id', () => {
     const e = onlyError(ANDROID.replace('package: dev.nawi.shop', 'package: "shop; rm -rf /"'))
     expect(e).toMatchObject({ path: 'target.package', message: 'must be an Android package name such as com.example.app' })
@@ -335,6 +347,10 @@ describe('flow files — android target (roadmap M5)', () => {
     ['a rotate to an orientation that is not one', '  - { id: s1, action: rotate, orientation: sideways }', 'steps[0].orientation', /portrait.*landscape.*reverse-portrait.*reverse-landscape/],
     ['a rotate with no orientation', '  - { id: s1, action: rotate }', 'steps[0].orientation', /expected one of "portrait"/],
     ['a rotate aimed at a view', '  - { id: s1, action: rotate, orientation: landscape, target: { selectors: [ { text: Cart } ] } }', 'steps[0].target', /unknown key "target"/],
+    ['a background step with a negative time away', '  - { id: s1, action: background, ms: -1 }', 'steps[0].ms', /expected number to be >=0/],
+    ['a background step longer than 10 minutes', '  - { id: s1, action: background, ms: 600001 }', 'steps[0].ms', /600000/],
+    ['a background step in fractions of a ms', '  - { id: s1, action: background, ms: 1.5 }', 'steps[0].ms', /expected int/],
+    ['a background step aimed at a view', '  - { id: s1, action: background, target: { selectors: [ { text: Cart } ] } }', 'steps[0].target', /unknown key "target"/],
     ['a scroll too short to be a swipe', '  - { id: s5, action: scroll, target: { selectors: [ { text: Deals } ] }, delta: [30, 30] }', 'steps[4].delta', /moves at least 48 px: a shorter swipe is a tap/]
   ])('rejects %s, at the field', (_what, step, path, message) => {
     const id = /id: (s\d)/.exec(step)?.[1] as string
@@ -351,6 +367,11 @@ describe('flow files — android target (roadmap M5)', () => {
   it('rejects a rotate step in a browser flow (turning the device is for android flows)', () => {
     const e = onlyError(loginWith('  - { id: s2, action: press, key: Enter }', '  - { id: s2, action: rotate, orientation: landscape }'))
     expect(e).toMatchObject({ path: 'steps[1].action', message: 'rotate (turning the device) is only for android flows' })
+  })
+
+  it('rejects a background step in a browser flow (sending the app away is for android flows)', () => {
+    const e = onlyError(loginWith('  - { id: s2, action: press, key: Enter }', '  - { id: s2, action: background, ms: 500 }'))
+    expect(e).toMatchObject({ path: 'steps[1].action', message: 'background (sending the app to the background and back) is only for android flows' })
   })
 
   it('rejects a desc locator in a browser flow', () => {
@@ -463,6 +484,8 @@ function stepFor(id: string, action: (typeof FLOW_ACTIONS)[number]): fc.Arbitrar
         return fc.record({ target }, { requiredKeys: [] })
       case 'rotate':
         return fc.record({ orientation: fc.constantFrom(...ANDROID_ORIENTATIONS) })
+      case 'background':
+        return fc.record({ ms: fc.integer({ min: 0, max: 600_000 }) }, { requiredKeys: [] })
     }
   })()
   return fc.tuple(common, extra).map(([c, e]) => ({ id, action, ...c, ...e }) as FlowStep)
@@ -478,7 +501,7 @@ const flowArb: fc.Arbitrary<Flow> = fc
     ),
     fc.dictionary(name, fc.oneof(tricky.filter((s) => !s.includes('${')), fc.constant('${env.X}')), { maxKeys: 3 }),
     // Android-only actions are refused in the browser and desktop flows this draws (their own tests cover them).
-    fc.array(fc.constantFrom(...FLOW_ACTIONS.filter((a) => a !== 'rotate')), { maxLength: 8 })
+    fc.array(fc.constantFrom(...FLOW_ACTIONS.filter((a) => a !== 'rotate' && a !== 'background')), { maxLength: 8 })
   )
   .chain(([flowName, description, flowTarget, vars, actions]) =>
     fc.tuple(...actions.map((a, i) => stepFor(`s${i + 1}`, a))).map((steps) => {

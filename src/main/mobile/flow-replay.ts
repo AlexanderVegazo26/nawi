@@ -1,5 +1,5 @@
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '../../shared/flow/interpolate'
-import { ANDROID_KEYS, ANDROID_MIN_SWIPE_PX, locatorLayer, MAX_HOLD_MS, type AndroidOrientation, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
+import { ANDROID_KEYS, ANDROID_MIN_SWIPE_PX, DEFAULT_BACKGROUND_MS, locatorLayer, MAX_HOLD_MS, type AndroidOrientation, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
 import type { DeviceLogLine } from '../replay/evidence'
 import type { FlowRun, LocatorMiss, StepProgress, StepRun, StepScreenshots } from '../replay/replay'
 import { findAll } from './blockers'
@@ -8,7 +8,7 @@ import type { Exec, ExecResult } from './doctor'
 import { MAX_LOGCAT_LINES, readDeviceClockOffset, startAndroidEvidence, toUiLocator, type AndroidEvidence } from './flow-evidence'
 import { center, isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
 import { LONG_PRESS_TIMEOUT_LINE, parseLongPressTimeout, shortestHold } from './long-press'
-import { KEYBOARD_SHOWN_LINE, parseAmStart, readScreen } from './open'
+import { KEYBOARD_SHOWN_LINE, launcherLine, parseAmStart, parseLauncher, readScreen, severalLaunchers } from './open'
 import {
   AUTO_ROTATE_SETTING,
   orientationOf,
@@ -85,6 +85,13 @@ const RESTORE_TIMEOUT_MS = 5_000
 const DEEP_LINK_TIMEOUT_MS = 60_000
 /** How long the app gets after the last step's action before the run looks for a crash one last time. */
 export const LAST_STEP_CRASH_SETTLE_MS = 1_000
+/**
+ * How a `background` step brings the app back (M5d-5): its launcher intent with the flags a home screen icon sends
+ * (FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_RESET_TASK_IF_NEEDED). The intent matches the app's task, so Android brings
+ * that task to the front as it was instead of starting the activity again; the app starts afresh only when Android
+ * ended it while it was away, as it would for a person.
+ */
+export const RESTORE_FLAGS = '0x10200000'
 /** A deep link is a URI with a scheme, on one line. */
 const DEEP_LINK_RE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\s\x00-\x1f\x7f]+$/
 
@@ -488,6 +495,53 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
     return problems.length === 0 ? null : `could not put the screen rotation of ${serial} back (${problems.join('; ')}); its rotation stays as the run left it until it is set by hand`
   }
 
+  /** The app's launcher component, read once per run by the first background step. */
+  let launcher = null as string | null
+  /** Whether any window of the app is on screen (a prompt over it still counts: the app is in front under it). */
+  const appShown = (screen: UiScreen): boolean => screen.nodes.some((n) => n.package === pkg)
+  /**
+   * Send the app to the background and bring it back (roadmap M5d-5): Home, wait until none of its windows is on
+   * screen, leave it there `ms`, then bring its task back through the launcher intent (RESTORE_FLAGS) and wait until
+   * it shows again. `timeoutMs` bounds each of the two waits; the time away is not part of it. A crash while away
+   * fails the step like any other (the waits look for one). A run stopped while the app is away leaves it there.
+   */
+  const background = async (ms: number, timeoutMs: number): Promise<void> => {
+    if (launcher === null) {
+      // Before Home: an app Nawi could not bring back is not sent away.
+      const r = await shell(launcherLine(pkg))
+      if (failed(r)) throw new StepFailure(`could not find the launcher activity of ${pkg} on ${serial}: ${why(r)}`)
+      launcher = parseLauncher(r.stdout, pkg)
+      if (launcher === null) {
+        throw new StepFailure(
+          `${pkg} has ${severalLaunchers(r.stdout) ? 'several launcher activities' : 'no launcher activity'} on ${serial}, so Nawi could not tell how to bring it back from the background`
+        )
+      }
+    }
+    const component = launcher
+    await must('input keyevent KEYCODE_HOME', 'press Home')
+    // An empty read (between two windows) is not the app gone: a pinned app can show one too.
+    await poll<null>(host.now() + timeoutMs, (screen) =>
+      screen.nodes.length > 0 && !appShown(screen)
+        ? { ok: null }
+        : {
+            wait: `${pkg} is still on screen after Home: the device may be pinned to it (screen pinning, a kiosk app), or it went on in picture-in-picture, which background steps do not handle yet`
+          }
+    )
+    await host.delay(ms, signal)
+    if (signal?.aborted) throw new Stopped()
+    // Only the launcher component parsed from the device (package/class characters) reaches the shell here, quoted.
+    const r = await shell(`am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -f ${RESTORE_FLAGS} -n ${shQuote(component)}`, DEEP_LINK_TIMEOUT_MS)
+    // am start may exit non-zero with its own reason (`Error: ...`): that reason first, adb's exit code otherwise.
+    if (r.error === 'timeout' || r.error === 'not_found') throw new StepFailure(`could not bring ${pkg} back from the background on ${serial}: ${why(r)}`)
+    const started = parseAmStart(r.stdout, r.stderr)
+    if (!started.ok && /^(Error|Exception|Security exception|java\.lang\.\w+Exception)\b/.test(started.error)) {
+      throw new StepFailure(`${pkg} did not come back from the background: ${started.error}`)
+    }
+    if (failed(r)) throw new StepFailure(`could not bring ${pkg} back from the background on ${serial}: ${why(r)}`)
+    if (!started.ok) throw new StepFailure(`${pkg} did not come back from the background: ${started.error}`)
+    await poll<null>(host.now() + timeoutMs, (screen) => (appShown(screen) ? { ok: null } : { wait: `${pkg} is not back on screen after it was brought back from the background` }))
+  }
+
   /**
    * Tap the step's view, first hiding the on-screen keyboard; with `holdMs`, keep the finger on it that long (a long
    * press: `input swipe` that starts and ends on the same point and lifts after holdMs).
@@ -783,6 +837,9 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
       }
       case 'rotate':
         await rotateTo(step.orientation, deadline)
+        return
+      case 'background':
+        await background(step.ms ?? DEFAULT_BACKGROUND_MS, deadline - host.now())
         return
       default:
         throw new StepFailure(`"${step.action}" steps are not supported in android flows yet`)

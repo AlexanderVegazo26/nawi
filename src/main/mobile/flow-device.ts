@@ -1,6 +1,6 @@
 import { defaultHost, runMobileDoctor, type DoctorHost, type ExecResult } from './doctor'
 import { failed, why, type AndroidReplayHost } from './flow-replay'
-import { defaultOpenHost, parseAmStart } from './open'
+import { defaultOpenHost, launcherLine, parseAmStart, parseLauncher, severalLaunchers } from './open'
 import { TARGET_RE } from './profile'
 import { shQuote } from './shell'
 import { execBinary } from './screen'
@@ -53,20 +53,12 @@ export interface AndroidRunStopped {
 
 const SHELL_TIMEOUT_MS = 30_000
 const LAUNCH_TIMEOUT_MS = 60_000
-/** What `cmd package resolve-activity` names when several activities match: the system chooser, not one of the app's. */
-const CHOOSER_RE = /^android\/com\.android\.internal\.app\.\w*(Resolver|Chooser)\w*$/
 
 const firstLine = (s: string): string => s.trim().split(/\r?\n/)[0]?.trim() ?? ''
 /** adb itself could not reach the device (gone, offline, unauthorized), or did not answer: not something the device said. */
 const unreachable = (r: ExecResult): boolean =>
   r.error === 'timeout' || r.error === 'not_found' || r.error === 'too_large' || /^(adb: )?error:|device '.*' not found|device offline|unauthorized|no devices\/emulators found/im.test(r.stderr)
 
-/** `cmd package resolve-activity --brief` ends with `package/activity`; anything else is not a launcher of `pkg`. */
-export function parseLauncher(stdout: string, pkg: string): string | null {
-  const last = stdout.trim().split(/\r?\n/).pop()?.trim() ?? ''
-  const m = /^([A-Za-z][\w.]*)\/([\w.$]+)$/.exec(last)
-  return m && m[1] === pkg ? `${m[1]}/${m[2]}` : null
-}
 
 /**
  * The device to run `pkg`'s flow on, with the app started (unless `launch` is false), or why not. Never throws for a
@@ -117,11 +109,11 @@ export async function prepareAndroidRun(
   if (req.launch === false) return { adb, target, launched: null }
 
   // Android's `cmd` reports a missing activity in its output with exit code 0: the parsed line decides.
-  const resolved = await shell(`cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${shQuote(pkg)}`)
+  const resolved = await shell(launcherLine(pkg))
   if (unreachable(resolved)) return lost(resolved, `find ${pkg}'s launcher activity`)
   const component = failed(resolved) ? null : parseLauncher(resolved.stdout, pkg)
   if (component === null) {
-    const several = CHOOSER_RE.test(resolved.stdout.trim().split(/\r?\n/).pop()?.trim() ?? '')
+    const several = severalLaunchers(resolved.stdout)
     return {
       error: several ? `${pkg} has several launcher activities on ${name}, so Nawi can't tell which one the flow starts from` : `${pkg} has no launcher activity on ${name}`,
       fix: 'Start the app on the screen the flow begins on yourself (or with mobile_open), then run the flow without launching it (`--no-launch`, run_flow launch: false).'

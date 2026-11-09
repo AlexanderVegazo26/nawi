@@ -7,7 +7,8 @@ import { ToolError } from '../mcp/errors'
 import { readRunRecord } from '../run-record'
 import type { ExecResult } from './doctor'
 import { javaCrash } from './fixtures/crash-logs'
-import { parseLauncher, prepareAndroidRun, type AndroidRunHost } from './flow-device'
+import { prepareAndroidRun, type AndroidRunHost } from './flow-device'
+import { parseLauncher } from './open'
 import { encodePng } from './png'
 
 /**

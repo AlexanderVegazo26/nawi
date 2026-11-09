@@ -1005,6 +1005,8 @@ class StepRunner {
       case 'rotate':
         // parseFlow refuses it in browser flows; a flow built in code still fails the step rather than skipping it.
         throw new StepFailure('rotate (turning the device) is only for android flows')
+      case 'background':
+        throw new StepFailure('background (sending the app to the background and back) is only for android flows')
     }
   }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { parseFlow, stringifyFlow } from '../../shared/flow'
+import { parseFlow, stringifyFlow, type FlowStep } from '../../shared/flow'
 import { keyLines, touchLines } from './fixtures/getevent'
-import { device, ID, PKG, type Device } from './fixtures/shop-app'
+import { device, ID, PKG, SHOP_LAUNCHER, type Device } from './fixtures/shop-app'
 import { replayAndroidFlow } from './flow-replay'
 import { dumpLine, parseUiDump, type UiScreen } from './hierarchy'
 import {
@@ -253,6 +253,36 @@ describe('flowFromAndroidRecording on the fake shop app', () => {
       runs.push(JSON.stringify(d.lines))
     }
     expect(recorded.stack).toEqual(['login', 'orders', 'cart'])
+    expect(new Set(runs).size, 'three replays send the same commands').toBe(1)
+  })
+
+  it('records leaving the app and coming back from its icon as a background step that replays green three times (M5d-5)', async () => {
+    const s: Session = { d: device('orders'), events: [], t: 5000, reader: new GestureReader([PANEL], DISPLAY) }
+    for (let i = 0; i < 2; i++) await snapshot(s.d)
+    await tap(s, 700, 500) // Order #2
+    await key(s, 'KEY_HOMEPAGE', 'KEYCODE_HOME')
+    s.t += 2400
+    // The app's icon on the launcher: the launcher starts the app's task again (the restore a replay sends too).
+    await gesture(s, touchLines(s.t, [150, 2300], 80), () => shell(s.d, `am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -f 0x10200000 -n '${SHOP_LAUNCHER}'`))
+    await tap(s, 540, 375) // Track, on the order screen the app came back to
+    const result = flowFromAndroidRecording({ package: PKG, display: DISPLAY, events: s.events, after: await snapshot(s.d) })
+    expect(result.warnings).toEqual([])
+    expect(result.flow.steps.map((st) => [st.id, st.action, st.action === 'background' ? st.ms : null])).toEqual([
+      ['s1', 'click', null],
+      ['s2', 'background', 2500],
+      ['s3', 'click', null]
+    ])
+    const reparsed = parseFlow(stringifyFlow(result.flow))
+    if (!reparsed.ok) throw new Error(`recorded flow does not parse: ${JSON.stringify(reparsed.errors)}`)
+    const runs: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const d = device('orders')
+      const r = await replayAndroidFlow({ adb: 'adb', serial: 'emulator-5560', flow: reparsed.flow }, d.host)
+      expect(r.status, `replay ${i + 1}: ${JSON.stringify(r.steps.find((st) => st.status !== 'passed'))}`).toBe('passed')
+      expect(d.stack, 'the order screen came back with the app, and Track was tapped on it').toEqual(s.d.stack)
+      expect(d.away()).toBe(false)
+      runs.push(JSON.stringify(d.lines))
+    }
     expect(new Set(runs).size, 'three replays send the same commands').toBe(1)
   })
 
@@ -539,6 +569,160 @@ describe('flowFromAndroidRecording on single screens', () => {
       'rotate landscape'
     ])
     expect(r.warnings).toEqual([])
+  })
+
+  describe('leaving the app and coming back (M5d-5)', () => {
+    const ICON: V = { pkg: 'com.android.launcher3', cls: 'android.widget.TextView', text: 'Example', clickable: true, b: [0, 2200, 300, 2400] }
+    const RECENTS: V = { pkg: 'com.android.systemui', cls: 'android.widget.FrameLayout', desc: 'Example', clickable: true, b: [100, 400, 980, 2000] }
+    /** Another app's screen: its own root window, no view of com.example.app. */
+    const other = (v: V, rotation = 0): Snapshot => ({
+      screen: parseUiDump(`<hierarchy rotation="${rotation}">${nodeXml({ pkg: v.pkg, cls: 'android.widget.FrameLayout', b: [0, 0, 1080, 2400], kids: [v] })}</hierarchy>`),
+      keyboard: null
+    })
+    const launcher = (rotation = 0): Snapshot => other(ICON, rotation)
+    const key = (k: string, t: number): RawInput => ({ kind: 'key', t, key: k })
+    const tapAt = (x: number, y: number, t: number): Stroke => ({ ...stroke(x, y), t0: t - 80, t1: t })
+    const show = (st: FlowStep): string => (st.action === 'background' ? `background ${st.ms}: ${st.intent}` : st.action === 'press' ? `press ${st.key}` : st.action)
+
+    it('records Home, a tap on the app\'s icon and the app again as one background step timed to the touch that brought it back', () => {
+      const r = rec(
+        [
+          { input: tapAt(540, 150, 1_000), before: snap([SAVE]) },
+          { input: key('KEY_HOMEPAGE', 2_000), before: snap([SAVE]) },
+          { input: tapAt(100, 2300, 5_240), before: launcher() },
+          { input: tapAt(540, 150, 6_000), before: snap([SAVE]) }
+        ],
+        snap([SAVE])
+      )
+      expect(r.flow.steps.map(show)).toEqual(['click', 'background 3200: Leave the app in the background for 3.2 s, then come back to it', 'click'])
+      expect(r.flow.steps.map((st) => st.id)).toEqual(['s1', 's2', 's3'])
+      expect(r.warnings, 'the tap on the launcher is how the app came back, not a tap to warn about').toEqual([])
+    })
+
+    it('records the app switcher the same way, whatever was touched while away, and a turn of the launcher is no rotate step', () => {
+      const r = rec(
+        [
+          { input: key('KEY_APPSELECT', 10_000), before: snap([SAVE]) },
+          { input: key('KEY_BACK', 10_500), before: other(RECENTS) },
+          { input: tapAt(540, 1200, 11_050), before: launcher(1) },
+          { input: tapAt(540, 150, 12_000), before: snap([SAVE]) }
+        ],
+        snap([SAVE])
+      )
+      expect(r.flow.steps.map(show), 'the launcher shown sideways while away is not the app turning').toEqual(['background 1100: Leave the app in the background for 1.1 s, then come back to it', 'click'])
+      expect(r.warnings).toEqual([])
+    })
+
+    it('keeps Home as a press step when it left the app on screen, or when the recording ended away from the app', () => {
+      const stayed = rec(
+        [
+          { input: key('KEY_HOMEPAGE', 1_000), before: snap([SAVE]) },
+          { input: key('KEY_ENTER', 2_000), before: snap([SAVE]) }
+        ],
+        snap([SAVE])
+      )
+      expect(stayed.flow.steps.map(show), 'Home did not leave (a pinned app): a press, in its place').toEqual(['press Home', 'press Enter'])
+      const ended = rec(
+        [
+          { input: tapAt(540, 150, 1_000), before: snap([SAVE]) },
+          { input: key('KEY_HOMEPAGE', 2_000), before: snap([SAVE]) },
+          { input: tapAt(100, 2300, 3_000), before: launcher() }
+        ],
+        launcher()
+      )
+      expect(ended.flow.steps.map(show), 'the flow ends where the person left it').toEqual(['click', 'press Home'])
+      expect(ended.warnings).toEqual([])
+      const last = rec([{ input: key('KEY_HOMEPAGE', 2_000), before: snap([SAVE]) }], snap([SAVE]))
+      expect(last.flow.steps.map(show), 'Home as the last input with the app still on screen').toEqual(['press Home'])
+    })
+
+    it('does not take an empty screen read after Home for the app having left, nor for it being back', () => {
+      const empty: Snapshot = { screen: parseUiDump('<hierarchy rotation="0"></hierarchy>'), keyboard: null }
+      const stayed = rec(
+        [
+          { input: key('KEY_HOMEPAGE', 1_000), before: snap([SAVE]) },
+          { input: tapAt(540, 150, 1_500), before: empty },
+          { input: tapAt(540, 150, 2_000), before: snap([SAVE]) }
+        ],
+        snap([SAVE])
+      )
+      expect(stayed.flow.steps.map(show)).toEqual(['press Home', 'click'])
+      expect(stayed.warnings).toEqual(['A touch right after leaving the app is not recorded: the screen could not be read then.'])
+      const left = rec(
+        [
+          { input: key('KEY_HOMEPAGE', 1_000), before: snap([SAVE]) },
+          { input: tapAt(540, 150, 1_500), before: empty },
+          { input: tapAt(100, 2300, 4_000), before: launcher() },
+          { input: tapAt(540, 150, 5_000), before: snap([SAVE]) }
+        ],
+        snap([SAVE])
+      )
+      expect(left.flow.steps.map(show), 'an empty read mid-transition, then the launcher: it left').toEqual(['background 3000: Leave the app in the background for 3.0 s, then come back to it', 'click'])
+    })
+
+    it('records gesture navigation\'s swipe up to the home screen as leaving the app, without a swipe warning', () => {
+      const r = rec(
+        [
+          { input: { ...stroke(540, 2390, 200, [540, 1400]), t0: 1_800, t1: 2_000 }, before: snap([SAVE]) },
+          { input: tapAt(100, 2300, 4_500), before: launcher() },
+          { input: tapAt(540, 150, 5_000), before: snap([SAVE]) }
+        ],
+        snap([SAVE])
+      )
+      expect(r.flow.steps.map(show)).toEqual(['background 2500: Leave the app in the background for 2.5 s, then come back to it', 'click'])
+      expect(r.warnings, 'the swipe was the way home, not a scroll left out').toEqual([])
+      const scrolled = rec([{ input: { ...stroke(540, 1500, 200, [540, 900]), t0: 1_800, t1: 2_000 }, before: snap([SAVE]) }], snap([SAVE]))
+      expect(scrolled.warnings, 'a swipe that stays in the app is still reported').toHaveLength(1)
+    })
+
+    it('keeps the steps in order when Home did not leave the app and the person typed after it', () => {
+      const r = rec(
+        [
+          { input: tapAt(540, 350, 1_000), before: snap([SAVE, NAME()]) },
+          { input: key('KEY_HOMEPAGE', 2_000), before: snap([SAVE, NAME('', true)]) },
+          { input: tapAt(540, 2000, 2_500), before: snap([SAVE, NAME('', true)], true) },
+          { input: tapAt(540, 150, 3_000), before: snap([SAVE, NAME('Ana', true)]) }
+        ],
+        snap([SAVE, NAME('Ana', true)])
+      )
+      expect(r.flow.steps.map((st) => (st.action === 'fill' ? `fill ${st.value}` : show(st)))).toEqual(['click', 'press Home', 'fill Ana', 'click'])
+    })
+
+    it('reads typing after coming back from the keyboard taps then, never a field the app changed while away', () => {
+      const r = rec(
+        [
+          { input: tapAt(540, 350, 1_000), before: snap([SAVE, NAME()]) },
+          { input: key('KEY_HOMEPAGE', 2_000), before: snap([SAVE, NAME('Ana', true)]) },
+          { input: tapAt(100, 2300, 2_000 + 700_000), before: launcher() },
+          // Back, the field shows what it had; a keyboard tap types more, then Save.
+          { input: tapAt(540, 2000, 2_000 + 701_000), before: snap([SAVE, NAME('Ana', true)], true) },
+          { input: tapAt(540, 150, 2_000 + 702_000), before: snap([SAVE, NAME('Ana B', true)]) }
+        ],
+        snap([SAVE, NAME('Ana B', true)])
+      )
+      expect(r.flow.steps.map((st) => (st.action === 'fill' ? `fill ${st.value}` : show(st)))).toEqual([
+        'fill Ana',
+        'background 600000: Leave the app in the background for 600.0 s, then come back to it',
+        'fill Ana B',
+        'click'
+      ])
+      expect(r.warnings).toEqual(['The app was in the background for 700 s: the step keeps it there 10 minutes, the longest a flow does.'])
+      const restarted = rec(
+        [
+          { input: tapAt(540, 350, 1_000), before: snap([SAVE, NAME()]) },
+          { input: key('KEY_HOMEPAGE', 2_000), before: snap([SAVE, NAME('Ana', true)]) },
+          { input: tapAt(100, 2300, 5_000), before: launcher() },
+          // Android ended the app while away: it starts afresh with the field empty and focused.
+          { input: tapAt(540, 150, 6_000), before: snap([SAVE, NAME('', true)]) }
+        ],
+        snap([SAVE, NAME('', true)])
+      )
+      expect(restarted.flow.steps.map((st) => (st.action === 'fill' ? `fill ${st.value}` : show(st))), 'no fill of "" nobody typed').toEqual([
+        'fill Ana',
+        'background 3000: Leave the app in the background for 3.0 s, then come back to it',
+        'click'
+      ])
+    })
   })
 
   it('never uses a blank text or description as a locator, so the flow still parses', () => {

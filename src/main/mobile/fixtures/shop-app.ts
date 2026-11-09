@@ -178,6 +178,22 @@ export interface DeviceOptions {
     getFails?: 'accelerometer_rotation' | 'user_rotation'
     writeFails?: Array<{ name: 'accelerometer_rotation' | 'user_rotation'; nth: number }>
   }
+  /**
+   * Roadmap M5d-5, the app in the background. Home shows the launcher with the app's screens kept (and hides the
+   * keyboard); the restore `am start` (the launcher intent) brings them back as they were. `pinned`: Home leaves the
+   * app on screen (screen pinning). `launcher`: what `cmd package resolve-activity` answers (default this app's
+   * `.MainActivity`). `restore`: what the restore `am start` prints (default `Status: ok`), `killed` = Android ended
+   * the app while it was away, so it starts again on its first screen, `stays` = it does not come back, `fails` = adb
+   * fails. `returnReads`: screen reads the app takes to show after the restore. `emptyReads`: screen reads right after
+   * Home that come back empty (between two windows).
+   */
+  background?: {
+    pinned?: boolean
+    emptyReads?: number
+    launcher?: ExecResult
+    restore?: { stdout?: string; killed?: boolean; stays?: boolean; fails?: boolean }
+    returnReads?: number
+  }
 }
 
 export interface Device {
@@ -197,7 +213,12 @@ export interface Device {
   settings: Record<'accelerometer_rotation' | 'user_rotation', string>
   /** The rotation the screen shows now (the dump's `rotation`). */
   rotation(): number
+  /** Whether the app is in the background now (M5d-5): the launcher is on screen, its screens kept. */
+  away(): boolean
 }
+
+/** The launcher component the fake device names for the shop app (M5d-5). */
+export const SHOP_LAUNCHER = `${PKG}/.MainActivity`
 
 export function device(start = 'login', over: DeviceOptions = {}): Device {
   const screens = app()
@@ -230,6 +251,11 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
     return shown
   }
   let clock = 1_000_000
+  /** In the background (M5d-5); `returning` = screen reads left before it shows again after the restore. */
+  let away = false
+  let returning = 0
+  /** Empty screen reads left after Home (emptyReads): the dump between two windows. */
+  let empty = 0
   let keyboard = false
   let focused: string | null = null
   const top = (): string => stack[stack.length - 1]
@@ -240,11 +266,18 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
   const dump = (): string => {
     reads++
     over.onRead?.(reads, screens)
-    readsOf[top()] = (readsOf[top()] ?? 0) + 1
-    const spec = screens[top()]
-    const inner = loaded(top()).map((c) => node(PKG, c, textOf(c), '', focused, offsets)).join('')
+    if (returning > 0) returning--
+    if (empty > 0) {
+      empty--
+      return 'UI hierchary dumped to: /data/local/tmp/x.xml\n<?xml version=\'1.0\' encoding=\'UTF-8\' standalone=\'yes\' ?><hierarchy rotation="0"></hierarchy>'
+    }
+    // Away (or still coming back): the launcher is on screen; the app's screens wait under it as they were.
+    const name = away || returning > 0 ? 'launcher' : top()
+    readsOf[name] = (readsOf[name] ?? 0) + 1
+    const spec = screens[name]
+    const inner = loaded(name).map((c) => node(PKG, c, textOf(c), '', focused, offsets)).join('')
     // Once the app died, the window on screen is the launcher's.
-    let windows = node(top() === 'launcher' ? 'com.android.launcher3' : PKG, { cls: 'android.widget.FrameLayout', bounds: [0, 0, 1080, 2400] }, '', inner)
+    let windows = node(name === 'launcher' ? 'com.android.launcher3' : PKG, { cls: 'android.widget.FrameLayout', bounds: [0, 0, 1080, 2400] }, '', inner)
     if (spec.overlay) windows += node(spec.overlay.pkg, { cls: 'android.widget.FrameLayout', bounds: spec.overlay.bounds }, '', node(spec.overlay.pkg, { cls: 'android.widget.Button', text: 'Allow', bounds: spec.overlay.bounds }, 'Allow'))
     return `UI hierchary dumped to: /data/local/tmp/x.xml\n<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="${rotationNow()}">${windows}</hierarchy>`
   }
@@ -275,6 +308,14 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
         else stack.pop()
         return ok()
       }
+      if (line === 'input keyevent KEYCODE_HOME') {
+        empty = over.background?.emptyReads ?? 0
+        if (!over.background?.pinned) {
+          away = true
+          keyboard = false
+        }
+        return ok()
+      }
       if (line.startsWith('input keyevent')) {
         if (focused && line.includes('KEYCODE_DEL')) typed[focused] = ''
         return ok()
@@ -288,8 +329,27 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       const am = /^am start -W -a android\.intent\.action\.VIEW -d '(.*)' 'dev\.nawi\.shop'$/.exec(line)
       if (am) {
         const answer = over.deepLink?.(am[1]) ?? { stdout: 'Starting: Intent { act=android.intent.action.VIEW }\nStatus: ok\nTotalTime: 120\n' }
+        // A deep link brings the app to the front, from the background too.
+        away = false
         if (answer.go) stack.push(answer.go)
         return ok(answer.stdout)
+      }
+      if (line === `cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER '${PKG}'`) {
+        return over.background?.launcher ?? ok(`priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\n${SHOP_LAUNCHER}\n`)
+      }
+      if (line === `am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -f 0x10200000 -n '${SHOP_LAUNCHER}'`) {
+        const r = over.background?.restore ?? {}
+        if (r.fails) return { code: 1, stdout: r.stdout ?? '', stderr: r.stdout ? '' : 'adb: device offline', error: 'failed' }
+        if (!r.stays) {
+          away = false
+          returning = over.background?.returnReads ?? 0
+          if (r.killed) {
+            stack.splice(0, stack.length, start)
+            focused = null
+            for (const k of Object.keys(typed)) delete typed[k]
+          }
+        }
+        return ok(r.stdout ?? `Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x10200000 cmp=${SHOP_LAUNCHER} }\nStatus: ok\nLaunchState: UNKNOWN (0)\nActivity: ${SHOP_LAUNCHER}\nWaitTime: 80\nComplete\n`)
       }
       if (line === 'wm size') return ok(rot.wmSize ?? 'Physical size: 1080x2400\n')
       // The recorder's quick look (M5d-4): the rotation the screen shows now, not one still waiting for lagReads.
@@ -339,7 +399,7 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
     now: () => clock
   }
   function hitAt(x: number, y: number): Control | undefined {
-    return visible(top())
+    return visible(away || returning > 0 ? 'launcher' : top())
       .filter((c) => c.enabled !== false && x >= c.bounds[0] && x < c.bounds[2] && y >= c.bounds[1] && y < c.bounds[3])
       .pop()
   }
@@ -369,5 +429,5 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       return { code: 0, stdout: encodePng({ width: w, height: h, rgb }), stderr: '' }
     }
   }
-  return { host, lines, evidenceLines, crashReads, typed, stack, offsets, settings, rotation: () => shown }
+  return { host, lines, evidenceLines, crashReads, typed, stack, offsets, settings, rotation: () => shown, away: () => away }
 }
