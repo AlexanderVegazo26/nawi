@@ -275,6 +275,7 @@ interface V {
   hint?: string
   pkg?: string
   clickable?: boolean
+  longClickable?: boolean
   focused?: boolean
   password?: boolean
   b: [number, number, number, number]
@@ -286,7 +287,7 @@ const nodeXml = (v: V): string => {
   const open =
     `<node index="0" text="${esc(v.text ?? '')}" resource-id="${v.id ?? ''}" class="${v.cls ?? 'android.widget.TextView'}" package="${v.pkg ?? 'com.example.app'}" ` +
     `content-desc="${esc(v.desc ?? '')}" checkable="false" checked="false" clickable="${v.clickable ?? false}" enabled="true" focusable="false" ` +
-    `focused="${v.focused ?? false}" scrollable="false" long-clickable="false" password="${v.password ?? false}" selected="false" hint="${esc(v.hint ?? '')}" ` +
+    `focused="${v.focused ?? false}" scrollable="false" long-clickable="${v.longClickable ?? false}" password="${v.password ?? false}" selected="false" hint="${esc(v.hint ?? '')}" ` +
     `bounds="[${v.b[0]},${v.b[1]}][${v.b[2]},${v.b[3]}]"`
   return v.kids ? `${open}>${v.kids.map(nodeXml).join('')}</node>` : `${open}/>`
 }
@@ -384,7 +385,7 @@ describe('flowFromAndroidRecording on single screens', () => {
     expect(r.warnings).toEqual(['The volumeup key is not recorded: it changes the device, not the app.'])
   })
 
-  it('leaves out taps on other apps\' windows, Android\'s permission prompt, long presses, swipes and dropped strokes, saying why', () => {
+  it('leaves out taps on other apps\' windows, Android\'s permission prompt, swipes and dropped strokes, saying why', () => {
     const prompt: V = { pkg: 'com.google.android.permissioncontroller', cls: 'android.widget.Button', text: 'Allow', clickable: true, b: [100, 1000, 980, 1200] }
     const launcher: V = { pkg: 'com.android.launcher3', cls: 'android.widget.TextView', text: 'Clock', clickable: true, b: [0, 2200, 300, 2400] }
     const s = snap([SAVE, prompt, launcher])
@@ -392,7 +393,6 @@ describe('flowFromAndroidRecording on single screens', () => {
       [
         { input: stroke(500, 1100), before: s },
         { input: stroke(100, 2300), before: s },
-        { input: stroke(500, 150, 800), before: s },
         { input: stroke(500, 150, 200, [500, 900]), before: s },
         { input: stroke(500, 150, 100, undefined, 2), before: s },
         { input: { ...stroke(500, 150), dropped: true }, before: s },
@@ -404,11 +404,64 @@ describe('flowFromAndroidRecording on single screens', () => {
     expect(r.warnings).toEqual([
       'A tap on "Allow" in Android\'s permission prompt is not recorded: grant the permission before the run (the profile\'s permissions.grant).',
       'A tap at (100, 2300) on "Clock" is not recorded: it landed on com.android.launcher3, not com.example.app.',
-      'A long press at (500, 150) on "Save" is not recorded: android flows have no step for it yet.',
       'A swipe at (500, 150) on "Save" is not recorded: the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand).',
       'A 2-finger gesture at (500, 150) on "Save" is not recorded: android flows have no step for it yet.',
       'A touch at (500, 150) is not recorded: the device dropped some of its events.',
       'A tap at (500, 2000) is not recorded: no view is there on the screen it landed on.'
+    ])
+  })
+
+  it('records a long press as a click holding as long as the finger rested (rounded up to 100 ms, 600 ms to 10 s), on the view a tap would get (M5d-3)', () => {
+    // A label that takes no touches inside a long-clickable row: the row gets the press. A clickable label gets it itself.
+    const label: V = { cls: 'android.widget.TextView', text: 'Order #1', b: [40, 520, 600, 580] }
+    const row: V = { cls: 'android.widget.LinearLayout', id: 'com.example.app:id/order_row', longClickable: true, b: [0, 500, 1080, 600], kids: [label] }
+    const link: V = { cls: 'android.widget.TextView', id: 'com.example.app:id/details', text: 'Details', clickable: true, b: [700, 720, 1000, 780] }
+    const row2: V = { cls: 'android.widget.LinearLayout', id: 'com.example.app:id/order_row2', longClickable: true, b: [0, 700, 1080, 800], kids: [link] }
+    const s = snap([SAVE, row, row2])
+    const r = rec(
+      [
+        { input: stroke(500, 150, 820), before: s },
+        { input: stroke(500, 150, 510), before: s },
+        { input: stroke(300, 550, 1500), before: s },
+        { input: stroke(800, 750, 900), before: s },
+        { input: stroke(500, 150, 15_000), before: s }
+      ],
+      s
+    )
+    expect(r.flow.steps).toEqual([
+      { id: 's1', action: 'click', intent: 'Long press "Save"', target: { selectors: [{ id: 'com.example.app:id/save' }, { text: 'Save' }] }, hold_ms: 900 },
+      { id: 's2', action: 'click', intent: 'Long press "Save"', target: { selectors: [{ id: 'com.example.app:id/save' }, { text: 'Save' }] }, hold_ms: 600 },
+      { id: 's3', action: 'click', intent: 'Long press "Order #1"', target: { selectors: [{ id: 'com.example.app:id/order_row' }] }, hold_ms: 1500 },
+      { id: 's4', action: 'click', intent: 'Long press "Details"', target: { selectors: [{ id: 'com.example.app:id/details' }, { text: 'Details' }] }, hold_ms: 900 },
+      { id: 's5', action: 'click', intent: 'Long press "Save"', target: { selectors: [{ id: 'com.example.app:id/save' }, { text: 'Save' }] }, hold_ms: 10_000 }
+    ])
+    expect(r.warnings).toEqual(['A long press at (500, 150) on "Save" lasted 15.0 s: the step holds 10 s, the longest a flow holds.'])
+  })
+
+  it('splits taps from long presses at the device\'s own touch & hold delay, and holds past it on replay', () => {
+    const s = snap([SAVE])
+    const at = (longPressTimeoutMs: number, ms: number) =>
+      flowFromAndroidRecording({ package: 'com.example.app', display: DISPLAY, longPressTimeoutMs, events: [{ input: stroke(500, 150, ms), before: s }], after: s })
+    expect(at(1000, 700).flow.steps, 'a 1 s delay: 700 ms is a tap').toMatchObject([{ action: 'click', intent: 'Tap "Save"' }])
+    expect(at(1000, 700).flow.steps[0]).not.toHaveProperty('hold_ms')
+    expect(at(1000, 1020).flow.steps, 'held past the delay: replayed 100 ms past it').toMatchObject([{ intent: 'Long press "Save"', hold_ms: 1100 }])
+    expect(at(400, 450).flow.steps, 'Android 12\'s 400 ms: 450 ms is a long press, replayed for the 600 ms minimum').toMatchObject([{ hold_ms: 600 }])
+    const tooSlow = at(9950, 12_000)
+    expect(tooSlow.flow.steps).toEqual([])
+    expect(tooSlow.warnings).toEqual(['A long press at (500, 150) on "Save" is not recorded: the device takes a touch for a long press only after 9950 ms, longer than a flow holds (10000 ms).'])
+  })
+
+  it('leaves out a long press it cannot replay, saying why in long-press words', () => {
+    const off: V = { ...SAVE, id: 'com.example.app:id/off', text: 'Off' }
+    const prompt: V = { pkg: 'com.google.android.permissioncontroller', cls: 'android.widget.Button', text: 'Allow', clickable: true, b: [100, 1000, 980, 1200] }
+    const s = snap([prompt])
+    const disabled: Snapshot = { screen: screenOf([off]), keyboard: null }
+    disabled.screen.nodes.forEach((n) => (n.enabled = n.text !== 'Off'))
+    const r = rec([{ input: stroke(500, 1100, 900), before: s }, { input: stroke(500, 150, 900), before: disabled }], s)
+    expect(r.flow.steps).toEqual([])
+    expect(r.warnings).toEqual([
+      'A long press on "Allow" in Android\'s permission prompt is not recorded: grant the permission before the run (the profile\'s permissions.grant).',
+      'A long press at (500, 150) on "Off" is not recorded: that view was disabled, so the long press did nothing.'
     ])
   })
 

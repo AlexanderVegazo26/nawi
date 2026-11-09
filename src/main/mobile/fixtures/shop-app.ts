@@ -22,6 +22,8 @@ export interface Control {
   bounds: Box
   /** Where a tap leads: a screen name, or 'up'. */
   go?: string
+  /** Where a long press leads (roadmap M5d-3): a screen name; the view is long-clickable. */
+  hold?: string
   children?: Control[]
   /** Shown only from the n-th read of the screen on (1-based): a list that loads. */
   fromRead?: number
@@ -55,7 +57,7 @@ function app(): Record<string, ScreenSpec> {
       controls: [
         { id: ID('title'), text: 'Your orders', bounds: [40, 100, 1040, 250] },
         { cls: 'android.widget.ImageButton', id: ID('cart'), desc: 'Cart', bounds: [900, 100, 1060, 250], go: 'cart' },
-        button('order_1', 'Order #1', [0, 300, 1080, 450], 'order', { fromRead: 3 }),
+        button('order_1', 'Order #1', [0, 300, 1080, 450], 'order', { fromRead: 3, hold: 'order_menu' }),
         button('order_2', 'Order #2', [0, 450, 1080, 600], 'order', { fromRead: 3 })
       ]
     },
@@ -84,6 +86,8 @@ function app(): Record<string, ScreenSpec> {
         field('search', [40, 2200, 1040, 2350], 'Search')
       ]
     },
+    /** What a long press on an order opens (M5d-3). */
+    order_menu: { controls: [button('cancel_order', 'Cancel order', [40, 300, 1040, 450], 'up'), button('share_order', 'Share', [40, 450, 1040, 600], 'up')] },
     cart: { controls: [{ id: ID('empty'), text: 'Your cart is empty', bounds: [40, 100, 1040, 250] }] },
     /** What is on screen once the app died (crashOn): another package's home screen. */
     launcher: { controls: [{ id: 'com.android.launcher3:id/workspace', pkg: 'com.android.launcher3', text: 'Home', bounds: [0, 0, 1080, 2400] }] }
@@ -119,7 +123,7 @@ function node(pkg: string, c: Control, text: string, inner = '', focusedId: stri
   const open =
     `<node index="0" text="${attr(text)}" resource-id="${c.id ?? ''}" class="${c.cls ?? 'android.widget.TextView'}" package="${c.pkg ?? pkg}" ` +
     `content-desc="${attr(c.desc ?? '')}" checkable="false" checked="false" clickable="${tappable}" enabled="${c.enabled ?? true}" ` +
-    `focusable="${tappable}" focused="${c.id !== undefined && c.id === focusedId}" scrollable="${c.scroll !== undefined}" long-clickable="false" password="${c.id === ID('password')}" selected="false" ` +
+    `focusable="${tappable}" focused="${c.id !== undefined && c.id === focusedId}" scrollable="${c.scroll !== undefined}" long-clickable="${c.hold !== undefined}" password="${c.id === ID('password')}" selected="false" ` +
     `bounds="${box(c.bounds)}"`
   const kids = inner + [...(c.children ?? []), ...shownContent(c, offsets[c.id ?? ''] ?? 0)].map((k) => node(pkg, k, k.text ?? '', '', focusedId)).join('')
   return kids ? `${open}>${kids}</node>` : `${open}/>`
@@ -150,6 +154,13 @@ export interface DeviceOptions {
    * it returns `before` (another app's crash, say); `logAfterMs` also holds it back until that much fake time passed.
    */
   crashOn?: { control: string; hang?: boolean; logAfterReads?: number; logAfterMs?: number; log: (deviceSec: number) => string; before?: string }
+  /**
+   * What `settings get secure long_press_timeout` prints (default `null`: never changed, so 400 ms like Android 12+).
+   * A finger resting on one point (`input swipe x y x y ms`) for at least that long is a long press, else a tap.
+   */
+  longPressTimeout?: string
+  /** `settings get secure long_press_timeout` fails (adb error). */
+  longPressTimeoutFails?: boolean
 }
 
 export interface Device {
@@ -242,11 +253,23 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
         if (answer.go) stack.push(answer.go)
         return ok(answer.stdout)
       }
+      if (line === 'settings get secure long_press_timeout') {
+        return over.longPressTimeoutFails ? { code: 1, stdout: '', stderr: 'cmd: Failure calling service settings', error: 'failed' } : ok(`${over.longPressTimeout ?? 'null'}\n`)
+      }
       const swipe = /^input swipe (-?\d+) (-?\d+) (-?\d+) (-?\d+) (\d+)$/.exec(line)
       if (swipe) {
         const [x1, y1, x2, y2, ms] = swipe.slice(1, 6).map(Number)
         // `input swipe` returns once the finger lifted.
         clock += ms
+        if (x1 === x2 && y1 === y2) {
+          const timeout = /^\d+$/.test(over.longPressTimeout ?? '') ? Number(over.longPressTimeout) : 400
+          if (ms < timeout) return tapAt(x1, y1)
+          // A long press: the view's long-press action; a view without one clicks when the finger lifts, as on Android.
+          const hit = hitAt(x1, y1)
+          if (!hit?.hold) return tapAt(x1, y1)
+          stack.push(hit.hold)
+          return ok()
+        }
         const on = loaded(top())
           .filter((c) => c.scroll && x1 >= c.bounds[0] && x1 < c.bounds[2] && y1 >= c.bounds[1] && y1 < c.bounds[3])
           .pop()
@@ -255,26 +278,31 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       }
       const tap = /^input tap (\d+) (\d+)$/.exec(line)
       if (!tap) return { code: 1, stdout: '', stderr: `unexpected ${line}`, error: 'failed' }
-      const [x, y] = [Number(tap[1]), Number(tap[2])]
-      const hit = visible(top())
-        .filter((c) => c.enabled !== false && x >= c.bounds[0] && x < c.bounds[2] && y >= c.bounds[1] && y < c.bounds[3])
-        .pop()
-      if (over.crashOn && hit?.id === ID(over.crashOn.control) && crashedAtRead === null) {
-        crashedAtRead = reads
-        crashedAtClock = clock
-        if (!over.crashOn.hang) stack.splice(0, stack.length, 'launcher')
-        return ok()
-      }
-      focused = hit?.cls === 'android.widget.EditText' ? (hit.id ?? null) : null
-      if (focused && over.keyboardOnFocus) keyboard = true
-      if (hit?.go === 'up') stack.pop()
-      else if (hit?.go) stack.push(hit.go)
-      return ok()
+      return tapAt(Number(tap[1]), Number(tap[2]))
     },
     delay: async (ms) => {
       clock += ms
     },
     now: () => clock
+  }
+  function hitAt(x: number, y: number): Control | undefined {
+    return visible(top())
+      .filter((c) => c.enabled !== false && x >= c.bounds[0] && x < c.bounds[2] && y >= c.bounds[1] && y < c.bounds[3])
+      .pop()
+  }
+  function tapAt(x: number, y: number): ExecResult {
+    const hit = hitAt(x, y)
+    if (over.crashOn && hit?.id === ID(over.crashOn.control) && crashedAtRead === null) {
+      crashedAtRead = reads
+      crashedAtClock = clock
+      if (!over.crashOn.hang) stack.splice(0, stack.length, 'launcher')
+      return ok()
+    }
+    focused = hit?.cls === 'android.widget.EditText' ? (hit.id ?? null) : null
+    if (focused && over.keyboardOnFocus) keyboard = true
+    if (hit?.go === 'up') stack.pop()
+    else if (hit?.go) stack.push(hit.go)
+    return ok()
   }
   if (over.evidence) {
     host.execBinary = async (_file, args) => {

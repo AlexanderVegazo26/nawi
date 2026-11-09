@@ -7,6 +7,7 @@ import { homePackage } from './explore-live'
 import { readKeyboardBoxes } from './flow-evidence'
 import { defaultAndroidRunHost, prepareAndroidRun, type AndroidRunHost, type AndroidRunTarget } from './flow-device'
 import { failed } from './flow-replay'
+import { LONG_PRESS_TIMEOUT_LINE, parseLongPressTimeout } from './long-press'
 import { readScreen } from './open'
 import { PACKAGE_RE, TARGET_RE } from './profile'
 import { flowFromAndroidRecording, GestureReader, inside, parseTouchPanels, toScreen, type DisplayInfo, type RawInput, type RecordedEvent, type Snapshot } from './record'
@@ -211,6 +212,10 @@ export async function recordAndroidLive(req: LiveRecordRequest, host: RecordLive
     return { screen, keyboard: [{ left: 0, top: 0, right: Number.MAX_SAFE_INTEGER, bottom: Number.MAX_SAFE_INTEGER }] }
   }
 
+  // Which resting touches the device itself takes for long presses (its touch & hold delay); unreadable = the default.
+  const delay = await shell(LONG_PRESS_TIMEOUT_LINE)
+  const longPressTimeoutMs = failed(delay) ? undefined : parseLongPressTimeout(delay.stdout)
+
   const reader = new GestureReader(panels, display)
   const events: RecordedEvent[] = []
   /** The last screen read that no input interrupted; null until the first one. */
@@ -360,7 +365,7 @@ export async function recordAndroidLive(req: LiveRecordRequest, host: RecordLive
 
   let recorded: ReturnType<typeof flowFromAndroidRecording>
   try {
-    recorded = flowFromAndroidRecording({ package: pkg, name: req.name, display, events, after })
+    recorded = flowFromAndroidRecording({ package: pkg, name: req.name, display, longPressTimeoutMs, events, after })
   } catch (err) {
     return { ...stop(`the recording could not be turned into a flow: ${err instanceof Error ? err.message : String(err)}`, 'Record again; if it keeps failing, report it with the warnings.'), stopped, inputs }
   }

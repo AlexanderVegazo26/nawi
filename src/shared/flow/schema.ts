@@ -177,8 +177,20 @@ const common = {
 const target = StepTargetSchema
 const optionalTarget = StepTargetSchema.optional()
 
+/**
+ * Longest a held press (`hold_ms`, a long press) may last: past it the step is waiting, not pressing (a flow that
+ * needs the app to see a finger rest that long can hold twice).
+ */
+export const MAX_HOLD_MS = 10_000
+
 export const StepSchema = z.discriminatedUnion('action', [
-  z.strictObject({ ...common, action: z.literal('click'), target }),
+  z.strictObject({
+    ...common,
+    action: z.literal('click'),
+    target,
+    /** Keep the finger down this long: a long press (roadmap M5d-3). Android flows only, for now. */
+    hold_ms: z.number().int().positive().max(MAX_HOLD_MS).optional()
+  }),
   z.strictObject({ ...common, action: z.literal('hover'), target }),
   z.strictObject({ ...common, action: z.literal('fill'), target, value: z.string() }),
   z.strictObject({ ...common, action: z.literal('select'), target, value: z.string() }),
@@ -225,7 +237,7 @@ export const FlowTargetSchema = z.discriminatedUnion('kind', [
 ])
 
 /**
- * What an android flow can do today (roadmap M5a, M5d-2): tap, type, Android's
+ * What an android flow can do today (roadmap M5a, M5d-2, M5d-3): tap or long press (`hold_ms`), type, Android's
  * keys, scroll (a list until a view is on screen, a pager or the app's list by
  * a delta), deep links, waits and element assertions. The rest is refused by
  * parseFlow with a message, instead of being skipped at replay.
@@ -253,6 +265,14 @@ export const ANDROID_KEYS: Readonly<Record<string, string>> = {
  * 420 dpi phone) for a tap, or for a long press when it lasts, so a shorter scroll would press the view under it.
  */
 export const ANDROID_MIN_SWIPE_PX = 48
+
+/**
+ * The shortest `hold_ms` an android click takes: Android calls a touch a long press once it rests past the long-press
+ * timeout (400 ms by default since Android 12, 500 ms before; longer when the person picked a longer "touch & hold
+ * delay"), and a hold that lifts right at the timeout may be read either way. The replayer checks the device's own
+ * timeout too.
+ */
+export const ANDROID_MIN_HOLD_MS = 600
 
 const ANDROID_LAYERS: ReadonlySet<LocatorLayer> = new Set(['id', 'desc', 'text'])
 
@@ -347,6 +367,9 @@ export const FlowSchema = FlowShape.superRefine((flow, ctx) => {
     for (const message of android ? androidStepProblems(step) : []) {
       ctx.addIssue({ code: 'custom', path: ['steps', i, ...message.path], message: message.text })
     }
+    if (!android && step.action === 'click' && step.hold_ms !== undefined) {
+      ctx.addIssue({ code: 'custom', path: ['steps', i, 'hold_ms'], message: 'hold_ms (a long press) is only for android flows yet' })
+    }
     const stepTarget = 'target' in step ? step.target : undefined
     stepTarget?.selectors.forEach((selector, k) => {
       if (!android && 'desc' in selector) {
@@ -383,6 +406,9 @@ function androidStepProblems(step: FlowStep): Array<{ path: Array<string | numbe
   if (step.action === 'press') {
     if (t !== undefined) out.push({ path: ['target'], text: 'an android press sends the key to the app as it is; tap a field first with a click step' })
     if (!Object.prototype.hasOwnProperty.call(ANDROID_KEYS, step.key)) out.push({ path: ['key'], text: `android flows can press ${Object.keys(ANDROID_KEYS).join(', ')}` })
+  }
+  if (step.action === 'click' && step.hold_ms !== undefined && step.hold_ms < ANDROID_MIN_HOLD_MS) {
+    out.push({ path: ['hold_ms'], text: `an android long press holds at least ${ANDROID_MIN_HOLD_MS} ms: a shorter hold may reach the app as a tap` })
   }
   if (step.action === 'scroll') {
     const d = step.delta

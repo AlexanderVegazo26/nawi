@@ -297,6 +297,13 @@ describe('flow files — android target (roadmap M5)', () => {
     }
   })
 
+  it('parses an android long press: a click with hold_ms, written back as it was (M5d-3)', () => {
+    const r = parseFlow(androidWith('s1', '  - { id: s1, action: click, hold_ms: 800, target: { selectors: [ { text: Cart } ] } }'))
+    if (!r.ok) throw new Error(`a click with hold_ms should parse in an android flow:\n${formatFlowErrors(r.errors)}`)
+    expect(r.flow.steps[0]).toMatchObject({ action: 'click', hold_ms: 800 })
+    expect(stringifyFlow(r.flow)).toContain('hold_ms: 800')
+  })
+
   it('rejects a package name that is not an Android application id', () => {
     const e = onlyError(ANDROID.replace('package: dev.nawi.shop', 'package: "shop; rm -rf /"'))
     expect(e).toMatchObject({ path: 'target.package', message: 'must be an Android package name such as com.example.app' })
@@ -312,12 +319,21 @@ describe('flow files — android target (roadmap M5)', () => {
     ['a scroll with neither a target nor a delta', '  - { id: s5, action: scroll }', 'steps[4].delta', /an android scroll without a target needs a non-zero delta/],
     ['a target-less scroll by [0, 0]', '  - { id: s5, action: scroll, delta: [0, 0] }', 'steps[4].delta', /needs a non-zero delta/],
     ['a scroll by a fraction of a px', '  - { id: s5, action: scroll, delta: [0, 0.4] }', 'steps[4].delta', /moves by whole px: use integers/],
+    ['a long press too short to be one', '  - { id: s1, action: click, hold_ms: 500, target: { selectors: [ { text: Cart } ] } }', 'steps[0].hold_ms', /holds at least 600 ms: a shorter hold may reach the app as a tap/],
+    ['a long press in fractions of a ms', '  - { id: s1, action: click, hold_ms: 800.5, target: { selectors: [ { text: Cart } ] } }', 'steps[0].hold_ms', /expected int/],
+    ['a long press longer than 10 s', '  - { id: s1, action: click, hold_ms: 10001, target: { selectors: [ { text: Cart } ] } }', 'steps[0].hold_ms', /10000/],
+    ['hold_ms on a step that is not a click', '  - { id: s2, action: fill, hold_ms: 800, target: { selectors: [ { desc: Email } ] }, value: x }', 'steps[1].hold_ms', /hold_ms/],
     ['a scroll too short to be a swipe', '  - { id: s5, action: scroll, target: { selectors: [ { text: Deals } ] }, delta: [30, 30] }', 'steps[4].delta', /moves at least 48 px: a shorter swipe is a tap/]
   ])('rejects %s, at the field', (_what, step, path, message) => {
     const id = /id: (s\d)/.exec(step)?.[1] as string
     const e = onlyError(androidWith(id, step))
     expect(e.path).toBe(path)
     expect(e.message).toMatch(message)
+  })
+
+  it('rejects hold_ms (a long press) in a browser flow', () => {
+    const e = onlyError(loginWith('  - { id: s2, action: press, key: Enter }', '  - { id: s2, action: click, hold_ms: 800, target: { selectors: [ { text: Sign in } ] } }'))
+    expect(e).toMatchObject({ path: 'steps[1].hold_ms', message: 'hold_ms (a long press) is only for android flows yet' })
   })
 
   it('rejects a desc locator in a browser flow', () => {

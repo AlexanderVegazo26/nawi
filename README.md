@@ -721,10 +721,11 @@ alone.
   steps with the resource id / content description / text locators that find
   that view alone; typing becomes one fill per field with its final text (a
   password field types `${secret.<name>}` at run time, its text is never
-  read); Back, Home and Enter become presses. A screen read takes about 2 s:
+  read); a touch resting past the device's touch & hold delay becomes a click
+  with `hold_ms` (how long the finger rested); Back, Home and Enter become presses. A screen read takes about 2 s:
   a touch that comes before the read after the previous screen change is not
-  recorded, and the warnings say so (as they do for long presses, swipes and
-  taps on Android's permission prompt). Stops after the idle time without a
+  recorded, and the warnings say so (as they do for swipes and taps on
+  Android's permission prompt). Stops after the idle time without a
   touch, the time limit, a cancel or pause, or an unplugged device; prints the
   flow or writes it to `--output` (checked before recording starts).
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
@@ -752,6 +753,10 @@ alone.
   the app's largest list (else its window). Swipes are slow (1 s) so the list
   stops about where the finger lifts, at most 60% of the area each, and never
   start on another app's window or the on-screen keyboard.
+  A `click` with `hold_ms` is a long press (M5d-3): the finger rests on the
+  view that long (600 ms to 10 s). The device's own touch & hold delay is read
+  first: a hold less than 100 ms past it fails the step before anything is
+  pressed, since the app could take it for a tap.
   `run_flow` / `nawi run` use it for android flows (M5b,
   `src/main/mobile/flow-device.ts`): the run goes to the connected device or
   running emulator (`target` / `--target <serial|avd>` when several are
@@ -786,8 +791,8 @@ alone.
   the finger (resource id, description and text locators, each kept only when
   it finds that view alone), typing as one `fill` per field read from the
   field's text (a password becomes `${secret.<name>}`, never its value), and
-  Back, Home and Enter as presses; taps on another app's window, long presses
-  and swipes are reported, not recorded. `mobile_record` / `nawi mobile-record`
+  Back, Home and Enter as presses, a long press as a click with `hold_ms`
+  (M5d-3); taps on another app's window and swipes are reported, not recorded. `mobile_record` / `nawi mobile-record`
   (M5c-2) runs it live on a device.
 
 ## Keyboard shortcuts
@@ -906,8 +911,8 @@ CDP selectors and the MCP projection/revision model.
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, typing, keys, scrolling to a view or by a delta, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
-  taps, typing, Back/Home/Enter; swipes are not recorded as scroll steps yet, and there are no long press, rotation or deep link steps yet, and a tap must wait for the screen
+  (`nawi run`: taps, long presses, typing, keys, scrolling to a view or by a delta, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
+  taps, long presses, typing, Back/Home/Enter; swipes are not recorded as scroll steps yet, and there are no rotation or deep link steps yet, and a tap must wait for the screen
   read after the previous screen change, about 2 s), but there is no inspector or input on that screen yet and the recorder
   is not in the Mobile view yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when

@@ -241,6 +241,11 @@
                   "selectors"
                 ],
                 "additionalProperties": false
+              },
+              "hold_ms": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 10000
               }
             },
             "required": [

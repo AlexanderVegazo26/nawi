@@ -696,6 +696,93 @@ describe('replayAndroidFlow scroll (roadmap M5d-2)', () => {
   })
 })
 
+describe('replayAndroidFlow long press (roadmap M5d-3)', () => {
+  // Order #1 is 1080 x 150 at y 300 (centre 540, 375); a long press on it opens the order's menu.
+  const MENU = flow(
+    `  - { id: s1, action: click, hold_ms: 800, intent: Open the order's menu, target: { selectors: [{ text: "Order #1" }] } }
+  - { id: s2, action: assert, target: { selectors: [{ text: Cancel order }] }, expect: { visible: true } }
+  - { id: s3, action: click, target: { selectors: [{ id: "${ID('cancel_order')}" }] } }
+  - { id: s4, action: click, hold_ms: 1000, target: { selectors: [{ text: "Order #1" }] } }
+`
+  )
+  const READ_TIMEOUT = 'settings get secure long_press_timeout'
+
+  it('holds the finger on the view for hold_ms (a swipe that does not move), three runs alike, reading the device\'s delay once', async () => {
+    const outcomes: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const d = device('orders')
+      const r = await run(MENU, d)
+      expect(r.status, `run ${i + 1}: ${JSON.stringify(r.steps.find((s) => s.status === 'failed'))}`).toBe('passed')
+      expect(d.stack, 'the second long press opened the menu again').toEqual(['orders', 'order_menu'])
+      outcomes.push(JSON.stringify({ lines: d.lines, steps: r.steps.map((s) => [s.id, s.status, s.matched?.layer]) }))
+    }
+    expect(new Set(outcomes).size, 'three replays must send the same commands').toBe(1)
+    const d = device('orders')
+    await run(MENU, d)
+    expect(d.lines, 'a long press is input swipe on one point for hold_ms; a plain click stays a tap').toEqual([
+      READ_TIMEOUT,
+      'input swipe 540 375 540 375 800',
+      'input tap 540 375',
+      'input swipe 540 375 540 375 1000'
+    ])
+  })
+
+  it('refuses a hold the device could read as a tap (its touch & hold delay is longer) before touching anything', async () => {
+    const d = device('orders', { longPressTimeout: '1000' })
+    const r = await run(MENU, d)
+    expect(r.steps.map((s) => s.status)).toEqual(['failed', 'not_run', 'not_run', 'not_run'])
+    expect(r.steps[0].error).toBe(
+      'the step holds 800 ms, but emulator-5560 takes a touch for a long press only after 1000 ms (its touch & hold delay), so it could read this as a tap: set hold_ms to at least 1100'
+    )
+    expect(d.lines, 'nothing pressed').toEqual([READ_TIMEOUT])
+    expect(d.stack).toEqual(['orders'])
+
+    const slow = device('orders', { longPressTimeout: '1000' })
+    const ok = await run(flow(`  - { id: s1, action: click, hold_ms: 1100, target: { selectors: [{ text: "Order #1" }] } }\n`), slow)
+    expect(ok.status, JSON.stringify(ok.steps[0])).toBe('passed')
+    expect(slow.stack).toEqual(['orders', 'order_menu'])
+  })
+
+  it('assumes Android\'s older 500 ms delay when the device does not say (null, junk), so 600 ms is the shortest hold', async () => {
+    for (const said of ['null', 'n/a', '', '-1']) {
+      const d = device('orders', { longPressTimeout: said })
+      const r = await run(flow(`  - { id: s1, action: click, hold_ms: 600, target: { selectors: [{ text: "Order #1" }] } }\n`), d)
+      expect(r.status, `device said ${JSON.stringify(said)}: ${JSON.stringify(r.steps[0])}`).toBe('passed')
+      expect(d.lines.at(-1)).toBe('input swipe 540 375 540 375 600')
+    }
+  })
+
+  it('fails the step without pressing when the device\'s delay cannot be read, rather than assume a default', async () => {
+    const d = device('orders', { longPressTimeoutFails: true })
+    const r = await run(MENU, d)
+    expect(r.steps[0].status).toBe('failed')
+    expect(r.steps[0].error).toBe('could not read the touch & hold delay of emulator-5560 (settings get secure long_press_timeout): adb exited with code 1')
+    expect(d.lines, 'nothing pressed').toEqual([READ_TIMEOUT])
+  })
+
+  it('says so when the device\'s delay is longer than any hold a flow allows, instead of asking for a longer hold_ms', async () => {
+    const d = device('orders', { longPressTimeout: '9950' })
+    const r = await run(MENU, d)
+    expect(r.steps[0].error).toBe('emulator-5560 takes a touch for a long press only after 9950 ms (its touch & hold delay), longer than a flow holds (10000 ms): shorten that delay on the device')
+    expect(d.lines).toEqual([READ_TIMEOUT])
+  })
+
+  it('a long press on a view with no long-press action clicks it on lift, as on Android', async () => {
+    const d = device('orders')
+    const r = await run(flow(`  - { id: s1, action: click, hold_ms: 700, target: { selectors: [{ text: "Order #2" }] } }\n`), d)
+    expect(r.status, JSON.stringify(r.steps[0])).toBe('passed')
+    expect(d.stack).toEqual(['orders', 'order'])
+  })
+
+  it('waits for the view like a tap does, and fails a long press on a view that never shows', async () => {
+    const d = device('orders')
+    const r = await run(flow(`  - { id: s1, action: click, hold_ms: 800, timeout_ms: 2000, target: { selectors: [{ text: "Order #9" }] } }\n`), d)
+    expect(r.steps[0].status).toBe('failed')
+    expect(r.steps[0].error).toBe('no view of dev.nawi.shop matched: text="Order #9" found nothing')
+    expect(d.lines.filter((l) => l.startsWith('input')), 'nothing pressed').toEqual([])
+  })
+})
+
 describe('planSwipes', () => {
   const box = { left: 0, top: 300, right: 1080, bottom: 1800 }
 

@@ -67,6 +67,8 @@ interface Options {
   /** `getevent -lp` output. */
   getevent?: ExecResult
   wmSize?: ExecResult
+  /** `settings get secure long_press_timeout` (default `null`: never changed). */
+  longPressTimeout?: ExecResult
   /** The app in front before anything runs (the launcher shows its own package). */
   inFront?: 'app' | 'launcher'
   /** The stream ends by itself at this time (device unplugged), with this exit. */
@@ -167,6 +169,7 @@ function sim(acts: Act[], opts: Options = {}): Sim {
       if (line === 'wm size') return opts.wmSize ?? ok('Physical size: 1080x2400\n')
       if (line === 'wm density') return ok('Physical density: 420\n')
       if (line === 'getevent -lp') return opts.getevent ?? ok(GETEVENT_LP)
+      if (line === 'settings get secure long_press_timeout') return opts.longPressTimeout ?? ok('null\n')
       return fail(`unexpected shell ${line}`)
     },
     stream: (file, args, cb) => {
@@ -276,7 +279,7 @@ describe('recordAndroidLive', () => {
 
     // The app was started from its launcher before the stream, and the stream was stopped at the end.
     expect(s.shell.slice(0, 5)).toEqual([`pm path '${PKG}'`, `cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER '${PKG}'`, `am force-stop '${PKG}'`, `am start -W -n '${PKG}/.MainActivity'`, `pidof '${PKG}'`])
-    expect(s.shell.slice(5, 8)).toEqual(['wm size', 'wm density', 'getevent -lp'])
+    expect(s.shell.slice(5, 9)).toEqual(['wm size', 'wm density', 'getevent -lp', 'settings get secure long_press_timeout'])
     expect(s.stream.args).toEqual(['<sdk>/platform-tools/adb', '-s', SERIAL, 'shell', 'getevent -lt'])
     expect(s.stream.stopped).toBe(true)
 
@@ -389,7 +392,29 @@ describe('recordAndroidLive', () => {
     const r = await record(s)
     expect(s.readTimes.filter((t) => t > 6000 && t < 9000), 'no read while the finger was down').toEqual([])
     expect(r.ok).toBe(true)
-    expect(r.warnings.some((w) => w.startsWith('A long press')), 'the 3 s press is reported as a long press').toBe(true)
+    expect(r.flow?.steps, 'the 3 s press is recorded as a long press (M5d-3)').toEqual([
+      { id: 's1', action: 'click', intent: 'Long press "Sign in"', target: { selectors: [{ id: ID('sign_in') }, { text: 'Sign in' }] }, hold_ms: 3000 }
+    ])
+  })
+
+  it('tells a held finger from a long press by the device\'s own touch & hold delay, the default when it cannot be read (M5d-3)', async () => {
+    // A 1.2 s press on Sign in: a tap on a device whose delay is 1.5 s, a long press on one that does not say.
+    const lines = touchLines(80_000, [200, 800], 1200).split('\n')
+    const recordWith = async (longPressTimeout: ExecResult) => {
+      const acts: Act[] = [
+        { at: 6000, lines: `${lines.slice(0, 5).join('\n')}\n` },
+        { at: 7200, lines: `${lines.slice(5).join('\n')}`, act: (d) => sh(d, 'input tap 200 800') }
+      ]
+      return record(sim(acts, { keyboardOnFocus: false, longPressTimeout }))
+    }
+    const slow = await recordWith(ok('1500\n'))
+    expect(slow.flow?.steps, 'a 1.5 s delay: the 1.2 s press was a tap').toEqual([{ id: 's1', action: 'click', intent: 'Tap "Sign in"', target: { selectors: [{ id: ID('sign_in') }, { text: 'Sign in' }] } }])
+    for (const unread of [ok('null\n'), fail('settings: not found')]) {
+      const r = await recordWith(unread)
+      expect(r.flow?.steps, `${JSON.stringify(unread)}: the 500 ms default makes it a long press`).toEqual([
+        { id: 's1', action: 'click', intent: 'Long press "Sign in"', target: { selectors: [{ id: ID('sign_in') }, { text: 'Sign in' }] }, hold_ms: 1200 }
+      ])
+    }
   })
 
   it('backs off after a failed screen read and gives up after a few in a row', async () => {

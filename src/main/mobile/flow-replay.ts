@@ -1,5 +1,5 @@
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '../../shared/flow/interpolate'
-import { ANDROID_KEYS, ANDROID_MIN_SWIPE_PX, locatorLayer, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
+import { ANDROID_KEYS, ANDROID_MIN_SWIPE_PX, locatorLayer, MAX_HOLD_MS, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
 import type { DeviceLogLine } from '../replay/evidence'
 import type { FlowRun, LocatorMiss, StepProgress, StepRun, StepScreenshots } from '../replay/replay'
 import { findAll } from './blockers'
@@ -7,6 +7,7 @@ import { ANR_POLL_MS, CRASH_POLL_MS, crashMessage, logLineKey, startCrashWatch, 
 import type { Exec, ExecResult } from './doctor'
 import { MAX_LOGCAT_LINES, readDeviceClockOffset, startAndroidEvidence, toUiLocator, type AndroidEvidence } from './flow-evidence'
 import { center, isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
+import { LONG_PRESS_TIMEOUT_LINE, parseLongPressTimeout, shortestHold } from './long-press'
 import { KEYBOARD_SHOWN_LINE, parseAmStart, readScreen } from './open'
 import type { BinaryExec } from './screen'
 import { shQuote } from './shell'
@@ -391,15 +392,38 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
     return true
   }
 
-  /** Tap the step's view, first hiding the on-screen keyboard. */
-  const tapView = async (selectors: readonly Selector[], deadline: number, check?: (node: UiNode, index: number) => void): Promise<Located & { screen: UiScreen }> => {
+  /**
+   * The device's long-press timeout in ms (its "touch & hold delay"), read once per run by the first step that holds.
+   * A read that fails fails the step: assuming the default could let a hold through that a device with a longer
+   * delay reads as a tap.
+   */
+  let longPressTimeout: number | null = null
+  const deviceLongPressTimeout = async (): Promise<number> => {
+    if (longPressTimeout !== null) return longPressTimeout
+    const r = await shell(LONG_PRESS_TIMEOUT_LINE)
+    if (failed(r)) throw new StepFailure(`could not read the touch & hold delay of ${serial} (${LONG_PRESS_TIMEOUT_LINE}): ${why(r)}`)
+    longPressTimeout = parseLongPressTimeout(r.stdout)
+    return longPressTimeout
+  }
+
+  /**
+   * Tap the step's view, first hiding the on-screen keyboard; with `holdMs`, keep the finger on it that long (a long
+   * press: `input swipe` that starts and ends on the same point and lifts after holdMs).
+   */
+  const tapView = async (
+    selectors: readonly Selector[],
+    deadline: number,
+    check?: (node: UiNode, index: number) => void,
+    holdMs?: number
+  ): Promise<Located & { screen: UiScreen }> => {
     for (let hidden = 0; ; hidden++) {
       const hit = await waitForView(selectors, deadline, tappable)
       check?.(hit.node, hit.index)
-      if (await keyboardHidden(hidden > 0, 'the tap could land on a key')) continue
+      if (await keyboardHidden(hidden > 0, holdMs === undefined ? 'the tap could land on a key' : 'the long press could land on a key')) continue
       const at = center(hit.node.bounds!)
-      // Only integers parsed from the dump reach the shell here.
-      await must(`input tap ${at.x} ${at.y}`, 'tap')
+      // Only integers parsed from the dump (and the flow's whole-ms hold) reach the shell here.
+      if (holdMs === undefined) await must(`input tap ${at.x} ${at.y}`, 'tap')
+      else await must(`input swipe ${at.x} ${at.y} ${at.x} ${at.y} ${holdMs}`, 'long press')
       return hit
     }
   }
@@ -557,9 +581,25 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
       else delete record.misses
     }
     switch (step.action) {
-      case 'click':
-        matched(await tapView(step.target.selectors, deadline))
+      case 'click': {
+        const hold = step.hold_ms
+        if (hold !== undefined) {
+          // Checked before the view is touched (parseFlow already holds hold_ms to 600..10000 whole ms): a hold the
+          // device reads as a tap would press the view the wrong way.
+          const timeout = await deviceLongPressTimeout()
+          const least = shortestHold(timeout)
+          if (least > MAX_HOLD_MS) {
+            throw new StepFailure(`${serial} takes a touch for a long press only after ${timeout} ms (its touch & hold delay), longer than a flow holds (${MAX_HOLD_MS} ms): shorten that delay on the device`)
+          }
+          if (hold < least) {
+            throw new StepFailure(
+              `the step holds ${hold} ms, but ${serial} takes a touch for a long press only after ${timeout} ms (its touch & hold delay), so it could read this as a tap: set hold_ms to at least ${least}`
+            )
+          }
+        }
+        matched(await tapView(step.target.selectors, deadline, undefined, hold))
         return
+      }
       case 'fill': {
         const value = interp.interpolate(step.value)
         if (!TYPABLE_RE.test(value)) throw new StepFailure('the value has characters a device cannot type with `input text` (only printable ASCII)')

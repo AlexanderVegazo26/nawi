@@ -1,7 +1,8 @@
-import { ANDROID_KEYS, FLOW_VERSION, MAX_INTENT_CHARS, MAX_TEXT_LOCATOR_CHARS, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
+import { ANDROID_KEYS, FLOW_VERSION, MAX_HOLD_MS, MAX_INTENT_CHARS, MAX_TEXT_LOCATOR_CHARS, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
 import { parseFlow, stringifyFlow } from '../../shared/flow/yaml'
 import { labelOf, PERMISSION_PACKAGES } from './blockers'
 import { isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
+import { DEFAULT_LONG_PRESS_TIMEOUT_MS, shortestHold } from './long-press'
 
 /**
  * Roadmap M5c, first slice: turn what a person did on an Android device into an android flow (`target.kind: android`)
@@ -24,8 +25,10 @@ import { isTextField, type UiBounds, type UiNode, type UiScreen } from './hierar
  *   so its fill types `${secret.<name>}` at run time; the password is never in the flow.
  * - Back while the keyboard is up only closes the keyboard, so it is dropped (the replayer closes the keyboard before
  *   each tap on its own).
- * - Long presses and multi-finger gestures have no android step yet (M5d), and swipes are not turned into the
- *   `scroll` steps android flows have since M5d-2: all three are warnings, not steps.
+ * - A long press becomes a click with `hold_ms` (M5d-3): the time the finger rested, rounded up to 100 ms, at least
+ *   the device's long-press timeout plus the replayer's margin, at most MAX_HOLD_MS; it goes to the view a tap would.
+ * - Multi-finger gestures have no android step yet, and swipes are not turned into the `scroll` steps android flows
+ *   have since M5d-2: both are warnings, not steps.
  */
 
 /** A touch panel from `getevent -lp`: its device node and the raw range of its multi-touch axes. */
@@ -91,6 +94,8 @@ export interface AndroidRecording {
   package: string
   name?: string
   display: DisplayInfo
+  /** The device's long-press timeout (long-press.ts); DEFAULT_LONG_PRESS_TIMEOUT_MS when unknown. */
+  longPressTimeoutMs?: number
   events: RecordedEvent[]
   /** The screen after the last input settled (where its typing shows). */
   after: Snapshot
@@ -102,8 +107,6 @@ export interface AndroidRecordingResult {
   warnings: string[]
 }
 
-/** Longest a finger may rest without moving for the touch to stay a tap; Android's default long-press timeout is 400 ms. */
-export const LONG_PRESS_MS = 500
 /** Android's touch slop: how far a finger may drift and still be a tap, in dp. */
 export const TOUCH_SLOP_DP = 8
 /** How many locator layers a step keeps (id, desc, text). */
@@ -317,11 +320,12 @@ export function toScreen(p: Point, rotation: number, display: DisplayInfo): Poin
 
 export type TouchKind = 'tap' | 'long_press' | 'swipe' | 'multi'
 
-export function classifyStroke(s: Stroke, display: DisplayInfo): TouchKind {
+/** A finger that rests without moving for the device's long-press timeout (`longPressMs`) is a long press, else a tap. */
+export function classifyStroke(s: Stroke, display: DisplayInfo, longPressMs = DEFAULT_LONG_PRESS_TIMEOUT_MS): TouchKind {
   if (s.pointers > 1) return 'multi'
   const slop = (TOUCH_SLOP_DP * display.density) / 160
   if (s.travel > slop) return 'swipe'
-  return s.t1 - s.t0 >= LONG_PRESS_MS ? 'long_press' : 'tap'
+  return s.t1 - s.t0 >= longPressMs ? 'long_press' : 'tap'
 }
 
 /** Kernel key names that are steps, as the press keys of an android flow. */
@@ -372,6 +376,13 @@ export function viewAt(screen: UiScreen, p: Point): { hit: UiNode; target: UiNod
   }
   return { hit, target: hit }
 }
+
+/**
+ * A recorded long press's hold: the finger's rest rounded up to 100 ms, at least what the device takes for a long
+ * press with the replayer's margin (shortestHold), at most MAX_HOLD_MS.
+ */
+export const holdFor = (restedMs: number, timeoutMs = DEFAULT_LONG_PRESS_TIMEOUT_MS): number =>
+  Math.min(MAX_HOLD_MS, Math.max(shortestHold(timeoutMs), Math.ceil(restedMs / 100) * 100))
 
 /** The locator layers (id, desc, text) that each find `n` and no other view of `pkg`; never a field's typed text. */
 export function selectorsFor(screen: UiScreen, pkg: string, n: UiNode): Selector[] {
@@ -430,6 +441,7 @@ type FillStep = Extract<FlowStep, { action: 'fill' }>
 /** Build an android flow from a recording; see the module comment for what becomes a step. */
 export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordingResult {
   const pkg = rec.package
+  const longPressMs = rec.longPressTimeoutMs ?? DEFAULT_LONG_PRESS_TIMEOUT_MS
   // Step ids are numbered once the steps are final.
   const steps: FlowStep[] = []
   const warnings: string[] = []
@@ -510,35 +522,50 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
       warnings.push(`A touch at ${where} is not recorded: the device dropped some of its events.`)
       continue
     }
-    const kind = classifyStroke(input, rec.display)
+    const kind = classifyStroke(input, rec.display, longPressMs)
+    const held = kind === 'long_press'
+    // A long press goes to the same view a tap would: the first one up from the finger that takes touches (a
+    // clickable label inside a long-clickable row gets it, and clicks on lift when it has no long press of its own).
     const found = viewAt(before.screen, at)
     const label = found ? oneLine(labelOf(found.target) || labelOf(found.hit), 60) : ''
     const on = label ? ` on "${label}"` : ''
-    if (kind !== 'tap') {
-      const what = kind === 'long_press' ? 'A long press' : kind === 'swipe' ? 'A swipe' : `A ${input.pointers}-finger gesture`
+    if (kind === 'swipe' || kind === 'multi') {
+      const what = kind === 'swipe' ? 'A swipe' : `A ${input.pointers}-finger gesture`
       const why = kind === 'swipe' ? 'the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand)' : 'android flows have no step for it yet'
       warnings.push(`${what} at ${where}${on} is not recorded: ${why}.`)
       continue
     }
+    const what = held ? 'A long press' : 'A tap'
     if (!found) {
-      warnings.push(`A tap at ${where} is not recorded: no view is there on the screen it landed on.`)
+      warnings.push(`${what} at ${where} is not recorded: no view is there on the screen it landed on.`)
       continue
     }
     if (found.target.package !== pkg) {
       warnings.push(
         PERMISSION_PACKAGES.has(found.target.package)
-          ? `A tap${on} in Android's permission prompt is not recorded: grant the permission before the run (the profile's permissions.grant).`
-          : `A tap at ${where}${on} is not recorded: it landed on ${found.target.package || 'the system'}, not ${pkg}.`
+          ? `${what}${on} in Android's permission prompt is not recorded: grant the permission before the run (the profile's permissions.grant).`
+          : `${what} at ${where}${on} is not recorded: it landed on ${found.target.package || 'the system'}, not ${pkg}.`
       )
       continue
     }
     if (!found.target.enabled) {
-      warnings.push(`A tap at ${where}${on} is not recorded: that view was disabled, so the tap did nothing.`)
+      warnings.push(`${what} at ${where}${on} is not recorded: that view was disabled, so ${held ? 'the long press' : 'the tap'} did nothing.`)
       continue
     }
     const loc = tapSelectors(before.screen, pkg, found.target, found.hit)
     if (!loc) {
-      warnings.push(`A tap at ${where}${on} is not recorded: no resource id, description or text finds that view alone.`)
+      warnings.push(`${what} at ${where}${on} is not recorded: no resource id, description or text finds that view alone.`)
+      continue
+    }
+    if (held) {
+      const rested = input.t1 - input.t0
+      if (shortestHold(longPressMs) > MAX_HOLD_MS) {
+        warnings.push(`A long press at ${where}${on} is not recorded: the device takes a touch for a long press only after ${longPressMs} ms, longer than a flow holds (${MAX_HOLD_MS} ms).`)
+        continue
+      }
+      const hold_ms = holdFor(rested, longPressMs)
+      if (rested > MAX_HOLD_MS) warnings.push(`A long press at ${where}${on} lasted ${(rested / 1000).toFixed(1)} s: the step holds ${MAX_HOLD_MS / 1000} s, the longest a flow holds.`)
+      push({ id: '', action: 'click', intent: label ? `Long press "${label}"` : 'Long press the view', target: { selectors: loc.selectors }, hold_ms })
       continue
     }
     if (isTextField(found.target) && loc.node === found.target) {
