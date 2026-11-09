@@ -441,7 +441,7 @@ describe('renderRecordResult', () => {
     stopped: 'idle',
     inputs: 12,
     steps: 2,
-    warnings: ['A swipe at (500, 1200) is not recorded: android flows have no step for it yet.'],
+    warnings: ['A swipe at (500, 1200) is not recorded: the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand).'],
     flow_yaml: 'version: 1\nname: Recorded on dev.nawi.shop\n',
     file: null,
     save_error: null
@@ -453,7 +453,7 @@ describe('renderRecordResult', () => {
         'Recorded dev.nawi.shop on virtual device Pixel_9 (emulator-5554): 2 steps from 12 touches and keys.',
         '  started    from its launcher (.MainActivity)',
         '  stopped    idle (no touch for the idle time)',
-        '  warning    A swipe at (500, 1200) is not recorded: android flows have no step for it yet.',
+        '  warning    A swipe at (500, 1200) is not recorded: the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand).',
         '',
         'version: 1',
         'name: Recorded on dev.nawi.shop'

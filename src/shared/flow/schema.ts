@@ -225,11 +225,12 @@ export const FlowTargetSchema = z.discriminatedUnion('kind', [
 ])
 
 /**
- * What an android flow can do today (roadmap M5a): tap, type, Android's keys,
- * deep links, waits and element assertions. The rest is refused by parseFlow
- * with a message, instead of being skipped at replay.
+ * What an android flow can do today (roadmap M5a, M5d-2): tap, type, Android's
+ * keys, scroll (a list until a view is on screen, a pager or the app's list by
+ * a delta), deep links, waits and element assertions. The rest is refused by
+ * parseFlow with a message, instead of being skipped at replay.
  */
-export const ANDROID_ACTIONS = ['click', 'fill', 'press', 'navigate', 'wait', 'assert'] as const satisfies readonly FlowAction[]
+export const ANDROID_ACTIONS = ['click', 'fill', 'press', 'scroll', 'navigate', 'wait', 'assert'] as const satisfies readonly FlowAction[]
 
 /** Keys an android `press` step may name, and the key event each sends. */
 export const ANDROID_KEYS: Readonly<Record<string, string>> = {
@@ -246,6 +247,12 @@ export const ANDROID_KEYS: Readonly<Record<string, string>> = {
   ArrowLeft: 'KEYCODE_DPAD_LEFT',
   ArrowRight: 'KEYCODE_DPAD_RIGHT'
 }
+
+/**
+ * The shortest finger move an android scroll makes: Android takes a move under its touch slop (8 dp, ~21 px on a
+ * 420 dpi phone) for a tap, or for a long press when it lasts, so a shorter scroll would press the view under it.
+ */
+export const ANDROID_MIN_SWIPE_PX = 48
 
 const ANDROID_LAYERS: ReadonlySet<LocatorLayer> = new Set(['id', 'desc', 'text'])
 
@@ -376,6 +383,17 @@ function androidStepProblems(step: FlowStep): Array<{ path: Array<string | numbe
   if (step.action === 'press') {
     if (t !== undefined) out.push({ path: ['target'], text: 'an android press sends the key to the app as it is; tap a field first with a click step' })
     if (!Object.prototype.hasOwnProperty.call(ANDROID_KEYS, step.key)) out.push({ path: ['key'], text: `android flows can press ${Object.keys(ANDROID_KEYS).join(', ')}` })
+  }
+  if (step.action === 'scroll') {
+    const d = step.delta
+    const none = d === undefined || (d[0] === 0 && d[1] === 0)
+    if (none && t === undefined) {
+      out.push({ path: ['delta'], text: 'an android scroll without a target needs a non-zero delta: [dx, dy] in px (positive dy scrolls toward the end of the list); with a target and no delta it scrolls until that view is on screen' })
+    } else if (!none && !d!.every(Number.isInteger)) {
+      out.push({ path: ['delta'], text: 'an android scroll moves by whole px: use integers' })
+    } else if (!none && Math.hypot(d![0], d![1]) < ANDROID_MIN_SWIPE_PX) {
+      out.push({ path: ['delta'], text: `an android scroll moves at least ${ANDROID_MIN_SWIPE_PX} px: a shorter swipe is a tap to Android` })
+    }
   }
   if (step.action === 'assert' && step.expect.url !== undefined) out.push({ path: ['expect', 'url'], text: 'an Android app has no URL to check; assert on a view instead' })
   return out

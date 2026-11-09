@@ -24,7 +24,8 @@ import { isTextField, type UiBounds, type UiNode, type UiScreen } from './hierar
  *   so its fill types `${secret.<name>}` at run time; the password is never in the flow.
  * - Back while the keyboard is up only closes the keyboard, so it is dropped (the replayer closes the keyboard before
  *   each tap on its own).
- * - Long presses, swipes and multi-finger gestures have no android step yet (M5d): they are warnings, not steps.
+ * - Long presses and multi-finger gestures have no android step yet (M5d), and swipes are not turned into the
+ *   `scroll` steps android flows have since M5d-2: all three are warnings, not steps.
  */
 
 /** A touch panel from `getevent -lp`: its device node and the raw range of its multi-touch axes. */
@@ -515,7 +516,8 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     const on = label ? ` on "${label}"` : ''
     if (kind !== 'tap') {
       const what = kind === 'long_press' ? 'A long press' : kind === 'swipe' ? 'A swipe' : `A ${input.pointers}-finger gesture`
-      warnings.push(`${what} at ${where}${on} is not recorded: android flows have no step for it yet.`)
+      const why = kind === 'swipe' ? 'the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand)' : 'android flows have no step for it yet'
+      warnings.push(`${what} at ${where}${on} is not recorded: ${why}.`)
       continue
     }
     if (!found) {

@@ -25,6 +25,12 @@ export interface Control {
   children?: Control[]
   /** Shown only from the n-th read of the screen on (1-based): a list that loads. */
   fromRead?: number
+  /**
+   * A scrollable view (roadmap M5d-2): `content` boxes are relative to the view's top-left at scroll offset 0; a swipe
+   * that starts on the view moves its offset along `axis` by the finger's travel (exactly, no fling or touch slop),
+   * kept between 0 and the content's end. Only the content inside the view is on screen, cut to the view's box.
+   */
+  scroll?: { axis: 'x' | 'y'; content: Control[] }
 }
 
 export interface ScreenSpec {
@@ -59,6 +65,25 @@ function app(): Record<string, ScreenSpec> {
         button('track', 'Track', [40, 300, 1040, 450])
       ]
     },
+    /** A long list and a banner pager, for scroll steps (M5d-2). */
+    catalog: {
+      controls: [
+        { id: ID('title'), text: 'Catalog', bounds: [40, 100, 1040, 250] },
+        {
+          cls: 'androidx.recyclerview.widget.RecyclerView',
+          id: ID('list'),
+          bounds: [0, 300, 1080, 1800],
+          scroll: { axis: 'y', content: Array.from({ length: 30 }, (_, i) => button(`item_${i + 1}`, `Item ${i + 1}`, [0, i * 150, 1080, i * 150 + 150], 'order')) }
+        },
+        {
+          cls: 'androidx.viewpager.widget.ViewPager',
+          id: ID('banner'),
+          bounds: [0, 1850, 1080, 2150],
+          scroll: { axis: 'x', content: [1, 2, 3].map((n) => ({ id: ID(`deal_${n}`), text: `Deal ${n}`, bounds: [(n - 1) * 1080, 0, n * 1080, 300] as Box })) }
+        },
+        field('search', [40, 2200, 1040, 2350], 'Search')
+      ]
+    },
     cart: { controls: [{ id: ID('empty'), text: 'Your cart is empty', bounds: [40, 100, 1040, 250] }] },
     /** What is on screen once the app died (crashOn): another package's home screen. */
     launcher: { controls: [{ id: 'com.android.launcher3:id/workspace', pkg: 'com.android.launcher3', text: 'Home', bounds: [0, 0, 1080, 2400] }] }
@@ -68,14 +93,35 @@ function app(): Record<string, ScreenSpec> {
 const attr = (s: string): string => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 const box = (b: Box): string => `[${b[0]},${b[1]}][${b[2]},${b[3]}]`
 
-function node(pkg: string, c: Control, text: string, inner = '', focusedId: string | null = null): string {
+/** Where a scrollable view's offset is, by its resource id. */
+type Offsets = Record<string, number>
+
+/** The content of a scrollable view that is on screen at `offset`, moved into screen coordinates and cut to the view. */
+function shownContent(c: Control, offset: number): Control[] {
+  if (!c.scroll) return []
+  const [l, t, r, b] = c.bounds
+  const [ox, oy] = c.scroll.axis === 'x' ? [l - offset, t] : [l, t - offset]
+  return c.scroll.content
+    .map((k): Control => ({ ...k, bounds: [Math.max(l, k.bounds[0] + ox), Math.max(t, k.bounds[1] + oy), Math.min(r, k.bounds[2] + ox), Math.min(b, k.bounds[3] + oy)] }))
+    .filter((k) => k.bounds[2] > k.bounds[0] && k.bounds[3] > k.bounds[1])
+}
+
+/** How far a scrollable view's content can move: its length past the view's own. */
+function scrollEnd(c: Control): number {
+  if (!c.scroll) return 0
+  const along = c.scroll.axis === 'x' ? ([0, 2] as const) : ([1, 3] as const)
+  const length = Math.max(...c.scroll.content.map((k) => k.bounds[along[1]]))
+  return Math.max(0, length - (c.bounds[along[1]] - c.bounds[along[0]]))
+}
+
+function node(pkg: string, c: Control, text: string, inner = '', focusedId: string | null = null, offsets: Offsets = {}): string {
   const tappable = c.go !== undefined || /Button|EditText/.test(c.cls ?? '')
   const open =
     `<node index="0" text="${attr(text)}" resource-id="${c.id ?? ''}" class="${c.cls ?? 'android.widget.TextView'}" package="${c.pkg ?? pkg}" ` +
     `content-desc="${attr(c.desc ?? '')}" checkable="false" checked="false" clickable="${tappable}" enabled="${c.enabled ?? true}" ` +
-    `focusable="${tappable}" focused="${c.id !== undefined && c.id === focusedId}" scrollable="false" long-clickable="false" password="${c.id === ID('password')}" selected="false" ` +
+    `focusable="${tappable}" focused="${c.id !== undefined && c.id === focusedId}" scrollable="${c.scroll !== undefined}" long-clickable="false" password="${c.id === ID('password')}" selected="false" ` +
     `bounds="${box(c.bounds)}"`
-  const kids = inner + (c.children ?? []).map((k) => node(pkg, k, k.text ?? '', '', focusedId)).join('')
+  const kids = inner + [...(c.children ?? []), ...shownContent(c, offsets[c.id ?? ''] ?? 0)].map((k) => node(pkg, k, k.text ?? '', '', focusedId)).join('')
   return kids ? `${open}>${kids}</node>` : `${open}/>`
 }
 
@@ -117,6 +163,8 @@ export interface Device {
   /** Text typed into each field, by resource id name. */
   typed: Record<string, string>
   stack: string[]
+  /** Scroll offset of each scrollable view that moved, by resource id (M5d-2). */
+  offsets: Record<string, number>
 }
 
 export function device(start = 'login', over: DeviceOptions = {}): Device {
@@ -130,19 +178,22 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
   let crashedAtClock = 0
   const typed: Record<string, string> = {}
   const readsOf: Record<string, number> = {}
+  const offsets: Offsets = {}
   let reads = 0
   let clock = 1_000_000
   let keyboard = false
   let focused: string | null = null
   const top = (): string => stack[stack.length - 1]
-  const visible = (name: string): Control[] => screens[name].controls.filter((c) => (c.fromRead ?? 0) <= (readsOf[name] ?? 0))
+  const loaded = (name: string): Control[] => screens[name].controls.filter((c) => (c.fromRead ?? 0) <= (readsOf[name] ?? 0))
+  /** What is on screen in drawing order: a scrollable view's shown content right after (over) the view. */
+  const visible = (name: string): Control[] => loaded(name).flatMap((c) => [c, ...shownContent(c, offsets[c.id ?? ''] ?? 0)])
   const textOf = (c: Control): string => (c.id && c.cls === 'android.widget.EditText' ? (c.id === ID('password') ? '•'.repeat((typed[c.id] ?? '').length) : (typed[c.id] ?? '')) : (c.text ?? ''))
   const dump = (): string => {
     reads++
     over.onRead?.(reads, screens)
     readsOf[top()] = (readsOf[top()] ?? 0) + 1
     const spec = screens[top()]
-    const inner = visible(top()).map((c) => node(PKG, c, textOf(c), '', focused)).join('')
+    const inner = loaded(top()).map((c) => node(PKG, c, textOf(c), '', focused, offsets)).join('')
     // Once the app died, the window on screen is the launcher's.
     let windows = node(top() === 'launcher' ? 'com.android.launcher3' : PKG, { cls: 'android.widget.FrameLayout', bounds: [0, 0, 1080, 2400] }, '', inner)
     if (spec.overlay) windows += node(spec.overlay.pkg, { cls: 'android.widget.FrameLayout', bounds: spec.overlay.bounds }, '', node(spec.overlay.pkg, { cls: 'android.widget.Button', text: 'Allow', bounds: spec.overlay.bounds }, 'Allow'))
@@ -191,6 +242,17 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
         if (answer.go) stack.push(answer.go)
         return ok(answer.stdout)
       }
+      const swipe = /^input swipe (-?\d+) (-?\d+) (-?\d+) (-?\d+) (\d+)$/.exec(line)
+      if (swipe) {
+        const [x1, y1, x2, y2, ms] = swipe.slice(1, 6).map(Number)
+        // `input swipe` returns once the finger lifted.
+        clock += ms
+        const on = loaded(top())
+          .filter((c) => c.scroll && x1 >= c.bounds[0] && x1 < c.bounds[2] && y1 >= c.bounds[1] && y1 < c.bounds[3])
+          .pop()
+        if (on?.id) offsets[on.id] = Math.min(scrollEnd(on), Math.max(0, (offsets[on.id] ?? 0) + (on.scroll!.axis === 'x' ? x1 - x2 : y1 - y2)))
+        return ok()
+      }
       const tap = /^input tap (\d+) (\d+)$/.exec(line)
       if (!tap) return { code: 1, stdout: '', stderr: `unexpected ${line}`, error: 'failed' }
       const [x, y] = [Number(tap[1]), Number(tap[2])]
@@ -226,5 +288,5 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       return { code: 0, stdout: encodePng({ width: w, height: h, rgb }), stderr: '' }
     }
   }
-  return { host, lines, evidenceLines, crashReads, typed, stack }
+  return { host, lines, evidenceLines, crashReads, typed, stack, offsets }
 }

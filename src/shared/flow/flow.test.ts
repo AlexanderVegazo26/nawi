@@ -284,6 +284,19 @@ describe('flow files — android target (roadmap M5)', () => {
     expect(stringifyFlow(r.flow)).toContain('{ desc: Cart }')
   })
 
+  it('parses android scrolls: to a view (target only), inside a view by a delta (a pager), and the app\'s list by a delta (M5d-2)', () => {
+    const steps = [
+      '  - { id: s5, action: scroll, target: { selectors: [ { text: "Item 25" } ] } }',
+      '  - { id: s5, action: scroll, target: { selectors: [ { id: "dev.nawi.shop:id/banner" } ] }, delta: [1080, 0] }',
+      '  - { id: s5, action: scroll, delta: [0, -600] }'
+    ]
+    for (const step of steps) {
+      const r = parseFlow(androidWith('s5', step))
+      if (!r.ok) throw new Error(`${step} should parse in an android flow:\n${formatFlowErrors(r.errors)}`)
+      expect(r.flow.steps[4].action, step).toBe('scroll')
+    }
+  })
+
   it('rejects a package name that is not an Android application id', () => {
     const e = onlyError(ANDROID.replace('package: dev.nawi.shop', 'package: "shop; rm -rf /"'))
     expect(e).toMatchObject({ path: 'target.package', message: 'must be an Android package name such as com.example.app' })
@@ -295,7 +308,11 @@ describe('flow files — android target (roadmap M5)', () => {
     ['a reference crop', '  - { id: s1, action: click, target: { selectors: [ { text: Cart } ], image: cart.png } }', 'steps[0].target.image', /reference crops are not used by android flows yet/],
     ['a key Android has no event for', '  - { id: s3, action: press, key: F5 }', 'steps[2].key', /android flows can press Back, Home, AppSwitch/],
     ['a press aimed at a view', '  - { id: s3, action: press, key: Enter, target: { selectors: [ { text: Cart } ] } }', 'steps[2].target', /tap a field first with a click step/],
-    ['a URL assertion', '  - { id: s6, action: assert, target: { selectors: [ { text: Shipped } ] }, expect: { url: "shop://x" } }', 'steps[5].expect.url', /has no URL to check/]
+    ['a URL assertion', '  - { id: s6, action: assert, target: { selectors: [ { text: Shipped } ] }, expect: { url: "shop://x" } }', 'steps[5].expect.url', /has no URL to check/],
+    ['a scroll with neither a target nor a delta', '  - { id: s5, action: scroll }', 'steps[4].delta', /an android scroll without a target needs a non-zero delta/],
+    ['a target-less scroll by [0, 0]', '  - { id: s5, action: scroll, delta: [0, 0] }', 'steps[4].delta', /needs a non-zero delta/],
+    ['a scroll by a fraction of a px', '  - { id: s5, action: scroll, delta: [0, 0.4] }', 'steps[4].delta', /moves by whole px: use integers/],
+    ['a scroll too short to be a swipe', '  - { id: s5, action: scroll, target: { selectors: [ { text: Deals } ] }, delta: [30, 30] }', 'steps[4].delta', /moves at least 48 px: a shorter swipe is a tap/]
   ])('rejects %s, at the field', (_what, step, path, message) => {
     const id = /id: (s\d)/.exec(step)?.[1] as string
     const e = onlyError(androidWith(id, step))

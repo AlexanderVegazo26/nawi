@@ -744,6 +744,14 @@ alone.
   the on-screen keyboard before a tap and before Back (so Back always acts on
   the app), empties a field before typing, opens deep
   links in the flow's own app, and keeps typed secrets out of what it reports.
+  `scroll` steps (M5d-2) work as in browser flows: a target alone scrolls the
+  app's largest list until that view is on screen (toward the end first, back
+  toward the start once a swipe changes nothing, failing when both ends were
+  reached; 60 s unless the step has `timeout_ms`), a target and a `delta`
+  swipes inside that view (a pager, a carousel), and a `delta` alone scrolls
+  the app's largest list (else its window). Swipes are slow (1 s) so the list
+  stops about where the finger lifts, at most 60% of the area each, and never
+  start on another app's window or the on-screen keyboard.
   `run_flow` / `nawi run` use it for android flows (M5b,
   `src/main/mobile/flow-device.ts`): the run goes to the connected device or
   running emulator (`target` / `--target <serial|avd>` when several are
@@ -898,8 +906,8 @@ CDP selectors and the MCP projection/revision model.
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, typing, keys, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
-  taps, typing, Back/Home/Enter; no long press, swipe, rotation or deep link steps yet, and a tap must wait for the screen
+  (`nawi run`: taps, typing, keys, scrolling to a view or by a delta, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
+  taps, typing, Back/Home/Enter; swipes are not recorded as scroll steps yet, and there are no long press, rotation or deep link steps yet, and a tap must wait for the screen
   read after the previous screen change, about 2 s), but there is no inspector or input on that screen yet and the recorder
   is not in the Mobile view yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when

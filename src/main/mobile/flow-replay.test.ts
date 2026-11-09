@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseFlow, type Flow } from '../../shared/flow'
-import { replayAndroidFlow, type AndroidReplayRequest } from './flow-replay'
+import { planSwipes, replayAndroidFlow, type AndroidReplayRequest } from './flow-replay'
 import { crashLogLine } from './crash'
 import { anr, javaCrash, nativeCrash } from './fixtures/crash-logs'
 import { DEVICE_AHEAD_MS, device, ID, PKG, type Device } from './fixtures/shop-app'
@@ -501,5 +501,220 @@ describe('replayAndroidFlow crashes and ANRs (roadmap M5d-1)', () => {
     expect(messages.filter((m) => m === 'FATAL EXCEPTION: main'), 'the device log repeats the report: kept once').toHaveLength(1)
     expect(messages.at(-1)).toBe('retrying /orders/1/track')
     expect(d.evidenceLines.filter((l) => l.startsWith('date ')), 'one clock read serves the crash watch and the step logs').toHaveLength(1)
+  })
+})
+
+describe('replayAndroidFlow scroll (roadmap M5d-2)', () => {
+  const LIST = `RecyclerView ${ID('list')}`
+  // The catalog list is 1080 x 1500 at y 300 (centre 540, 1050): a full swipe covers 80% of it, 1200 px, at 0.6 px/ms.
+  const SCROLL_DOWN = 'input swipe 540 1650 540 450 2000'
+  const SCROLL_UP = 'input swipe 540 450 540 1650 2000'
+  const swipes = (d: Device): string[] => d.lines.filter((l) => l.startsWith('input swipe'))
+
+  it('scrolls a list until a view below the fold is on screen, then taps it where it now is, three runs alike', async () => {
+    const f = flow(
+      `  - { id: find, action: scroll, intent: Find item 25, target: { selectors: [{ text: "Item 25" }] } }
+  - { id: open, action: click, target: { selectors: [{ text: "Item 25" }] } }
+`
+    )
+    const outcomes = new Set<string>()
+    for (let i = 0; i < 3; i++) {
+      const d = device('catalog')
+      const r = await run(f, d)
+      expect(r.status, `run ${i + 1}: ${JSON.stringify(r.steps.find((s) => s.status === 'failed'))}`).toBe('passed')
+      expect(d.lines, 'two swipes bring item 25 (3600-3750 px into the list) on screen, the tap lands on its centre').toEqual([SCROLL_DOWN, SCROLL_DOWN, 'input tap 540 1575'])
+      expect(d.stack).toEqual(['catalog', 'order'])
+      expect(r.steps[0].matched, 'the scroll step reports the locator that found the view').toMatchObject({ index: 0, layer: 'text', fallback: false })
+      outcomes.add(JSON.stringify([d.lines, r.steps.map((s) => [s.status, s.matched])]))
+    }
+    expect(outcomes.size, 'three replays must send the same swipes and report the same matches').toBe(1)
+  })
+
+  it('does not swipe when the view is already on screen, nor pull a list at its start toward its top edge (a pull-to-refresh)', async () => {
+    for (const item of ['Item 2', 'Item 1']) {
+      const d = device('catalog')
+      const r = await run(flow(`  - { id: find, action: scroll, target: { selectors: [{ text: "${item}" }] } }\n`), d)
+      expect(r.status).toBe('passed')
+      expect(d.lines, item).toEqual([])
+    }
+  })
+
+  it('brings a view found at the list\'s bottom edge a third of the way in, so a tap on it cannot miss', async () => {
+    const d = device('catalog')
+    const r = await run(flow(`  - { id: find, action: scroll, target: { selectors: [{ text: "Item 10" }] } }\n  - { id: open, action: click, target: { selectors: [{ text: "Item 10" }] } }\n`), d)
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    // Item 10 is at 1650-1800 on screen, against the list's bottom (1800): its top goes to 300 + 1500 / 3 = 800.
+    expect(d.lines).toEqual(['input swipe 540 1475 540 625 1417', 'input tap 540 875'])
+  })
+
+  it('turns back toward the start of the list once a swipe moves nothing, to find a view above', async () => {
+    const d = device('catalog')
+    const r = await run(
+      flow(
+        `  - { id: last, action: scroll, target: { selectors: [{ text: "Item 30" }] } }
+  - { id: first, action: scroll, target: { selectors: [{ text: "Item 1" }] } }
+`
+      ),
+      d
+    )
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    expect(swipes(d), 'down to the end (+ the edge nudge), one swipe that moves nothing, three up to the start (+ the edge nudge)').toEqual([
+      SCROLL_DOWN,
+      SCROLL_DOWN,
+      SCROLL_DOWN,
+      'input swipe 540 1475 540 625 1417',
+      SCROLL_DOWN,
+      SCROLL_UP,
+      SCROLL_UP,
+      SCROLL_UP,
+      'input swipe 540 625 540 1475 1417'
+    ])
+    expect(d.offsets[ID('list')]).toBe(0)
+  })
+
+  it('fails a view that is in neither end of the list, naming the list and every locator, long before its timeout', async () => {
+    const d = device('catalog')
+    const r = await run(flow(`  - { id: find, action: scroll, target: { selectors: [{ id: "${ID('item_99')}" }, { text: "Item 99" }] } }\n`), d)
+    expect(r.status).toBe('failed')
+    expect(r.steps[0].error).toBe(`scrolled the ${LIST} to both ends; no view of ${PKG} matched: id=${ID('item_99')} found nothing; text="Item 99" found nothing`)
+    expect(r.steps[0].misses?.map((m) => m.found)).toEqual([0, 0])
+    expect(swipes(d), 'down to the end and back to the start, each end seen by one swipe that moved nothing').toEqual([...Array(4).fill(SCROLL_DOWN), ...Array(4).fill(SCROLL_UP)])
+    expect(r.steps[0].durationMs, 'it stops at the second end, not at the 60 s scroll timeout').toBeLessThan(30_000)
+  })
+
+  it('still sees the end of a list whose views change by themselves (a ticking text does not count as movement)', async () => {
+    const d = device('catalog', { onRead: (n, s) => (s.catalog.controls[1].scroll!.content[28].text = `Item 29 (${n} s)`) })
+    const r = await run(flow(`  - { id: find, action: scroll, target: { selectors: [{ text: "Item 99" }] } }\n`), d)
+    expect(r.steps[0].error).toMatch(/^scrolled the RecyclerView dev\.nawi\.shop:id\/list to both ends;/)
+    expect(swipes(d).length).toBe(8)
+  })
+
+  it('fails a scroll to a view when the screen has no list to look in, after waiting for one', async () => {
+    const d = device('order')
+    const r = await run(flow(`  - { id: find, action: scroll, timeout_ms: 1000, target: { selectors: [{ text: Refund }] } }\n`), d)
+    expect(r.steps[0].error).toBe(`no view of ${PKG} matched: text="Refund" found nothing, and no scrollable view of ${PKG} is on screen to look further`)
+    expect(d.lines).toEqual([])
+  })
+
+  it('gives a scroll to a view 60 s by default, and the step\'s timeout_ms when it has one', async () => {
+    // A list that grows by ten rows at every read (endless loading): only the clock ends the search.
+    const endless = (): Device =>
+      device('catalog', {
+        onRead: (_n, s) => {
+          const content = s.catalog.controls[1].scroll!.content
+          for (let k = 0; k < 10; k++) content.push({ text: `More ${content.length}`, bounds: [0, content.length * 150, 1080, content.length * 150 + 150] })
+        }
+      })
+    const d = endless()
+    const r = await run(flow(`  - { id: find, action: scroll, target: { selectors: [{ text: Nowhere }] } }\n`), d)
+    expect(r.steps[0].error).toMatch(/^no view of dev\.nawi\.shop matched: text="Nowhere" found nothing \(searched the RecyclerView dev\.nawi\.shop:id\/list with 2\d swipes\)$/)
+    expect(r.steps[0].durationMs).toBeGreaterThanOrEqual(60_000)
+    const short = await run(flow(`  - { id: find, action: scroll, timeout_ms: 2000, target: { selectors: [{ text: Nowhere }] } }\n`), endless())
+    expect(short.steps[0].error).toMatch(/\(searched the RecyclerView dev\.nawi\.shop:id\/list with 1 swipes\)$/)
+  })
+
+  it('swipes inside the step\'s view by its delta (a pager), and fails a swipe that moves nothing there', async () => {
+    const d = device('catalog')
+    const banner = (id: string, dx: number): string => `  - { id: ${id}, action: scroll, target: { selectors: [{ id: "${ID('banner')}" }] }, delta: [${dx}, 0] }\n`
+    const r = await run(flow(`${banner('next', 1080)}${banner('third', 1080)}  - { id: shown, action: assert, target: { selectors: [{ text: "Deal 3" }] }, expect: { visible: true } }\n`), d)
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    // The banner is 1080 x 300 at y 1850: 1080 px is two swipes of 540 px (80% of it is 864), centred on it.
+    expect(d.lines).toEqual(Array(4).fill('input swipe 810 2000 270 2000 900'))
+    expect(d.offsets).toEqual({ [ID('banner')]: 2160 })
+    expect(r.steps[0].matched).toMatchObject({ layer: 'id' })
+    const end = await run(flow(banner('past', 864)), d)
+    expect(end.steps[0].error).toBe(`the swipe moved nothing in id=${ID('banner')}: it is already at that end, or it springs back (a pager turns a page only when one swipe covers most of its width)`)
+  })
+
+  it('scrolls the app\'s largest list by a delta when the step has no target, and its window when it shows no list', async () => {
+    const d = device('catalog')
+    const r = await run(
+      flow(
+        `  - { id: by, action: scroll, delta: [0, 1200] }
+  - { id: shown, action: assert, target: { selectors: [{ text: "Item 9" }] }, expect: { visible: true } }
+  - { id: back, action: scroll, delta: [0, -300] }
+`
+      ),
+      d
+    )
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    expect(d.lines).toEqual([SCROLL_DOWN, 'input swipe 540 900 540 1200 500'])
+    expect(d.offsets[ID('list')]).toBe(900)
+    expect(r.steps[0].matched, 'no target, no match').toBeUndefined()
+    const page = device('order')
+    const p = await run(flow(`  - { id: by, action: scroll, delta: [0, 500] }\n`), page)
+    expect(page.lines, 'the window is 2400 px high: one swipe from below its centre').toEqual(['input swipe 540 1450 540 950 833'])
+    expect(p.steps[0].error, 'a screen that does not scroll fails the step that tried').toMatch(/^the swipe moved nothing in the window of dev\.nawi\.shop:/)
+  })
+
+  it('hides the on-screen keyboard before a swipe, so the swipe cannot land on a key', async () => {
+    const d = device('catalog', { keyboardOnFocus: true })
+    const r = await run(flow(`  - { id: search, action: fill, target: { selectors: [{ id: "${ID('search')}" }] }, value: a }\n  - { id: by, action: scroll, delta: [0, 300] }\n`), d)
+    expect(r.status, JSON.stringify(r.steps)).toBe('passed')
+    expect(d.lines.slice(-2)).toEqual(['input keyevent KEYCODE_BACK', 'input swipe 540 1200 540 900 500'])
+    expect(d.stack, 'Back only closed the keyboard').toEqual(['catalog'])
+  })
+
+  it('never swipes where another app\'s window covers the list (a permission prompt)', async () => {
+    const prompt = { pkg: 'com.android.permissioncontroller', bounds: [0, 1450, 1080, 1900] as [number, number, number, number] }
+    const d = device('catalog', { onRead: (_n, s) => (s.catalog.overlay = prompt) })
+    const r = await run(flow(`  - { id: find, action: scroll, timeout_ms: 1000, target: { selectors: [{ text: "Item 25" }] } }\n`), d)
+    expect(r.steps[0].error).toBe(`no view of ${PKG} matched: text="Item 25" found nothing; the ${LIST} is covered by com.android.permissioncontroller`)
+    const by = device('catalog', { onRead: (_n, s) => (s.catalog.overlay = prompt) })
+    const b = await run(flow(`  - { id: by, action: scroll, timeout_ms: 1000, delta: [0, 900] }\n`), by)
+    expect(b.steps[0].error).toBe(`the ${LIST} is covered by com.android.permissioncontroller`)
+    expect([...d.lines, ...by.lines]).toEqual([])
+  })
+
+  it('refuses a delta the view is too small for instead of swiping it a hundred times', async () => {
+    const d = device('catalog')
+    const r = await run(flow(`  - { id: far, action: scroll, timeout_ms: 1000, target: { selectors: [{ id: "${ID('banner')}" }] }, delta: [100000, 0] }\n`), d)
+    expect(r.steps[0].error).toBe(`id=${ID('banner')} is too small to scroll [100000, 0] in at most 30 swipes`)
+    expect(d.lines).toEqual([])
+  })
+
+  it('counts a view the dump keeps with unreadable bounds (a row scrolled past the top) as not on screen in waits and assertions', async () => {
+    const scrolledPast = (): Device => device('order', { onRead: (_n, s) => (s.order.controls[0].bounds = [40, 300, 1040, 120]) })
+    const target = `target: { selectors: [{ id: "${ID('status')}" }] }`
+    const gone = await run(flow(`  - { id: gone, action: assert, ${target}, expect: { visible: false } }\n`), scrolledPast())
+    expect(gone.status, JSON.stringify(gone.steps)).toBe('passed')
+    const shown = await run(flow(`  - { id: shown, action: assert, timeout_ms: 500, ${target}, expect: { visible: true } }\n`), scrolledPast())
+    expect(shown.steps[0].error).toBe(`id=${ID('status')} is not on screen (it has no size there)`)
+    const text = await run(flow(`  - { id: text, action: assert, timeout_ms: 500, ${target}, expect: { text: Shipped } }\n`), scrolledPast())
+    expect(text.status, 'its text is not shown either').toBe('failed')
+    const wait = await run(flow(`  - { id: wait, action: wait, timeout_ms: 500, ${target} }\n`), scrolledPast())
+    expect(wait.steps[0].error, 'a wait agrees with the assertion').toBe(`id=${ID('status')} is not on screen (it has no size there)`)
+  })
+
+  it('stops a scroll to a view that is cancelled mid-search, as stopped rather than failed', async () => {
+    const ctl = new AbortController()
+    const d = device('catalog', { onRead: (n) => n === 3 && ctl.abort('user stop') })
+    const r = await run(flow(`  - { id: find, action: scroll, target: { selectors: [{ text: "Item 99" }] } }\n`), d, { signal: ctl.signal })
+    expect(r).toMatchObject({ status: 'failed', error: 'stopped during step find: user stop' })
+    expect(r.steps[0].status).toBe('not_run')
+    expect(swipes(d).length, 'no swipe after the stop').toBe(2)
+  })
+})
+
+describe('planSwipes', () => {
+  const box = { left: 0, top: 300, right: 1080, bottom: 1800 }
+
+  it('splits a delta into equal whole-px swipes that add up to it exactly, stay inside the area and last 1 ms per 0.6 px', () => {
+    const plan = planSwipes(box, 0, 2000)
+    if (typeof plan === 'string') throw new Error(plan)
+    expect(plan).toHaveLength(2)
+    for (const w of plan) {
+      for (const p of [w.from, w.to]) expect(p.x >= box.left && p.x < box.right && p.y >= box.top && p.y < box.bottom, `${JSON.stringify(p)} inside ${JSON.stringify(box)}`).toBe(true)
+    }
+    expect(plan.reduce((sum, w) => sum + w.from.y - w.to.y, 0)).toBe(2000)
+    expect(plan.map((w) => w.ms)).toEqual([1667, 1667])
+    expect(planSwipes(box, 0, -60), 'short swipes last at least 150 ms').toEqual([{ from: { x: 540, y: 1020 }, to: { x: 540, y: 1080 }, ms: 150 }])
+  })
+
+  it('refuses what it cannot swipe: too many swipes, an area too thin, a piece Android would take for a tap', () => {
+    expect(planSwipes(box, 0, 1200 * 31)).toBe('is too small to scroll [0, 37200] in at most 30 swipes')
+    expect(planSwipes({ left: 0, top: 0, right: 50, bottom: 100 }, 100, 0)).toBe('is too small to swipe in (50x100 px)')
+    expect(planSwipes(box, 0, 40)).toMatch(/each swipe would move under 48 px, which Android takes for a tap/)
+    expect(planSwipes(box, 0, 0)).toBe('has nothing to scroll by ([0, 0])')
   })
 })

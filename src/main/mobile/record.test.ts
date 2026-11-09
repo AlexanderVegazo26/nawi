@@ -405,7 +405,7 @@ describe('flowFromAndroidRecording on single screens', () => {
       'A tap on "Allow" in Android\'s permission prompt is not recorded: grant the permission before the run (the profile\'s permissions.grant).',
       'A tap at (100, 2300) on "Clock" is not recorded: it landed on com.android.launcher3, not com.example.app.',
       'A long press at (500, 150) on "Save" is not recorded: android flows have no step for it yet.',
-      'A swipe at (500, 150) on "Save" is not recorded: android flows have no step for it yet.',
+      'A swipe at (500, 150) on "Save" is not recorded: the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand).',
       'A 2-finger gesture at (500, 150) on "Save" is not recorded: android flows have no step for it yet.',
       'A touch at (500, 150) is not recorded: the device dropped some of its events.',
       'A tap at (500, 2000) is not recorded: no view is there on the screen it landed on.'
