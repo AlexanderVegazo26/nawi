@@ -4,6 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { E2E_TOOL_NAMES } from './tool-names'
 
 /**
  * FR-AGT.1-3 / UX-AGT.3 against the real, built app.
@@ -22,34 +23,8 @@ let endpoint: { url: string; token: string; port: number }
 
 const BRIDGE = join(process.cwd(), 'out', 'mcp', 'stdio-bridge.js')
 
-/**
- * The FR-AGT.1 surface plus `export_flow` (roadmap F2), `run_flow` (F3b), `list_runs`/`get_run` (F4c), `inspect_apk` (M1a), `mobile_doctor` (M1b),
- * `mobile_open` (M1c), `mobile_study` (M3b) and `mobile_explore` (M3c2). Named here so the
- * kill-switch test cannot quietly skip one.
- */
-const TOOL_NAMES = [
-  'capture_screen',
-  'capture_region',
-  'capture_element',
-  'start_recording',
-  'stop_recording',
-  'get_capture',
-  'get_state_layer',
-  'list_captures',
-  'search_captures',
-  'annotate',
-  'redact',
-  'export_guide',
-  'export_flow',
-  'run_flow',
-  'list_runs',
-  'get_run',
-  'inspect_apk',
-  'mobile_doctor',
-  'mobile_open',
-  'mobile_study',
-  'mobile_explore'
-]
+/** Every tool the app must publish; see e2e/tool-names.ts (kept in step with TOOLS by a unit test). */
+const TOOL_NAMES = E2E_TOOL_NAMES
 
 /* ------------------------------------------------------------------ *
  * HTTP transport
@@ -162,7 +137,7 @@ test('FR-SEC.1 — the endpoint declares itself as non-egress', async () => {
   expect(parsed.egress).toBe(false)
 })
 
-test('initialize and tools/list expose exactly the twelve FR-AGT.1 tools plus the flow, run and mobile tools', async () => {
+test('initialize and tools/list expose exactly the FR-AGT.1 tools plus the flow, run, heal and mobile tools', async () => {
   const init = await rpc('initialize', { protocolVersion: '2025-06-18' })
   expect(init.status).toBe(200)
   expect((init.body.result as { serverInfo: { name: string } }).serverInfo.name).toBe('nawi')
@@ -295,7 +270,7 @@ test('FR-AGT.3 — the same idempotency_key returns the same capture_id and one 
  * UX-AGT.3 — the kill switch
  * ------------------------------------------------------------------ */
 
-test('UX-AGT.3 — while paused, every one of the seventeen tools returns AGENT_ACCESS_PAUSED', async () => {
+test('UX-AGT.3 — while paused, every published tool returns AGENT_ACCESS_PAUSED', async () => {
   const before = (await callTool('list_captures')).total as number
   await setPaused(true)
   try {

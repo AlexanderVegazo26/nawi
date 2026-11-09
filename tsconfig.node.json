@@ -27,6 +27,7 @@
     "src/shared/**/*",
     "scripts/**/*",
     "e2e-renderer/**/*",
+    "e2e/tool-names.ts",
     "playwright.renderer.config.ts",
     "electron.vite.config.ts"
   ]
