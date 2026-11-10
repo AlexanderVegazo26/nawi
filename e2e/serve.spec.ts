@@ -14,6 +14,7 @@ import { promisify } from 'node:util'
 
 const CLI = join(process.cwd(), 'out', 'cli', 'index.js')
 const execFileAsync = promisify(execFile)
+const READY = 'nawi serve: ready on http://127.0.0.1:'
 
 let profile: string
 let serve: ChildProcess
@@ -44,14 +45,28 @@ async function cli(args: string[]): Promise<{ code: number; stdout: string; stde
 test.beforeAll(async () => {
   profile = await fs.mkdtemp(join(tmpdir(), 'nawi-serve-e2e-'))
   serve = spawn(process.execPath, [CLI, 'serve', '--user-data-dir', profile], { env: serveEnv() })
-  serve.stdout?.on('data', (d: Buffer) => (stdout += d.toString()))
-  serve.stderr?.on('data', (d: Buffer) => (stderr += d.toString()))
-  await expect
-    .poll(() => (serve.exitCode === null ? stdout : `exited ${serve.exitCode}`), {
-      message: `nawi serve never printed its ready line; stderr:\n${stderr.slice(-2000)}`,
-      timeout: 30_000
+  // Settles on the ready line, on the CLI ending (`close`: after its stdout/stderr are fully read, so a crash's
+  // last lines are in `stderr`), or after 30 s. The failure message is built only then: a message written before
+  // the wait always showed an empty stderr (the 2026-11-09 weekly run's only clue was "exited 1").
+  const outcome = await new Promise<string>((resolve) => {
+    const timer = setTimeout(() => resolve('no ready line within 30 s'), 30_000)
+    serve.stdout?.on('data', (d: Buffer) => {
+      stdout += d.toString()
+      if (stdout.includes(READY)) {
+        clearTimeout(timer)
+        resolve('ready')
+      }
     })
-    .toContain('nawi serve: ready on http://127.0.0.1:')
+    serve.stderr?.on('data', (d: Buffer) => (stderr += d.toString()))
+    serve.once('close', (code, signal) => {
+      clearTimeout(timer)
+      resolve(`exited ${code ?? signal}`)
+    })
+  })
+  expect(
+    outcome,
+    `nawi serve never printed its ready line (${outcome});\nstdout:\n${stdout.slice(-2000)}\nstderr:\n${stderr.slice(-4000)}`
+  ).toBe('ready')
 })
 
 test.afterAll(async () => {

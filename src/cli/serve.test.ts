@@ -6,7 +6,8 @@ import {
   parseServeArgs,
   serveCommand,
   serveEnv,
-  serveExitCode
+  serveExitCode,
+  serveExitNote
 } from './serve'
 import { SERVE_FLAG, isServeMode, serveReadyLine } from '../main/headless'
 
@@ -105,6 +106,22 @@ describe('serveExitCode', () => {
     expect(serveExitCode(null, 'SIGTERM', false), 'SIGTERM from elsewhere').toBe(1)
     expect(serveExitCode(null, 'SIGHUP', true), 'forwarded SIGHUP (terminal closed)').toBe(0)
     expect(serveExitCode(null, 'SIGKILL', true), 'SIGKILL').toBe(1)
+  })
+})
+
+describe('serveExitNote', () => {
+  it('names the signal when the app crashed (SIGTRAP from a Chromium abort) or was killed from elsewhere', () => {
+    expect(serveExitNote(null, 'SIGTRAP', false), 'Chromium FATAL/CHECK abort').toContain('killed by SIGTRAP')
+    expect(serveExitNote(null, 'SIGTRAP', true), 'a crash during our own stop is still a crash').toContain('killed by SIGTRAP')
+    expect(serveExitNote(null, 'SIGKILL', true), 'SIGKILL').toContain('killed by SIGKILL')
+    expect(serveExitNote(null, 'SIGTERM', false), 'SIGTERM we did not forward').toContain('killed by SIGTERM')
+  })
+
+  it('stays quiet for an exit code or a stop we forwarded', () => {
+    expect(serveExitNote(0, null, true), 'clean stop').toBeNull()
+    expect(serveExitNote(3, null, false), 'no endpoint: the app printed its own reason').toBeNull()
+    expect(serveExitNote(null, 'SIGTERM', true), 'forwarded SIGTERM').toBeNull()
+    expect(serveExitNote(null, 'SIGINT', true), 'forwarded Ctrl-C').toBeNull()
   })
 })
 

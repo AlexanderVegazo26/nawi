@@ -110,3 +110,13 @@ export function serveExitCode(code: number | null, signal: NodeJS.Signals | null
   if (code !== null) return code
   return forwarded && (signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP') ? 0 : 1
 }
+
+/**
+ * What the CLI adds on stderr when the app ended on a signal it did not forward: Chromium aborts (a failed CHECK,
+ * the sandbox refusing to start) end in SIGTRAP/SIGABRT, and without this line the only trace is exit code 1.
+ * Null when the app exited with its own code or stopped on our forwarded Ctrl-C/SIGTERM/SIGHUP.
+ */
+export function serveExitNote(code: number | null, signal: NodeJS.Signals | null, forwarded: boolean): string | null {
+  if (code !== null || signal === null || serveExitCode(code, signal, forwarded) === 0) return null
+  return `nawi serve: the Nawi app was killed by ${signal} before it stopped cleanly (a crash or an outside kill; its own last lines are above).`
+}

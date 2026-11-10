@@ -73,7 +73,8 @@ import {
   parseServeArgs,
   serveCommand,
   serveEnv,
-  serveExitCode
+  serveExitCode,
+  serveExitNote
 } from './serve'
 
 /**
@@ -607,7 +608,11 @@ async function serveCommandMain(argv: string[]): Promise<void> {
     })
   }
   child.once('error', (err) => fail(`Could not start Nawi (${command}): ${err.message}`, EXIT_NOT_RUNNING))
-  child.once('exit', (code, signal) => process.exit(serveExitCode(code, signal, forwarded)))
+  child.once('exit', (code, signal) => {
+    const note = serveExitNote(code, signal, forwarded)
+    if (note) process.stderr.write(`${note}\n`)
+    process.exit(serveExitCode(code, signal, forwarded))
+  })
 }
 
 void main()
