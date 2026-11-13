@@ -41,22 +41,52 @@ async function ensureDirs(): Promise<void> {
 async function readIndex(): Promise<LibraryItem[]> {
   if (cache) return cache
   await ensureDirs()
+  let raw: string
   try {
-    const raw = await fs.readFile(indexPath(), 'utf-8')
+    raw = await fs.readFile(indexPath(), 'utf-8')
+  } catch (err) {
+    // Only a missing index is the first-run case. Any other failure (EACCES, EIO, …)
+    // must surface: answering "empty" here lets the next save overwrite a library
+    // that is still on disk.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    cache = []
+    return cache
+  }
+  try {
     const parsed: unknown = JSON.parse(raw)
-    cache = Array.isArray(parsed) ? (parsed as LibraryItem[]) : []
-  } catch {
-    // Missing or unreadable index is the normal first-run case.
+    if (!Array.isArray(parsed)) throw new Error('index.json is not an array')
+    cache = parsed as LibraryItem[]
+  } catch (err) {
+    // A truncated or hand-damaged index. Move it aside instead of treating it as
+    // empty in place: the next save rewrites index.json, and without this the
+    // only record of every earlier capture would be gone with it.
+    const aside = `${indexPath()}.corrupt-${Date.now()}`
+    await fs.rename(indexPath(), aside).catch((renameErr: NodeJS.ErrnoException) => {
+      // A concurrent first read already moved it.
+      if (renameErr.code !== 'ENOENT') throw renameErr
+    })
+    console.error(`library: index.json could not be parsed (${String(err)}); kept as ${aside}`)
     cache = []
   }
   return cache
 }
 
-function writeIndex(items: LibraryItem[]): Promise<void> {
+/**
+ * Read → modify → write as ONE unit on the write chain.
+ *
+ * Reading the index outside the chain and only queueing the write is not enough:
+ * two concurrent callers both read the same snapshot, both queue a write derived
+ * from it, and the second write drops the first one's record. `fn` therefore runs
+ * inside the chain, against the index as the previous mutation left it. It must be
+ * synchronous and must not call back into anything that mutates the index — that
+ * would chain on `writeChain` from inside it and await itself.
+ */
+function mutateIndex(fn: (items: LibraryItem[]) => LibraryItem[]): Promise<LibraryItem[]> {
   // Chain on a *settled* tail. Chaining on the raw promise would mean one
   // rejected write permanently poisons the queue — every later `.then` would be
   // skipped and no index write would ever be attempted again this process.
   const next = writeChain.catch(() => undefined).then(async () => {
+    const items = fn(await readIndex())
     await ensureDirs()
     const tmp = `${indexPath()}.tmp`
     await fs.writeFile(tmp, JSON.stringify(items, null, 2), 'utf-8')
@@ -65,6 +95,7 @@ function writeIndex(items: LibraryItem[]): Promise<void> {
     // Only publish to the cache once the bytes are actually on disk, so a failed
     // write can never leave the UI reporting state that didn't persist.
     cache = items
+    return items
   })
 
   writeChain = next
@@ -160,8 +191,7 @@ export async function save(args: SaveArgs): Promise<LibraryItem> {
     ...(args.recovered ? { recovered: true } : {})
   }
 
-  const items = await readIndex()
-  await writeIndex([item, ...items])
+  await mutateIndex((items) => [item, ...items])
   return item
 }
 
@@ -234,18 +264,21 @@ export async function restoreItem(id: string): Promise<LibraryItem | null> {
     clearTimeout(timer)
     pendingDeletes.delete(id)
   }
-  const target = await getItem(id)
-  if (!target?.deletedAt) return null
-  const items = await readIndex()
-  const idx = items.findIndex((i) => i.id === id)
-  // Delete the key rather than setting it to undefined: `!i.deletedAt` would
-  // accept either, but an explicit `"deletedAt": undefined` does not survive
-  // JSON and leaves the on-disk record shaped differently from a fresh one.
-  const restored = { ...items[idx] }
-  delete restored.deletedAt
-  const next = [...items]
-  next[idx] = restored
-  await writeIndex(next)
+  if (!UUID_RE.test(id)) return null
+  let restored: LibraryItem | null = null
+  await mutateIndex((items) => {
+    const idx = items.findIndex((i) => i.id === id)
+    if (idx === -1 || !items[idx].deletedAt) return items
+    // Delete the key rather than setting it to undefined: `!i.deletedAt` would
+    // accept either, but an explicit `"deletedAt": undefined` does not survive
+    // JSON and leaves the on-disk record shaped differently from a fresh one.
+    const item = { ...items[idx] }
+    delete item.deletedAt
+    restored = item
+    const next = [...items]
+    next[idx] = item
+    return next
+  })
   return restored
 }
 
@@ -253,8 +286,7 @@ export async function restoreItem(id: string): Promise<LibraryItem | null> {
 async function purgeItem(id: string): Promise<void> {
   const target = await getItem(id)
   if (!target) return
-  const items = await readIndex()
-  await writeIndex(items.filter((i) => i.id !== id))
+  await mutateIndex((items) => items.filter((i) => i.id !== id))
   // Best-effort asset cleanup — a missing file must not fail the delete.
   await fs.rm(target.filePath, { force: true }).catch(() => undefined)
 }
@@ -267,24 +299,31 @@ export async function sweepExpiredDeletes(): Promise<number> {
   const items = await readIndex()
   const stale = items.filter((i) => i.deletedAt)
   if (stale.length === 0) return 0
-  const next = items.map((i) => {
-    if (!i.deletedAt) return i
-    const restored = { ...i }
-    delete restored.deletedAt
-    return restored
-  })
-  await writeIndex(next)
+  await mutateIndex((current) =>
+    current.map((i) => {
+      if (!i.deletedAt) return i
+      const restored = { ...i }
+      delete restored.deletedAt
+      return restored
+    })
+  )
   return stale.length
 }
 
 async function update(id: string, patch: Partial<LibraryItem>): Promise<LibraryItem> {
   await requireItem(id)
-  const items = await readIndex()
-  const idx = items.findIndex((i) => i.id === id)
-  const updated: LibraryItem = { ...items[idx], ...patch }
-  const next = [...items]
-  next[idx] = updated
-  await writeIndex(next)
+  let updated: LibraryItem | undefined
+  await mutateIndex((items) => {
+    // Looked up again inside the chain: the item can be purged between the check
+    // above and this mutation's turn.
+    const idx = items.findIndex((i) => i.id === id)
+    if (idx === -1) throw new Error('That capture no longer exists')
+    updated = { ...items[idx], ...patch }
+    const next = [...items]
+    next[idx] = updated
+    return next
+  })
+  if (!updated) throw new Error('That capture no longer exists')
   return updated
 }
 
@@ -312,7 +351,7 @@ export async function readItemBytes(id: string): Promise<{ bytes: Buffer; mime: 
  * *new* revision and leave the previous file byte-identical.
  *
  * The index still holds the pointer, so the whole publish is: rename the
- * revision directory into place, then one `writeIndex` flipping
+ * revision directory into place, then one `mutateIndex` flipping
  * `sidecarRevision`. Both steps run on the existing serialized write chain, so
  * a concurrent capture cannot interleave and lose the pointer.
  * ------------------------------------------------------------------ */
