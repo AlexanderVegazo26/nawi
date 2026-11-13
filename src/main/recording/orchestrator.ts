@@ -745,6 +745,20 @@ export async function listAudioInputs(): Promise<Array<{ deviceId: string; label
     .filter((d) => d.deviceId !== '')
 }
 
+/**
+ * Stops the active recording from main — the global stop hotkey's path.
+ *
+ * It used to go through the main window's renderer, which dropped it whenever
+ * that window was closed and refused it while the editor was open: the one
+ * chord meant to end a recording from anywhere did not. Sends the same command
+ * the HUD's stop button does. Returns false when there was nothing to stop.
+ */
+export function stopActiveRecording(): boolean {
+  if (!isActive() || !recorderWindow || recorderWindow.isDestroyed()) return false
+  recorderWindow.webContents.send(IPC.recordDispatch, 'stop')
+  return true
+}
+
 export function currentStatus(): RecordingStatus {
   return status
 }

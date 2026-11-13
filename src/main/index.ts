@@ -729,6 +729,22 @@ function broadcastSettings(next: Settings): void {
   }
 }
 
+/**
+ * A global hotkey fired. Stop is handled here, by the recording orchestrator:
+ * it must work with the main window closed or the editor open, and must not
+ * pull the main window over what is being recorded. Everything else needs the
+ * main window's UI.
+ */
+function onHotkey(action: HotkeyAction): void {
+  if (action === 'record-stop') {
+    recording.stopActiveRecording()
+    return
+  }
+  mainWindow?.show()
+  mainWindow?.focus()
+  mainWindow?.webContents.send(IPC.shortcut, action)
+}
+
 /** action -> accelerator Nawi currently holds, so a resync touches only what changed. */
 const heldShortcuts = new Map<HotkeyAction, string>()
 
@@ -760,11 +776,7 @@ async function registerShortcuts(): Promise<void> {
   for (const [action, accel] of wanted) {
     if (heldShortcuts.has(action)) continue
     try {
-      const ok = globalShortcut.register(accel, () => {
-        mainWindow?.show()
-        mainWindow?.focus()
-        mainWindow?.webContents.send(IPC.shortcut, action)
-      })
+      const ok = globalShortcut.register(accel, () => onHotkey(action))
       if (ok) heldShortcuts.set(action, accel)
       else console.warn(`[shortcut] could not register ${accel} for ${action}`)
     } catch (err) {

@@ -276,7 +276,8 @@ export function App(): React.JSX.Element {
     return window.api.onShortcut((action) => {
       const isRecording = recording.phase !== 'idle' && recording.phase !== 'error'
       // A capture during recording would dim the recorded frames; refuse it.
-      if (isRecording && action !== 'record-stop') {
+      // (Stop never arrives here: main handles that hotkey itself.)
+      if (isRecording) {
         notify('Stop the recording before starting a new capture', 'err')
         return
       }
@@ -307,14 +308,11 @@ export function App(): React.JSX.Element {
         case 'record-start':
           setView('capture')
           break
-        case 'record-stop':
-          stopRecording()
-          break
         case 'show-main':
           break
       }
     })
-  }, [editing, onCaptured, notify, stopRecording, recording.phase])
+  }, [editing, onCaptured, notify, recording.phase])
 
   /**
    * PRD-002 §1 P5 — delete is reversible for 30 seconds.
