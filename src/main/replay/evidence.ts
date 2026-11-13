@@ -34,10 +34,19 @@
  */
 
 import { scrubStartUrl } from '@shared/flow/from-recording'
+import { HarBuilder, type HarEntry, type HarHeader, type HarLog } from '../harvest/har'
+import { sealValue } from '../sidecar/seal'
+import type { RedactionRule } from '@shared/settings'
 import type { ReplayClient } from './replay'
 
 export const MAX_ENTRIES_PER_STEP = 20
+/** Requests a run's `network.har` keeps (roadmap DT1); the rest are counted in the log's comment. */
+export const MAX_HAR_REQUESTS = 2_000
 const MAX_MESSAGE_CHARS = 1_000
+/** A header value in the run HAR (a Content-Security-Policy can be long). */
+const MAX_HEADER_CHARS = 16_000
+/** An absolute URL inside a header value (`Location`, `Link: <...>`, `Refresh: 0; url=...`). */
+const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s<>"',;]+/gi
 const MAX_URL_CHARS = 2_000
 /** Requests in flight we remember the step of; beyond this the oldest are forgotten. */
 const MAX_PENDING_REQUESTS = 2_000
@@ -103,8 +112,23 @@ export interface StepEvidence {
   consoleErrorsDropped?: number
   failedRequests?: FailedRequest[]
   failedRequestsDropped?: number
+  /** Browser runs (roadmap DT1): requests the step sent, all of them in the run's `network.har` under its id. */
+  requests?: number
   /** Main-frame URL after the step, scrubbed. */
   url?: string
+}
+
+/**
+ * Roadmap DT1: every request of a browser run as a HAR 1.2 log, each entry tagged with the step that sent it
+ * (`_step_id`; `_opening: true` while the target was opening) and placed on the run's clock (`_t_ms` = ms since the
+ * run started). No bodies: responses are not read and request bodies are left out. URLs and header values are
+ * scrubbed like the rest of the evidence (secret values, token-like URL parameters), credential headers are not
+ * kept, and every string has had the Tier B pattern scan (`sealValue`).
+ */
+export interface RunNetwork {
+  har: HarLog
+  /** Requests per step index (-1: while opening the target). */
+  perStep: Map<number, number>
 }
 
 type Event = { method: string; params: Record<string, unknown>; sessionId?: string }
@@ -145,19 +169,30 @@ export class EvidenceCollector {
   /** When each step began, in order: the step running at time t is the last one that began at or before t. */
   private readonly starts: Array<{ index: number; at: number }> = []
   private readonly byStep = new Map<number, StepEvidence>()
-  private readonly pending = new Map<string, { step: number; method: string; url: string; type?: string }>()
+  /**
+   * Requests not finished yet, with the step that sent them. `reported`: already filed as failed (an HTTP error); it
+   * stays here until its body is in, so settle() waits for its end and the run HAR has its time.
+   */
+  private readonly pending = new Map<string, { step: number; method: string; url: string; type?: string; reported?: boolean }>()
   private readonly offs: Array<() => void> = []
   private mainFrameId: string | undefined
   private pageUrl: string | undefined
   /** The current step's URL is already noted (endStep ran). */
   private urlTaken = false
   private stopped = false
+  /** Roadmap DT1: every request of the run, for `network.har`; bodies never kept (see HarBuilderOptions). */
+  private readonly har = new HarBuilder({ requestBodies: 'drop' })
+  /** The step that sent each request the HAR holds (the first hop's step for a redirect chain). */
+  private readonly harStep = new Map<string, number>()
+  private harDropped = 0
 
   constructor(
     private readonly client: ReplayClient,
     private readonly sessionId: string | undefined,
     private readonly redact: (text: string) => string,
-    private readonly clock: () => number = wallClockMs
+    private readonly clock: () => number = wallClockMs,
+    /** The workspace's redaction rules, added to Tier B's built-in patterns for the run HAR. */
+    private readonly rules: readonly RedactionRule[] = []
   ) {}
 
   /**
@@ -181,7 +216,7 @@ export class EvidenceCollector {
       on('Log.entryAdded', mine((e) => this.onLog(e.params))),
       on('Network.requestWillBeSent', mine((e) => this.onRequest(e.params))),
       on('Network.responseReceived', mine((e) => this.onResponse(e.params))),
-      on('Network.loadingFinished', mine((e) => this.forget(e.params.requestId))),
+      on('Network.loadingFinished', mine((e) => this.onFinished(e.params))),
       on('Network.loadingFailed', mine((e) => this.onFailed(e.params))),
       on('Page.frameNavigated', mine((e) => this.onFrameNavigated(e.params))),
       on('Page.navigatedWithinDocument', mine((e) => this.onSameDocument(e.params)))
@@ -215,7 +250,7 @@ export class EvidenceCollector {
    * After the last step: wait (at most `SETTLE_MS`) until the requests the
    * current step sent have finished, so a submit whose response fails a moment
    * later is still filed under it. Requests earlier steps left open (long
-   * polling, streams) don't hold the run up.
+   * polling, streams) don't hold the run up; the run HAR marks them `_unfinished`.
    */
   async settle(): Promise<void> {
     const step = this.current
@@ -349,6 +384,9 @@ export class EvidenceCollector {
     const id = p.requestId
     const request = p.request as { method?: unknown; url?: unknown } | undefined
     if (typeof id !== 'string' || typeof request?.url !== 'string') return
+    // wallTime is in seconds.
+    const step = this.stepAt(typeof p.wallTime === 'number' ? p.wallTime * 1000 : undefined)
+    this.harRequest(id, step, p)
     // A redirect reuses the request id: the hop that failed is the latest one.
     this.pending.delete(id)
     if (this.pending.size >= MAX_PENDING_REQUESTS) {
@@ -356,8 +394,7 @@ export class EvidenceCollector {
       if (oldest !== undefined) this.pending.delete(oldest)
     }
     this.pending.set(id, {
-      // wallTime is in seconds.
-      step: this.stepAt(typeof p.wallTime === 'number' ? p.wallTime * 1000 : undefined),
+      step,
       method: typeof request.method === 'string' ? request.method : 'GET',
       url: request.url,
       ...(typeof p.type === 'string' ? { type: p.type } : {})
@@ -365,12 +402,13 @@ export class EvidenceCollector {
   }
 
   private onResponse(p: Record<string, unknown>): void {
+    this.har.responseReceived(p)
     const id = p.requestId
     const status = (p.response as { status?: unknown } | undefined)?.status
     if (typeof id !== 'string' || typeof status !== 'number' || status < 400) return
     const r = this.pending.get(id)
-    if (!r) return
-    this.pending.delete(id)
+    if (!r || r.reported) return
+    r.reported = true
     this.push(r.step, 'failedRequests', () => ({
       method: r.method,
       url: this.scrubUrl(r.url),
@@ -380,11 +418,12 @@ export class EvidenceCollector {
   }
 
   private onFailed(p: Record<string, unknown>): void {
+    this.har.loadingFailed(p)
     const id = p.requestId
     if (typeof id !== 'string') return
     const r = this.pending.get(id)
     this.pending.delete(id)
-    if (!r || p.canceled === true) return
+    if (!r || r.reported || p.canceled === true) return
     const reason = typeof p.blockedReason === 'string' ? `blocked: ${p.blockedReason}` : p.errorText
     this.push(r.step, 'failedRequests', () => ({
       method: r.method,
@@ -394,8 +433,85 @@ export class EvidenceCollector {
     }))
   }
 
-  private forget(id: unknown): void {
-    if (typeof id === 'string') this.pending.delete(id)
+  private onFinished(p: Record<string, unknown>): void {
+    this.har.loadingFinished(p)
+    if (typeof p.requestId === 'string') this.pending.delete(p.requestId)
+  }
+
+  /**
+   * Hands a request to the run's HAR (which keeps no body: `requestBodies: 'drop'`). Past MAX_HAR_REQUESTS new
+   * requests are only counted.
+   */
+  private harRequest(id: string, step: number, p: Record<string, unknown>): void {
+    if (!this.harStep.has(id)) {
+      if (this.harStep.size >= MAX_HAR_REQUESTS) {
+        this.harDropped++
+        return
+      }
+      this.harStep.set(id, step)
+    }
+    this.har.requestWillBeSent(p)
+  }
+
+  /**
+   * Roadmap DT1: the run's requests as a HAR, with the number each step sent (see RunNetwork). `stepIds` are the
+   * flow's step ids by index; `runStartedAt` (epoch ms) is `_t_ms`'s zero. Undefined when the run sent no request
+   * the HAR could place on the clock. Call after `stop()`.
+   */
+  network(stepIds: readonly string[], runStartedAt: number): RunNetwork | undefined {
+    // CDP stamps requests with a monotonic clock and, on requestWillBeSent only, the wall clock too: their offset
+    // (median, against one odd stamp) places responses and ends on the run's wall clock.
+    const offsets = this.har
+      .clockBridges()
+      .map((b) => b.wallTimeSeconds - b.monotonicSeconds)
+      .sort((a, b) => a - b)
+    if (offsets.length === 0) return undefined
+    const offset = offsets[Math.floor(offsets.length / 2)]
+    const perStep = new Map<number, number>()
+    const built = this.har.build(
+      (seconds) => Math.round(((seconds + offset) * 1000 - runStartedAt) * 1000) / 1000,
+      (id) => {
+        const step = this.harStep.get(id)
+        if (step === undefined) return undefined
+        perStep.set(step, (perStep.get(step) ?? 0) + 1)
+        const stepId = stepIds[step]
+        return step < 0 || stepId === undefined ? { _opening: true } : { _step_id: stepId }
+      }
+    )
+    if (built.har.log.entries.length === 0) return undefined
+    const notes = [
+      built.har.log.comment,
+      this.harDropped > 0 ? `${this.harDropped} more requests not kept (the run HAR keeps ${MAX_HAR_REQUESTS})` : undefined
+    ].filter((n): n is string => n !== undefined)
+    const har: HarLog = {
+      log: {
+        ...built.har.log,
+        entries: built.har.log.entries.map((entry) => this.scrubEntry(entry)),
+        ...(notes.length > 0 ? { comment: notes.join('; ') } : {})
+      }
+    }
+    return { har: sealValue(har, this.rules).value, perStep }
+  }
+
+  /** One HAR entry with secret values and token-like URL parts scrubbed (the builder kept no body or credential header). */
+  private scrubEntry(entry: HarEntry): HarEntry {
+    const headers = (list: HarHeader[]): HarHeader[] =>
+      list.map((h) => ({
+        name: h.name,
+        // Secrets first (a URL scrub could split one), then every URL inside the value loses its token parameters.
+        value: clip(this.redact(h.value).replace(URL_IN_TEXT, (url) => scrubStartUrl(url).url), MAX_HEADER_CHARS)
+      }))
+    return {
+      ...entry,
+      request: { ...entry.request, url: this.scrubUrl(entry.request.url), headers: headers(entry.request.headers) },
+      response: {
+        ...entry.response,
+        statusText: this.scrubText(entry.response.statusText),
+        headers: headers(entry.response.headers),
+        ...(entry.response.redirectURL ? { redirectURL: this.scrubUrl(entry.response.redirectURL) } : {}),
+        ...(entry.response._error !== undefined ? { _error: this.scrubText(entry.response._error) } : {})
+      }
+    }
   }
 
   private onFrameNavigated(p: Record<string, unknown>): void {

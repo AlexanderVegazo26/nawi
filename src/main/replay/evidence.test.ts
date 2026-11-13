@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EvidenceCollector, MAX_ENTRIES_PER_STEP, wallClockMs } from './evidence'
+import { EvidenceCollector, MAX_ENTRIES_PER_STEP, MAX_HAR_REQUESTS, wallClockMs } from './evidence'
+import { REQUEST_BODY_NOT_KEPT } from '../harvest/har'
 
 type Listener = (event: { method: string; params: Record<string, unknown>; sessionId?: string }) => void
 
@@ -278,6 +279,9 @@ describe('EvidenceCollector', () => {
     expect(settled, "settle returned while the last step's request was still open").toBe(false)
     client.emit('Network.responseReceived', { requestId: 'submit', response: { status: 502 } })
     await vi.advanceTimersByTimeAsync(25)
+    expect(settled, "settle waits for the error's body too (its end goes in the run HAR)").toBe(false)
+    client.emit('Network.loadingFinished', { requestId: 'submit' })
+    await vi.advanceTimersByTimeAsync(25)
     await done
     expect(settled).toBe(true)
     ev.stop()
@@ -357,5 +361,221 @@ describe('EvidenceCollector', () => {
     }
     const ev2 = new EvidenceCollector(refusing, SESSION, redact)
     await expect(ev2.start(), 'a refused Network.enable must not fail the run').resolves.toBeUndefined()
+  })
+})
+
+describe('EvidenceCollector.network (roadmap DT1: the run HAR)', () => {
+  /** Run start at wall 1_000_000 ms; the browser's monotonic clock reads 50 s then (offset 950 s). */
+  const START = 1_000_000
+  const sent = (id: string, url: string, mono: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    requestId: id,
+    timestamp: mono,
+    wallTime: mono + 950,
+    type: 'Fetch',
+    request: { method: 'GET', url, headers: { Accept: '*/*' } },
+    ...extra
+  })
+  /** A JWT-shaped value, built here so no token-looking literal sits in the source. */
+  const jwt = ['eyJ' + 'hbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'c2lnbmF0dXJlLXZhbHVl'].join('.')
+
+  it("tags every request with the step that sent it (opening: _opening), on the run's clock, and counts them per step", async () => {
+    let t = START
+    const { client, ev } = await collector(undefined, () => t)
+    client.emit('Network.requestWillBeSent', sent('doc', 'https://app.example/', 50.01, { type: 'Document' }))
+    client.emit('Network.responseReceived', { requestId: 'doc', response: { status: 200, statusText: 'OK', headers: {} } })
+    client.emit('Network.loadingFinished', { requestId: 'doc', timestamp: 50.03 })
+    t = START + 100
+    ev.beginStep(0)
+    t = START + 200
+    ev.beginStep(1)
+    // Arrives during step 1 but stamped inside step 0 (wall 1_000_150 ms): it belongs to step 0.
+    client.emit('Network.requestWillBeSent', sent('save', 'https://app.example/api/save', 50.15))
+    client.emit('Network.responseReceived', { requestId: 'save', response: { status: 500, statusText: 'Server Error', headers: {} } })
+    client.emit('Network.loadingFinished', { requestId: 'save', timestamp: 50.18 })
+    client.emit('Network.requestWillBeSent', sent('img', 'https://app.example/a.png', 50.25, { type: 'Image' }))
+    client.emit('Network.loadingFailed', { requestId: 'img', timestamp: 50.26, errorText: 'net::ERR_NAME_NOT_RESOLVED' })
+    ev.stop()
+
+    const net = ev.network(['fill', 'save'], START)
+    const entries = net?.har.log.entries ?? []
+    const view = entries.map((e) => [e.request.url, e._step_id ?? (e._opening === true ? 'opening' : '?'), e._t_ms, e.time, e.response.status])
+    expect(view, JSON.stringify(net?.har, null, 1)).toEqual([
+      ['https://app.example/', 'opening', 10, 20, 200],
+      ['https://app.example/api/save', 'fill', 150, 30, 500],
+      ['https://app.example/a.png', 'save', 250, 10, 0]
+    ])
+    expect(entries[2]?.response._error).toBe('net::ERR_NAME_NOT_RESOLVED')
+    expect([...(net?.perStep ?? [])], 'requests per step index').toEqual([[-1, 1], [0, 1], [1, 1]])
+    expect(net?.har.log.version).toBe('1.2')
+  })
+
+  it('keeps no body, credential or token header, typed secret, token-like URL parameter or pattern-shaped secret', async () => {
+    const { client, ev } = await collector()
+    ev.beginStep(0)
+    client.emit(
+      'Network.requestWillBeSent',
+      sent('login', `https://app.example/login?user=${SECRET}&token=t0k3n&page=2`, 50.1, {
+        request: {
+          method: 'POST',
+          url: `https://app.example/login?user=${SECRET}&token=t0k3n&page=2`,
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'X-Api-Key': 'k3y-without-shape',
+            'X-Csrf-Token': 'csrf-without-shape',
+            Referer: 'https://app.example/start?session=s3ss10n&tab=1',
+            'X-Trace': jwt,
+            'X-Note': `typed ${SECRET} here`
+          },
+          postData: `password=${encodeURIComponent(SECRET + '!')}`,
+          hasPostData: true
+        }
+      })
+    )
+    client.emit('Network.responseReceived', {
+      requestId: 'login',
+      response: { status: 302, statusText: 'Found', headers: { 'Set-Cookie': 'sid=c00k1e', Location: `https://app.example/home?code=c0d3&u=${SECRET}` } }
+    })
+    client.emit('Network.loadingFinished', { requestId: 'login', timestamp: 50.2 })
+    ev.stop()
+
+    const har = ev.network(['login'], 1_000_000)?.har
+    const text = JSON.stringify(har)
+    for (const leak of [SECRET, encodeURIComponent(SECRET + '!'), 't0k3n', 'k3y-without-shape', 'csrf-without-shape', 's3ss10n', 'c00k1e', 'c0d3', jwt]) {
+      expect(text.includes(leak), `${leak} must not reach network.har: ${text}`).toBe(false)
+    }
+    const [entry] = har?.log.entries ?? []
+    expect(entry?.request.url).toBe('https://app.example/login?user=[secret]&page=2')
+    expect(entry?.request.postData, 'no request body at all').toBeUndefined()
+    expect(entry?.request.comment).toBe(REQUEST_BODY_NOT_KEPT)
+    expect(entry?.request.headers.map((h) => h.name).sort(), 'credential and token-named headers dropped').toEqual(['Referer', 'X-Note', 'X-Trace'])
+    expect(entry?.request.headers.find((h) => h.name === 'X-Trace')?.value, 'Tier B pattern scan').toBe('[REDACTED:jwt]')
+    expect(entry?.request.headers.find((h) => h.name === 'Referer')?.value).toBe('https://app.example/start?tab=1')
+    expect(entry?.response.headers).toEqual([{ name: 'Location', value: 'https://app.example/home?u=[secret]' }])
+    expect(entry?.response.content.text, 'response bodies are not read').toBeUndefined()
+  })
+
+  it('marks a request still open when the run ended as _unfinished (its time 0 is not a duration), and only that one', async () => {
+    const { client, ev } = await collector(undefined, () => 1_000_000)
+    ev.beginStep(0)
+    client.emit('Network.requestWillBeSent', sent('poll', 'https://app.example/long-poll', 50.1))
+    client.emit('Network.requestWillBeSent', sent('done', 'https://app.example/ok', 50.1))
+    client.emit('Network.loadingFinished', { requestId: 'done', timestamp: 50.2 })
+    client.emit('Network.requestWillBeSent', sent('broke', 'https://app.example/x', 50.1))
+    client.emit('Network.loadingFailed', { requestId: 'broke', timestamp: 50.11, errorText: 'net::ERR_FAILED' })
+    ev.stop()
+    const entries = ev.network(['s'], 1_000_000)?.har.log.entries ?? []
+    expect(entries.map((e) => [e.request.url, e._unfinished ?? false, e.time]), JSON.stringify(entries)).toEqual([
+      ['https://app.example/long-poll', true, 0],
+      ['https://app.example/ok', false, 100],
+      ['https://app.example/x', false, 10]
+    ])
+  })
+
+  it('a request without a body gets no body comment, and a run with no request has no HAR', async () => {
+    const { client, ev } = await collector()
+    ev.beginStep(0)
+    client.emit('Network.requestWillBeSent', sent('get', 'https://app.example/list', 50.1))
+    ev.stop()
+    expect(ev.network(['s'], 1_000_000)?.har.log.entries[0]?.request.comment).toBeUndefined()
+
+    const quiet = await collector()
+    quiet.ev.beginStep(0)
+    quiet.ev.stop()
+    expect(quiet.ev.network(['s'], 1_000_000), 'no request, no network.har').toBeUndefined()
+  })
+
+  it('keeps every hop of a redirect chain, all under the step of the first hop, and only this session', async () => {
+    let t = 1_000_000
+    const { client, ev } = await collector(undefined, () => t)
+    ev.beginStep(0)
+    client.emit(
+      'Network.requestWillBeSent',
+      sent('r', 'https://app.example/login', 50.05, { request: { method: 'POST', url: 'https://app.example/login', headers: {}, hasPostData: true } })
+    )
+    t = 1_000_100
+    ev.beginStep(1)
+    client.emit(
+      'Network.requestWillBeSent',
+      sent('r', 'https://app.example/home', 50.15, { redirectResponse: { status: 303, statusText: 'See Other', headers: { Location: '/home' } } })
+    )
+    client.emit('Network.loadingFinished', { requestId: 'r', timestamp: 50.2 })
+    client.emit('Network.requestWillBeSent', sent('other', 'https://elsewhere.example/', 50.15), 'OTHER-SESSION')
+    ev.stop()
+    const net = ev.network(['a', 'b'], 1_000_000)
+    const entries = net?.har.log.entries ?? []
+    const view = entries.map((e) => [e.request.method, e.request.url, e.response.status, e.response.redirectURL, e._step_id, e.time, e.request.comment])
+    expect(view, JSON.stringify(entries)).toEqual([
+      ['POST', 'https://app.example/login', 303, 'https://app.example/home', 'a', 100, REQUEST_BODY_NOT_KEPT],
+      ['GET', 'https://app.example/home', 0, '', 'a', 50, undefined]
+    ])
+    expect(net?.perStep.get(0), 'two entries sent by step a').toBe(2)
+  })
+
+  it('scrubs token parameters of every URL inside a header, keeps long headers whole, and applies the workspace rules', async () => {
+    const rule = { id: 'acme', label: 'ACME ref', pattern: 'ACME-[0-9a-f]{8}', enabled: true }
+    const ev = new EvidenceCollector(new FakeClient(), SESSION, redact, () => 1_000_000, [rule])
+    const client = (ev as unknown as { client: FakeClient }).client
+    await ev.start()
+    ev.beginStep(0)
+    const csp = `default-src 'self'; ${'img-src https://cdn.example; '.repeat(80)}`
+    client.emit('Network.requestWillBeSent', sent('l', 'https://app.example/ACME-0123abcd/view', 50.1))
+    client.emit('Network.responseReceived', {
+      requestId: 'l',
+      response: {
+        status: 200,
+        statusText: 'OK',
+        headers: { Link: '<https://cdn.example/x.js?access_token=t0k3n&v=2>; rel=preload', Refresh: '0; url=https://app.example/cb?code=c0d3&x=1', 'Content-Security-Policy': csp }
+      }
+    })
+    ev.stop()
+    const [entry] = ev.network(['s'], 1_000_000)?.har.log.entries ?? []
+    const text = JSON.stringify(entry)
+    expect(text, 'token parameters inside header values').not.toMatch(/t0k3n|c0d3/)
+    expect(entry?.response.headers.find((h) => h.name === 'Link')?.value).toBe('<https://cdn.example/x.js?v=2>; rel=preload')
+    expect(entry?.response.headers.find((h) => h.name === 'Refresh')?.value).toBe('0; url=https://app.example/cb?x=1')
+    expect(entry?.response.headers.find((h) => h.name === 'Content-Security-Policy')?.value, 'a long header is not cut at 1000').toBe(csp)
+    expect(entry?.request.url, 'workspace rule').toBe('https://app.example/[REDACTED:acme]/view')
+  })
+
+  it('drops a request with no CDP timestamp (it cannot be placed on the clock) instead of writing a NaN time', async () => {
+    const { client, ev } = await collector(undefined, () => 1_000_000)
+    ev.beginStep(0)
+    client.emit('Network.requestWillBeSent', sent('ok', 'https://app.example/ok', 50.1))
+    client.emit('Network.requestWillBeSent', { ...sent('bad', 'https://app.example/bad', 50.1), timestamp: undefined })
+    ev.stop()
+    const har = ev.network(['s'], 1_000_000)?.har
+    expect(har?.log.entries.map((e) => e.request.url)).toEqual(['https://app.example/ok'])
+    expect(har?.log.comment).toContain('1 entries dropped')
+    expect(JSON.stringify(har)).not.toContain('null')
+  })
+
+  it("waits for an HTTP error's body after the last step, so its HAR entry has its end and the error is filed once", async () => {
+    vi.useFakeTimers()
+    const { client, ev } = await collector(undefined, () => 1_000_000)
+    ev.beginStep(0)
+    client.emit('Network.requestWillBeSent', sent('submit', 'https://app.example/api', 50.1))
+    client.emit('Network.responseReceived', { requestId: 'submit', response: { status: 500, statusText: 'Server Error', headers: {} } })
+    let settled = false
+    const done = ev.settle().then(() => (settled = true))
+    await vi.advanceTimersByTimeAsync(100)
+    expect(settled, "settle returned before the 500's body was in").toBe(false)
+    client.emit('Network.loadingFailed', { requestId: 'submit', timestamp: 50.3, errorText: 'net::ERR_ABORTED' })
+    await vi.advanceTimersByTimeAsync(25)
+    await done
+    ev.stop()
+    expect(ev.forStep(0)?.failedRequests, 'filed once, as the HTTP error').toEqual([{ method: 'GET', url: 'https://app.example/api', resource_type: 'Fetch', status: 500 }])
+    const [entry] = ev.network(['s'], 1_000_000)?.har.log.entries ?? []
+    expect([entry?._unfinished, entry?.time]).toEqual([undefined, 200])
+  })
+
+  it(`keeps at most ${MAX_HAR_REQUESTS} requests and says how many more there were`, async () => {
+    const { client, ev } = await collector(undefined, () => 1_000_000)
+    ev.beginStep(0)
+    for (let i = 0; i < MAX_HAR_REQUESTS + 3; i++) client.emit('Network.requestWillBeSent', sent(`r${i}`, `https://app.example/${i}`, 50 + i / 10_000))
+    ev.stop()
+    const har = ev.network(['poll'], 1_000_000)?.har
+    expect(har?.log.entries).toHaveLength(MAX_HAR_REQUESTS)
+    expect(har?.log.comment).toBe(`3 more requests not kept (the run HAR keeps ${MAX_HAR_REQUESTS})`)
+    expect(ev.network(['poll'], 1_000_000)?.perStep.get(0), 'the count is of kept requests, matching the file').toBe(MAX_HAR_REQUESTS)
   })
 })

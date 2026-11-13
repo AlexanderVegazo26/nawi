@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { capBody, HarBuilder, toHarHeaders } from './har'
+import { capBody, HarBuilder, REQUEST_BODY_NOT_KEPT, toHarHeaders } from './har'
 
 describe('toHarHeaders — Tier A header stripping', () => {
   it('strips credential headers regardless of case', () => {
@@ -127,6 +127,77 @@ describe('HarBuilder', () => {
     expect(builder.clockBridges()).toEqual([
       { monotonicSeconds: 280537.5474, wallTimeSeconds: 1787944238.21 }
     ])
+  })
+
+  it("times an entry from its request to loadingFinished/loadingFailed on the browser's clock; 0 when it never ended", () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(request('done', 100))
+    builder.loadingFinished({ requestId: 'done', timestamp: 100.2345 })
+    builder.requestWillBeSent(request('broke', 200))
+    builder.loadingFailed({ requestId: 'broke', timestamp: 200.05, errorText: 'net::ERR_FAILED' })
+    builder.requestWillBeSent(request('open', 300))
+    const [done, broke, open] = builder.build((s) => s * 1000).har.log.entries
+    expect([done!.time, broke!.time, open!.time], 'time = end - start in ms (finished, failed, still open)').toEqual([234.5, 50, 0])
+    expect(done!.timings, 'the whole time is filed under wait').toEqual({ send: 0, wait: 234.5, receive: 0 })
+  })
+
+  it('build adds the custom fields annotate returns for each request id, and none when it returns undefined', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(request('a', 100))
+    builder.requestWillBeSent(request('b', 101))
+    const { har } = builder.build(
+      (s) => s * 1000,
+      (id) => (id === 'a' ? { _step_id: 'save' } : undefined)
+    )
+    expect(har.log.entries.map((e) => e._step_id), JSON.stringify(har.log.entries)).toEqual(['save', undefined])
+    expect(Object.hasOwn(har.log.entries[1]!, '_step_id'), 'no key at all for an unannotated entry').toBe(false)
+  })
+
+  it("requestBodies 'drop' keeps no body, only its true size (-1 when CDP sent none) and a comment saying so", () => {
+    const builder = new HarBuilder({ requestBodies: 'drop' })
+    builder.requestWillBeSent(request('typed', 100)) // postData '{"q":1}': 7 bytes
+    builder.requestWillBeSent({ ...request('big', 101), request: { url: 'https://example.test/up', method: 'POST', hasPostData: true } })
+    builder.requestWillBeSent({ ...request('get', 102), request: { url: 'https://example.test/', method: 'GET' } })
+    const [typed, big, get] = builder.build((s) => s * 1000).har.log.entries
+    expect([typed!.request.bodySize, big!.request.bodySize, get!.request.bodySize]).toEqual([7, -1, 0])
+    expect([typed!.request.comment, big!.request.comment, get!.request.comment]).toEqual([REQUEST_BODY_NOT_KEPT, REQUEST_BODY_NOT_KEPT, undefined])
+    expect(JSON.stringify(builder.build((s) => s).har), 'the body text itself never kept').not.toContain('"q"')
+  })
+
+  it('writes each redirect hop as its own entry with its 3xx and redirectURL; only real request ids are fetchable', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(request('r', 100))
+    builder.requestWillBeSent({
+      requestId: 'r',
+      timestamp: 100.5,
+      wallTime: 1787944238.71,
+      request: { url: 'https://example.test/next', method: 'GET', headers: {} },
+      redirectResponse: { status: 302, statusText: 'Found', headers: { Location: '/next', 'Set-Cookie': 's=1' } }
+    })
+    builder.loadingFinished({ requestId: 'r', timestamp: 101 })
+    const seen: string[] = []
+    const entries = builder.build((s) => s * 1000, (id) => (seen.push(id), undefined)).har.log.entries
+    expect(entries.map((e) => [e.request.method, e.request.url, e.response.status, e.response.redirectURL, e.time])).toEqual([
+      ['POST', 'https://example.test/api', 302, 'https://example.test/next', 500],
+      ['GET', 'https://example.test/next', 0, '', 500]
+    ])
+    expect(entries[0]!.response.headers, 'the hop header still goes through Tier A').toEqual([{ name: 'Location', value: '/next' }])
+    expect(seen, 'annotate gets the chain request id for every hop').toEqual(['r', 'r'])
+    expect(builder.finishedRequestIds(), 'a hop key is not a CDP request id').toEqual(['r'])
+  })
+
+  it('marks an entry never finished or failed as _unfinished, and drops one with no timestamp (DC-1) whatever the resolver says', () => {
+    const builder = new HarBuilder()
+    builder.requestWillBeSent(request('open', 100))
+    builder.requestWillBeSent({ ...request('nots', 0), timestamp: undefined })
+    const { har, dropped } = builder.build(() => 5)
+    expect(har.log.entries.map((e) => [e._t_ms, e._unfinished])).toEqual([[5, true]])
+    expect(dropped).toBe(1)
+  })
+
+  it('strips token-named custom headers (X-Api-Key, X-CSRF-Token, X-Session-Id, X-Amz-Signature) like the credential ones', () => {
+    const headers = toHarHeaders({ 'X-Api-Key': 'a', 'x-csrf-token': 'b', 'X-Session-Id': 'c', 'X-Amz-Signature': 'd', 'X-Xsrf': 'e', Accept: '*/*', 'X-Request-Id': 'f' })
+    expect(headers.map((h) => h.name)).toEqual(['Accept', 'X-Request-Id'])
   })
 
   it('ignores events for an unknown request id instead of inventing an entry', () => {

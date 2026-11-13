@@ -61,7 +61,8 @@ describe('parseRunUri', () => {
     [`nawi://runs/${OLD}/report.html`, 'report.html', 'text/html'],
     [`nawi://runs/${OLD}/junit.xml`, 'junit.xml', 'application/xml'],
     [`nawi://runs/${OLD}/steps/003-save.after.jpg`, 'steps/003-save.after.jpg', 'image/jpeg'],
-    [`nawi://runs/${OLD}/steps/001-shot.png`, 'steps/001-shot.png', 'image/png']
+    [`nawi://runs/${OLD}/steps/001-shot.png`, 'steps/001-shot.png', 'image/png'],
+    [`nawi://runs/${OLD}/network.har`, 'network.har', 'application/json']
   ])('accepts %s', (uri, file, mimeType) => {
     expect(parseRunUri(uri), uri).toEqual({ runId: OLD, file, mimeType })
   })
@@ -75,7 +76,9 @@ describe('parseRunUri', () => {
     ['a percent-encoded dot path', `nawi://runs/${OLD}/steps/%2E%2E/run.json`],
     ['a file the writer never makes', `nawi://runs/${OLD}/steps/003-save.after.png.exe`],
     ['a query string', `nawi://runs/${OLD}/run.json?x=1`],
-    ['an inherited key', `nawi://runs/${OLD}/constructor`]
+    ['an inherited key', `nawi://runs/${OLD}/constructor`],
+    ['a HAR anywhere but the run folder', `nawi://runs/${OLD}/steps/network.har`],
+    ['a HAR by another name', `nawi://runs/${OLD}/network.har.json`]
   ])('refuses %s', (_label, uri) => {
     expect(parseRunUri(uri), uri).toBeNull()
   })
@@ -87,6 +90,7 @@ describe('resource templates', () => {
       'nawi://runs/{run_id}/run.json',
       'nawi://runs/{run_id}/report.html',
       'nawi://runs/{run_id}/junit.xml',
+      'nawi://runs/{run_id}/network.har',
       'nawi://runs/{run_id}/{+screenshot}'
     ])
   })
@@ -134,6 +138,13 @@ describe('readRunResource', () => {
     const got = await readRunResource(root, `nawi://runs/${OLD}/steps/002-pay.after.jpg`)
     expect(got.mimeType).toBe('image/jpeg')
     expect('blob' in got && Buffer.from(got.blob, 'base64').equals(JPEG), 'blob should decode to the JPEG on disk').toBe(true)
+  })
+
+  it("returns a browser run's network.har as JSON text", async () => {
+    const har = JSON.stringify({ log: { version: '1.2', entries: [{ _step_id: 'pay' }] } })
+    await saveRun(OLD, 'failed', { 'network.har': har })
+    const got = await readRunResource(root, `nawi://runs/${OLD}/network.har`)
+    expect(got, 'a HAR is text, not a blob').toEqual({ uri: `nawi://runs/${OLD}/network.har`, mimeType: 'application/json', text: har })
   })
 
   it('refuses a non-string or malformed uri as INVALID_ARGUMENTS, naming the uri', async () => {

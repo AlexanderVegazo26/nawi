@@ -7,6 +7,7 @@ import { toHtmlReport } from './run-report'
 import {
   HEAL_REPLAY_MARKER,
   KEPT_HEAL_REPLAYS,
+  NETWORK_HAR,
   RUN_ASSET_RE,
   RUN_ID_RE,
   buildRunRecord,
@@ -492,5 +493,51 @@ describe('buildRunRecord: matched layer, fallback and intent (AI1)', () => {
     const xml = toJUnitXml(r)
     expect(xml, xml).toContain('  intent: Name the invoice\n')
     expect(xml, xml).toContain('  matched locator 1 (css, fallback) css=#name')
+  })
+})
+
+describe('buildRunRecord: the run HAR (roadmap DT1)', () => {
+  const har = {
+    log: {
+      version: '1.2' as const,
+      creator: { name: 'Nawi', version: '0.1.0' },
+      pages: [] as never[],
+      entries: [{ _step_id: 's1', _t_ms: 12 }, { _opening: true, _t_ms: 3 }]
+    }
+  } as unknown as NonNullable<FlowRun['network']>
+  const run: FlowRun = {
+    status: 'passed',
+    startedAt: T0,
+    durationMs: 300,
+    opening: { requests: 1 },
+    steps: [{ id: 's1', action: 'click', status: 'passed', requests: 1 }],
+    network: har
+  }
+
+  it('writes network.har next to run.json, names it in network_har, and counts requests per step and while opening', async () => {
+    const { record: r, assets } = record(run)
+    expect(r.network_har).toBe(NETWORK_HAR)
+    expect(r.steps[0].requests, JSON.stringify(r.steps[0])).toBe(1)
+    expect(r.opening, 'opening requests are evidence too').toEqual({ requests: 1 })
+    expect(JSON.parse(assets.get(NETWORK_HAR)?.toString('utf8') ?? 'null'), 'the HAR as the run built it').toEqual(har)
+    expect(RUN_ASSET_RE.test(NETWORK_HAR), 'network.har is a run asset').toBe(true)
+    for (const bad of ['steps/network.har', '../network.har', 'network.har.exe', 'networkxhar']) {
+      expect(RUN_ASSET_RE.test(bad), `${bad} is not a run asset`).toBe(false)
+    }
+    const runs = join(mkdtempSync(join(tmpdir(), 'nawi-run-har-')), 'runs')
+    try {
+      const dir = await writeRunRecord(runs, r, assets)
+      expect(readdirSync(dir).sort(), 'no empty steps/ folder for a run with no screenshots').toEqual(['junit.xml', 'network.har', 'run.json'])
+      expect(JSON.parse(readFileSync(join(dir, NETWORK_HAR), 'utf8')).log.entries).toHaveLength(2)
+    } finally {
+      rmSync(join(runs, '..'), { recursive: true, force: true })
+    }
+  })
+
+  it('has no network_har and writes no file when the run sent no request', () => {
+    const { record: r, assets } = record({ ...run, network: undefined, opening: undefined, steps: [{ id: 's1', action: 'click', status: 'passed' }] })
+    expect(r.network_har).toBeUndefined()
+    expect(assets.has(NETWORK_HAR)).toBe(false)
+    expect('requests' in r.steps[0], 'no zero count either').toBe(false)
   })
 })

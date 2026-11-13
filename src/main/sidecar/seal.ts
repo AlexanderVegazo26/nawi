@@ -508,3 +508,17 @@ export function seal(
     }
   }
 }
+
+/**
+ * Tier B over a value that is not a sidecar (a run record's `network.har`): every string in it is scanned with the
+ * built-in patterns plus `rules`, and the hits are counted. Same scan as `seal()`'s, without the sidecar bookkeeping;
+ * structural keys (`path`, `kind`...) are left alone as there.
+ */
+export function sealValue<T>(value: T, rules: readonly RedactionRule[] = []): { value: T; hits: number } {
+  const { patterns } = compilePatterns({ rules })
+  const acc: ScanAccumulator = { hits: new Map(), tierA: new Map() }
+  const out = redactDeep(value, patterns, [], acc) as T
+  let hits = 0
+  for (const { count } of acc.hits.values()) hits += count
+  return { value: out, hits }
+}

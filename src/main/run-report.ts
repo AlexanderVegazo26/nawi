@@ -1,4 +1,4 @@
-import { describe, evidenceLines, missReason, scoreText, type RecordedStep, type RunRecord } from './run-record'
+import { NETWORK_HAR, describe, evidenceLines, missReason, scoreText, type RecordedStep, type RunRecord } from './run-record'
 
 /**
  * Roadmap F4c: the run's self-contained HTML report (`runs/<run-id>/report.html`).
@@ -16,6 +16,56 @@ import { describe, evidenceLines, missReason, scoreText, type RecordedStep, type
  */
 
 const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' }
+
+/** Requests listed under one step; the rest are in network.har. */
+export const MAX_REPORT_REQUESTS_PER_STEP = 50
+
+/** One request as the report lists it. */
+interface ReportRequest {
+  method: string
+  url: string
+  status: number
+  error?: string
+  t: number
+  time: number
+  /** Still open when the run ended (`_unfinished`): no response yet, or its body never finished. */
+  unfinished: boolean
+}
+
+/**
+ * Roadmap DT1: the run's requests by step (key: step id, or '' while opening), read from the run's network.har.
+ * Empty when the run has none or the file is not a HAR; the report never fails on it.
+ */
+function requestsByStep(record: RunRecord, assets: ReadonlyMap<string, Buffer>): Map<string, ReportRequest[]> {
+  const out = new Map<string, ReportRequest[]>()
+  const bytes = record.network_har === NETWORK_HAR ? assets.get(NETWORK_HAR) : undefined
+  if (!bytes) return out
+  let entries: unknown
+  try {
+    entries = (JSON.parse(bytes.toString('utf8')) as { log?: { entries?: unknown } }).log?.entries
+  } catch {
+    return out
+  }
+  if (!Array.isArray(entries)) return out
+  for (const e of entries as Array<Record<string, unknown>>) {
+    const request = e?.request as { method?: unknown; url?: unknown } | undefined
+    const response = e?.response as { status?: unknown; _error?: unknown } | undefined
+    if (typeof request?.url !== 'string') continue
+    const key = typeof e._step_id === 'string' ? e._step_id : ''
+    const list = out.get(key) ?? []
+    list.push({
+      method: typeof request.method === 'string' ? request.method : 'GET',
+      url: request.url,
+      status: typeof response?.status === 'number' ? response.status : 0,
+      ...(typeof response?._error === 'string' ? { error: response._error } : {}),
+      t: typeof e._t_ms === 'number' ? e._t_ms : 0,
+      time: typeof e.time === 'number' ? e.time : 0,
+      unfinished: e._unfinished === true
+    })
+    out.set(key, list)
+  }
+  return out
+}
 
 export function htmlEscape(value: string): string {
   return value
@@ -77,6 +127,26 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
     return `<figure><img alt="${htmlEscape(caption)}" src="data:${mime};base64,${bytes.toString('base64')}"><figcaption>${htmlEscape(caption)}</figcaption></figure>`
   }
 
+  const byStep = requestsByStep(record, assets)
+  /** The requests a step (or the opening, key '') sent, as a collapsed list: the step's slice of the network panel. */
+  const network = (key: string): string => {
+    const list = byStep.get(key)
+    if (!list || list.length === 0) return ''
+    const shown = list.slice(0, MAX_REPORT_REQUESTS_PER_STEP).map((r) => {
+      const outcome = r.error !== undefined ? r.error : r.status === 0 ? (r.unfinished ? 'no response yet' : 'no response') : String(r.status)
+      // An open request (a long poll, a stream) is not a failure; its time is not known.
+      const bad = r.error !== undefined || r.status >= 400 || (r.status === 0 && !r.unfinished)
+      const took = r.unfinished ? 'still open when the run ended' : ms(r.time)
+      return `<li${bad ? ' class="failed"' : ''}>${htmlEscape(`${r.method} ${r.url}`)} <span class="muted">${htmlEscape(`${outcome} · ${took} · at ${ms(r.t)}`)}</span></li>`
+    })
+    const more = list.length - shown.length
+    return (
+      `<details><summary>Network (${list.length} request${list.length === 1 ? '' : 's'})</summary><ul>${shown.join('')}` +
+      (more > 0 ? `<li class="muted">${more} more in ${NETWORK_HAR}</li>` : '') +
+      '</ul></details>'
+    )
+  }
+
   const evidence = (e: Parameters<typeof evidenceLines>[0]): string => {
     const lines = evidenceLines(e)
     if (lines.length === 0) return ''
@@ -116,6 +186,7 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
       `<span class="muted">${htmlEscape(ms(s.duration_ms))}</span></div>` +
       detail.join('') +
       evidence(s) +
+      network(s.id) +
       (shots ? `<div class="shots">${shots}</div>` : '') +
       '</li>'
     )
@@ -168,7 +239,10 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
       : '',
     drift,
     `<dl>${rows.map(([k, v]) => `<dt>${htmlEscape(k)}</dt><dd>${htmlEscape(v)}</dd>`).join('')}</dl>`,
-    record.opening ? `<h2>While opening the target</h2>${evidence(record.opening)}` : '',
+    record.opening || byStep.has('') ? `<h2>While opening the target</h2>${record.opening ? evidence(record.opening) : ''}${network('')}` : '',
+    record.network_har === NETWORK_HAR
+      ? `<p class="muted">Every request of the run, by step, is in ${NETWORK_HAR} next to this report (opens in a browser's network panel).</p>`
+      : '',
     `<h2>Steps (${record.steps.length})</h2>`,
     record.steps.length === 0 ? '<p class="muted">No step ran.</p>' : `<ol class="steps">${record.steps.map(step).join('')}</ol>`,
     '</main></body></html>',

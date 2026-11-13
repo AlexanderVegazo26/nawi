@@ -38,6 +38,26 @@ const PAGE = `<!doctype html>
   </script>
 </body></html>`
 
+/** DT1: a page that sends the typed secret in a JSON body, a custom header, Authorization and a URL. */
+const NET_PAGE = `<!doctype html>
+<html><head><title>network</title><link rel="icon" href="data:,"></head>
+<body>
+  <input id="pw" type="text" aria-label="Password">
+  <button id="send">Send</button>
+  <p role="status" id="status">idle</p>
+  <script>
+    document.querySelector('#send').addEventListener('click', async () => {
+      const pw = document.querySelector('#pw').value
+      const r = await fetch('/api/login?who=' + encodeURIComponent(pw) + '&token=t0k3n&n=1', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-echo': 'pw ' + pw, authorization: 'Bearer ' + pw },
+        body: JSON.stringify({ password: pw + '!' })
+      })
+      document.querySelector('#status').textContent = 'sent ' + r.status
+    })
+  </script>
+</body></html>`
+
 const executable = findBrowserExecutable(['playwright-chromium'])
 const describeWithBrowser = executable ? describe : describe.skip
 if (!executable) console.warn('[evidence.integration] no Playwright Chromium found; evidence tests SKIPPED, not passed')
@@ -55,6 +75,11 @@ describeWithBrowser('replay evidence (F4b) against a real Chromium', () => {
     server = createServer((req, res) => {
       if (req.url === '/') {
         res.writeHead(200, { 'content-type': 'text/html' }).end(PAGE)
+      } else if (req.url === '/net') {
+        res.writeHead(200, { 'content-type': 'text/html' }).end(NET_PAGE)
+      } else if (req.url?.startsWith('/api/login')) {
+        req.resume()
+        res.writeHead(201, { 'content-type': 'application/json', 'set-cookie': 'sid=c00k1e' }).end('{"ok":true}')
       } else if (req.url?.startsWith('/api/save')) {
         res.writeHead(500, { 'content-type': 'text/plain' }).end('nope')
       } else {
@@ -140,5 +165,40 @@ steps:
     expect(run.steps[0].failedRequests, `the 500 after the last click: ${why(run)}`).toEqual([
       { method: 'POST', url: `${origin}/api/save?page=1`, resource_type: 'Fetch', status: 500 }
     ])
+  }, 60_000)
+
+  it("DT1: the run's network.har has every request under the step that sent it, with no secret in any form", async () => {
+    const parsed = parseFlow(`version: 1
+name: Network
+target: { kind: browser, url: "${origin}/net" }
+steps:
+  - { id: type, action: fill, target: { selectors: [{ id: pw }] }, value: "\${secret.pw}" }
+  - { id: send, action: click, target: { selectors: [{ id: send }] } }
+`)
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors))
+    const run = await replayFlow(client, parsed.flow, { sessionId, secret: (n) => (n === 'pw' ? SECRET : undefined) })
+    expect(run.status, why(run)).toBe('passed')
+    const har = JSON.stringify(run.network)
+    for (const leak of [SECRET, encodeURIComponent(SECRET), 't0k3n', 'c00k1e']) {
+      expect(har.includes(leak), `${leak} reached the HAR: ${har}`).toBe(false)
+    }
+    const entries = run.network?.log.entries ?? []
+    const page = entries.find((e) => e.request.url === `${origin}/net`)
+    expect(page?._opening, `the page itself loads while opening: ${har}`).toBe(true)
+    const login = entries.filter((e) => e.request.url.startsWith(`${origin}/api/login`))
+    expect(login.map((e) => [e._step_id, e.request.method, e.response.status, e.request.url]), har).toEqual([
+      ['send', 'POST', 201, `${origin}/api/login?who=\${secret.pw}&n=1`]
+    ])
+    const [post] = login
+    expect(post.request.postData, 'no request body').toBeUndefined()
+    expect(post.request.comment).toBe('request body not kept in run records')
+    expect(post.request.headers.find((h) => h.name.toLowerCase() === 'x-echo')?.value).toBe('pw \${secret.pw}')
+    expect(post.request.headers.some((h) => h.name.toLowerCase() === 'authorization'), 'no Authorization header').toBe(false)
+    // The last step's own requests are waited for (settle), so this one has its end; see the unit tests for _unfinished.
+    expect(post._unfinished, har).toBeUndefined()
+    expect(post.time, 'timed on the browser clock').toBeGreaterThan(0)
+    expect(post._t_ms as number, 'after the run started, before it ended').toBeGreaterThan(0)
+    expect(post._t_ms as number).toBeLessThan(run.durationMs)
+    expect(run.steps.map((s) => s.requests), why(run)).toEqual([undefined, 1])
   }, 60_000)
 })

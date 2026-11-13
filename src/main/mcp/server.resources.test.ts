@@ -75,7 +75,7 @@ describe('MCP resources over the loopback endpoint', () => {
     ])
 
     const templates = await rpc('resources/templates/list')
-    expect(templates.body.result?.resourceTemplates, JSON.stringify(templates.body)).toHaveLength(4)
+    expect(templates.body.result?.resourceTemplates, JSON.stringify(templates.body)).toHaveLength(5)
 
     const read = await rpc('resources/read', { uri: `nawi://runs/${RUN}/run.json` })
     const [contents] = read.body.result?.contents ?? []
@@ -109,7 +109,7 @@ describe('MCP resources over the loopback endpoint', () => {
       expect(body.error.message, method).toMatch(/paused.*Nothing was read/)
     }
     const templates = await rpc('resources/templates/list')
-    expect(templates.body.result?.resourceTemplates, 'templates are static discovery, like tools/list').toHaveLength(4)
+    expect(templates.body.result?.resourceTemplates, 'templates are static discovery, like tools/list').toHaveLength(5)
   })
 
   it('logs every list and read in the agent activity log, with the refusal code', async () => {

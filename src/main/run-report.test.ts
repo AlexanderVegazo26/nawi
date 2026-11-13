@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FlowRun } from './replay/replay'
 import { buildRunRecord, listRuns, newRunId, readRunRecord, writeRunRecord, type RunRecord } from './run-record'
-import { htmlEscape, toHtmlReport } from './run-report'
+import { MAX_REPORT_REQUESTS_PER_STEP, htmlEscape, toHtmlReport } from './run-report'
 
 const T0 = Date.UTC(2026, 10, 2, 10, 39, 0, 123)
 const JPG = Buffer.from('ffd8ffe000104a46494600010100000100010000', 'hex')
@@ -236,5 +236,60 @@ describe('toHtmlReport: drift and intent (AI1)', () => {
     const html = toHtmlReport(old as typeof record, assets)
     expect(html).toContain('Matched locator 0: testid=invoices</div>')
     expect(html).not.toContain('class="drift"')
+  })
+})
+
+describe('toHtmlReport: network by step (roadmap DT1)', () => {
+  const entry = (step: Record<string, unknown>, url: string, status: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    ...step,
+    _t_ms: 1500,
+    time: 42,
+    request: { method: 'GET', url },
+    response: { status, ...extra }
+  })
+  const withHar = (entries: Array<Record<string, unknown>>): { record: RunRecord; assets: Map<string, Buffer> } =>
+    build({
+      ...RUN,
+      steps: [{ id: 's1', action: 'click', status: 'passed' }, { id: 's2', action: 'click', status: 'passed' }],
+      network: { log: { version: '1.2', creator: { name: 'Nawi', version: '0' }, pages: [], entries } } as unknown as NonNullable<FlowRun['network']>
+    })
+
+  it("lists each step's requests under that step, escaped, failures marked, and the opening's under the opening", () => {
+    const { record, assets } = withHar([
+      entry({ _opening: true }, 'https://app.example/', 200),
+      entry({ _step_id: 's2' }, 'https://app.example/api?q=<script>alert(3)</script>', 500),
+      entry({ _step_id: 's2' }, 'https://cdn.example/x.js', 0, { _error: 'net::ERR_BLOCKED_BY_CLIENT' })
+    ])
+    const html = toHtmlReport(record, assets)
+    expect(html, 'page text never becomes markup').not.toContain('<script>alert(3)')
+    const s1 = html.slice(html.indexOf('id="step-1"'), html.indexOf('id="step-2"'))
+    const s2 = html.slice(html.indexOf('id="step-2"'))
+    expect(s1, 'step 1 sent nothing').not.toContain('Network (')
+    expect(s2).toContain('<summary>Network (2 requests)</summary>')
+    expect(s2).toContain('<li class="failed">GET https://app.example/api?q=&lt;script&gt;alert(3)&lt;/script&gt; <span class="muted">500 · 42 ms · at 1.50 s</span></li>')
+    expect(s2).toContain('<li class="failed">GET https://cdn.example/x.js <span class="muted">net::ERR_BLOCKED_BY_CLIENT · 42 ms · at 1.50 s</span></li>')
+    const opening = html.slice(html.indexOf('While opening the target'), html.indexOf('id="step-1"'))
+    expect(opening).toContain('<summary>Network (1 request)</summary><ul><li>GET https://app.example/ <span class="muted">200')
+    expect(html).toContain('Every request of the run, by step, is in network.har')
+  })
+
+  it('shows a request still open when the run ended as open, not as a failure or a 0 ms answer', () => {
+    const { record, assets } = withHar([entry({ _step_id: 's1', _unfinished: true }, 'https://app.example/poll', 0)])
+    const html = toHtmlReport(record, assets)
+    expect(html).toContain('<li>GET https://app.example/poll <span class="muted">no response yet · still open when the run ended · at 1.50 s</span></li>')
+  })
+
+  it('lists at most MAX_REPORT_REQUESTS_PER_STEP requests per step and points to network.har for the rest', () => {
+    const { record, assets } = withHar(Array.from({ length: MAX_REPORT_REQUESTS_PER_STEP + 7 }, (_, i) => entry({ _step_id: 's1' }, `https://app.example/${i}`, 200)))
+    const html = toHtmlReport(record, assets)
+    expect(html.match(/https:\/\/app\.example\/\d+ </g), 'listed requests').toHaveLength(MAX_REPORT_REQUESTS_PER_STEP)
+    expect(html).toContain('<li class="muted">7 more in network.har</li>')
+  })
+
+  it('still renders when network.har is not a HAR, and shows no network section without one', () => {
+    const { record, assets } = withHar([entry({ _step_id: 's1' }, 'https://app.example/', 200)])
+    assets.set('network.har', Buffer.from('{not json'))
+    expect(toHtmlReport(record, assets)).not.toContain('Network (')
+    expect(toHtmlReport(build().record, build().assets)).not.toContain('network.har')
   })
 })

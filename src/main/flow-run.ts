@@ -1,3 +1,4 @@
+import type { RedactionRule } from '@shared/settings'
 import { createHash } from 'node:crypto'
 import { constants as fsConstants, promises as fs } from 'node:fs'
 import { arch, homedir, platform, release } from 'node:os'
@@ -105,7 +106,13 @@ export interface RunFlowDeps {
    * Where to keep the run record (roadmap F4a): `<dir>/<run-id>/run.json`,
    * `junit.xml` and step screenshots. Without it nothing is written.
    */
-  record?: { dir: string; appVersion?: string; keep?: number }
+  record?: {
+    dir: string
+    appVersion?: string
+    keep?: number
+    /** The workspace's redaction rules (settings), applied to what the record keeps of the page (network.har). */
+    redactionRules?: readonly RedactionRule[]
+  }
   /** Injected for tests; defaults to Date.now. */
   now?: () => number
   /** Told about each step as it settles (MCP progress notifications). */
@@ -581,6 +588,7 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       signal: deps.signal,
       onStep: deps.onStep,
       loadAsset: (path) => readFlowAsset(real, path),
+      ...(deps.record?.redactionRules ? { redactionRules: deps.record.redactionRules } : {}),
       now
     })
     if (deps.record) facts = await browserFacts(page)

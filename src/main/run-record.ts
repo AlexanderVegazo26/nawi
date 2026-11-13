@@ -55,8 +55,10 @@ export const HEAL_REPLAY_MARKER = 'heal-replay'
 export const RUN_ID_RE = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/
 const STEP_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'
 const STEP_ID_RE = new RegExp(`^${STEP_ID}$`)
-/** A screenshot file inside a run folder, relative to it (`steps/003-save.after.jpg`). */
-export const RUN_ASSET_RE = new RegExp(`^steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.(?:jpg|png))$`)
+/** Roadmap DT1: the run's requests, a HAR file next to run.json. */
+export const NETWORK_HAR = 'network.har'
+/** A file a run folder holds besides run.json/junit.xml/report.html, relative to it: a screenshot (`steps/003-save.after.jpg`) or NETWORK_HAR. */
+export const RUN_ASSET_RE = new RegExp(`^(?:steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.(?:jpg|png))|network\\.har)$`)
 /** Folders a write in progress uses; one older than this was left by a crash. */
 const STALE_TEMP_MS = 60 * 60 * 1000
 
@@ -87,6 +89,8 @@ export interface RecordedEvidence {
   console_errors_dropped?: number
   failed_requests?: FailedRequest[]
   failed_requests_dropped?: number
+  /** Browser runs (roadmap DT1): requests sent in this step (or while opening), each in `network.har` under its id. */
+  requests?: number
 }
 
 export interface RecordedStep
@@ -141,6 +145,12 @@ export interface RunRecord {
    * written). Absent for ordinary runs.
    */
   heal_of?: string
+  /**
+   * Browser runs (roadmap DT1): the run's requests as a HAR 1.2 file in the run folder (always `network.har`), each
+   * entry tagged with the step that sent it (`_step_id`, or `_opening`) and placed on the run's clock (`_t_ms`).
+   * Opens in a browser's network panel. Absent when the run sent no request.
+   */
+  network_har?: typeof NETWORK_HAR
   steps: RecordedStep[]
 }
 
@@ -151,7 +161,8 @@ function recordedEvidence(e: Omit<StepEvidence, 'url'>): RecordedEvidence {
     ...(e.consoleErrors?.length ? { console_errors: e.consoleErrors } : {}),
     ...(e.consoleErrorsDropped ? { console_errors_dropped: e.consoleErrorsDropped } : {}),
     ...(e.failedRequests?.length ? { failed_requests: e.failedRequests } : {}),
-    ...(e.failedRequestsDropped ? { failed_requests_dropped: e.failedRequestsDropped } : {})
+    ...(e.failedRequestsDropped ? { failed_requests_dropped: e.failedRequestsDropped } : {}),
+    ...(e.requests ? { requests: e.requests } : {})
   }
 }
 
@@ -193,13 +204,14 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
       failedRequestsDropped,
       logcat,
       logcatDropped,
+      requests,
       url,
       ...rest
     } = step
     const out: RecordedStep = {
       ...rest,
       ...(url !== undefined ? { url } : {}),
-      ...recordedEvidence({ consoleErrors, consoleErrorsDropped, failedRequests, failedRequestsDropped, logcat, logcatDropped })
+      ...recordedEvidence({ consoleErrors, consoleErrorsDropped, failedRequests, failedRequestsDropped, logcat, logcatDropped, requests })
     }
     if (startedAt !== undefined) out.started_at = new Date(startedAt).toISOString()
     if (durationMs !== undefined) out.duration_ms = durationMs
@@ -235,8 +247,10 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     ...(run.finalUrl !== undefined ? { final_url: run.finalUrl } : {}),
     ...(fallbacks.length > 0 ? { fallback_step_ids: fallbacks } : {}),
     ...(input.healOf !== undefined ? { heal_of: input.healOf } : {}),
+    ...(run.network ? { network_har: NETWORK_HAR } : {}),
     steps
   }
+  if (run.network) assets.set(NETWORK_HAR, Buffer.from(`${JSON.stringify(run.network)}\n`))
   return { record, assets }
 }
 
@@ -392,7 +406,7 @@ export async function writeRunRecord(
   const temp = join(runsRoot, `.tmp-${record.run_id}`)
   try {
     await fs.mkdir(temp)
-    if (assets.size > 0) await fs.mkdir(join(temp, 'steps'))
+    if ([...assets.keys()].some((name) => name.startsWith('steps/'))) await fs.mkdir(join(temp, 'steps'))
     for (const [name, bytes] of assets) {
       if (!RUN_ASSET_RE.test(name)) throw new Error(`unsafe asset name ${name}`)
       await fs.writeFile(join(temp, name), bytes)

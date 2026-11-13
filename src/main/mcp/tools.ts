@@ -774,6 +774,7 @@ const runFlow = defineTool({
     launch: z.boolean().optional().describe('Android flows: start the app fresh from its launcher first (default true).')
   }),
   async run(args, ctx) {
+    const { redactionRules } = await settings.getSettings()
     return withAgentStop(ctx, (signal) =>
       runFlowFile(
         {
@@ -790,7 +791,7 @@ const runFlow = defineTool({
         },
         {
           signal,
-          record: { dir: runsDir(), appVersion: app.getVersion() },
+          record: { dir: runsDir(), appVersion: app.getVersion(), redactionRules },
           onStep: ctx.progress ? (step) => ctx.progress?.(stepProgress(step)) : undefined
         }
       )
@@ -918,6 +919,7 @@ const applyHealTool = defineTool({
   async run(args, ctx) {
     const record = await readRunRecord(runsDir(), args.run_id)
     if (!record) throw new ToolError('NOT_FOUND', `No saved run ${args.run_id}. Call list_runs for the runs that exist.`, { run_id: args.run_id })
+    const { redactionRules } = await settings.getSettings()
     return withAgentStop(ctx, (signal) =>
       applyHeal(record, args.step_ids, {
         readFlow: () => readRunFlow(record),
@@ -941,7 +943,7 @@ const applyHealTool = defineTool({
               signal,
               source,
               healOf: record.run_id,
-              record: { dir: runsDir(), appVersion: app.getVersion() },
+              record: { dir: runsDir(), appVersion: app.getVersion(), redactionRules },
               onStep: ctx.progress ? (step) => ctx.progress?.(stepProgress(step)) : undefined
             }
           ),

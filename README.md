@@ -458,7 +458,7 @@ queued, or closes the request it sent. Code: `src/main/mcp/progress.ts`, `src/mc
 
 Saved runs are also MCP resources, so a client can read them without a tool call: `resources/list` names the
 record and HTML report of the 50 newest runs, `resources/templates/list` gives the patterns
-`nawi://runs/{run_id}/run.json`, `report.html`, `junit.xml` and `{+screenshot}` (a step's `screenshot` or
+`nawi://runs/{run_id}/run.json`, `report.html`, `junit.xml`, `network.har` and `{+screenshot}` (a step's `screenshot` or
 `shots.before`/`shots.after` path from run.json, returned as base64), and `resources/read` returns one file
 (up to 8 MiB). A URI that isn't one of those is JSON-RPC -32602, a run or file that doesn't exist -32002; both
 carry Nawi's typed code in `error.data.code`, like tool errors. Only files a run writer makes are reachable
@@ -696,7 +696,20 @@ alone.
   page evidence and the before/after screenshots embedded as data URIs; no
   script, no network, a Content-Security-Policy that allows only inline style
   and data images, all text escaped), so it can be attached to a ticket or CI
-  run as is. `list_runs` / `get_run` (CLI `nawi runs`, `nawi run-info`) let an
+  run as is. Browser runs also write `network.har` (roadmap DT1): every request
+  the run sent, as HAR 1.2 (opens in a browser's network panel), each entry
+  tagged with the step that sent it (`_step_id`, or `_opening` while the target
+  was opening) and placed on the run's clock (`_t_ms`, ms since the run started;
+  `time` from request to finish on the browser's clock; a request still open
+  when the run ended, such as a long poll, is marked `_unfinished`). run.json names it in
+  `network_har` and counts each step's `requests`; `report.html` lists them under
+  their step (up to 50 per step). No bodies (responses are not read, request
+  bodies are left out, keeping their size, with a comment), each redirect hop as
+  its own entry, no credential or token-named headers (`Authorization`, `Cookie`,
+  `X-Api-Key`, `X-CSRF-Token`, `X-Session-Id`...; the CDP harvest's `network.har`
+  drops the same ones), secret values and token-like URL parameters scrubbed as
+  elsewhere (also in URLs inside header values), every string through the Tier B
+  pattern scan plus the workspace's redaction rules; at most 2,000 requests per run. `list_runs` / `get_run` (CLI `nawi runs`, `nawi run-info`) let an
   agent browse the saved records: newest first, filter by status or flow file,
   one record in full by run id. Code: `src/main/run-record.ts`,
   `src/main/run-report.ts`.
@@ -1202,7 +1215,10 @@ CDP selectors and the MCP projection/revision model.
   `export_flow` only has input events to work with on captures whose sidecar
   carries them (for example DC-4 sidecars written by another tool). Wiring the
   harvest into browser recordings, run records and the flow editor land as
-  separate slices.
+  separate slices. Run records have the network (`network.har`, by step) but not
+  yet the rest of DT1's DevTools-grade recording: performance trace, DOM
+  mutations, coverage, accessibility tree, storage changes and an in-app
+  step timeline.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a
   recording cannot be trimmed, shortened or re-exported without leaving the app.

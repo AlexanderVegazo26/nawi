@@ -31,6 +31,15 @@ export const STRIPPED_HEADERS = Object.freeze([
 
 const STRIPPED = new Set(STRIPPED_HEADERS)
 
+/**
+ * Also stripped, by name: custom headers that carry tokens (`X-Api-Key`, `X-CSRF-Token`, `X-Session-Id`,
+ * `X-Amz-Signature`...). Their values have no shape Tier B's patterns could find, so the name is the only signal.
+ */
+export const SECRET_HEADER_NAME = /token|secret|api[-_]?key|auth|session|csrf|xsrf|password|signature/i
+
+/** A request's `comment` when the builder was told not to keep request bodies (`requestBodies: 'drop'`). */
+export const REQUEST_BODY_NOT_KEPT = 'request body not kept in run records'
+
 /* ------------------------------------------------------------------ *
  * FR-SEC.2 — the request-body control
  * ------------------------------------------------------------------ */
@@ -266,7 +275,7 @@ export function toHarHeaders(headers: Record<string, unknown> | undefined): HarH
   if (!headers) return []
   const out: HarHeader[] = []
   for (const [name, value] of Object.entries(headers)) {
-    if (STRIPPED.has(name.toLowerCase())) continue
+    if (STRIPPED.has(name.toLowerCase()) || SECRET_HEADER_NAME.test(name)) continue
     out.push({ name, value: typeof value === 'string' ? value : String(value) })
   }
   return out
@@ -326,6 +335,13 @@ interface PendingRequest {
   encodedDataLength?: number
   failed?: string
   finished?: boolean
+  /** CDP MonotonicTime (seconds) of `loadingFinished`/`loadingFailed`, when the event carried one. */
+  endMonotonicSeconds?: number
+  /** A redirect hop: answered with 3xx, moved out of its request id's slot. */
+  hop?: boolean
+  redirectURL?: string
+  /** `requestBodies: 'drop'`: the size of the body not kept (-1: CDP did not send it). */
+  droppedBodySize?: number
 }
 
 export interface HarEntry {
@@ -359,6 +375,8 @@ export interface HarEntry {
   }
   cache: Record<string, never>
   timings: { send: number; wait: number; receive: number }
+  /** Custom fields (HAR's `_` prefix), e.g. a replay's `_step_id`; see HarBuilder.build's `annotate`. */
+  [custom: `_${string}`]: unknown
 }
 
 export interface HarLog {
@@ -375,6 +393,13 @@ export interface HarBuilderOptions {
   bodyCapBytes?: number
   /** FR-SEC.2's request-body cap. Deliberately far smaller than the response cap. */
   postDataCapBytes?: number
+  /**
+   * `drop`: never look at a request body at all; the entry keeps only its size (`bodySize`, -1 when CDP did not
+   * send the body) and says so in `request.comment` (REQUEST_BODY_NOT_KEPT). Run records use it: a replay has no
+   * probe marking secret fields, and a typed secret can hide in any encoding of a body. Default `keep` (FR-SEC.2's
+   * gated ingest).
+   */
+  requestBodies?: 'keep' | 'drop'
   creator?: { name: string; version: string }
 }
 
@@ -387,6 +412,9 @@ export class HarBuilder {
   private readonly order: string[] = []
   private readonly bodyCapBytes: number
   private readonly postDataCapBytes: number
+  private readonly dropBodies: boolean
+  /** Redirect hops moved out of `pending`'s request-id slot, for unique keys. */
+  private hops = 0
   private readonly creator: { name: string; version: string }
   private truncatedAny = false
   /** Probe-reported secret parameter names, accumulated across documents. */
@@ -395,6 +423,7 @@ export class HarBuilder {
   constructor(options: HarBuilderOptions = {}) {
     this.bodyCapBytes = options.bodyCapBytes ?? DEFAULT_BODY_CAP_BYTES
     this.postDataCapBytes = options.postDataCapBytes ?? DEFAULT_POST_DATA_CAP_BYTES
+    this.dropBodies = options.requestBodies === 'drop'
     this.creator = options.creator ?? { name: 'Nawi', version: '0.1.0' }
   }
 
@@ -417,12 +446,34 @@ export class HarBuilder {
     const request = params.request as Record<string, unknown> | undefined
     if (typeof requestId !== 'string' || !request) return
 
-    if (!this.pending.has(requestId)) this.order.push(requestId)
+    const previous = this.pending.get(requestId)
+    const redirect = params.redirectResponse as Record<string, unknown> | undefined
+    if (previous && redirect && typeof redirect === 'object') {
+      // A redirect reuses the request id: the hop that was answered with 3xx becomes an entry of its own.
+      const key = `${requestId}\u0000hop${++this.hops}`
+      this.applyResponse(previous, redirect)
+      previous.finished = true
+      previous.hop = true
+      if (typeof params.timestamp === 'number') previous.endMonotonicSeconds = params.timestamp
+      if (typeof request.url === 'string') previous.redirectURL = request.url
+      this.pending.set(key, previous)
+      this.order[this.order.indexOf(requestId)] = key
+      this.order.push(requestId)
+    } else if (!previous) {
+      this.order.push(requestId)
+    }
     // FR-SEC.2, layers 1 and 2: gated and decomposed here, at ingest. What gets
     // stored is never the string CDP handed us.
     const raw = request.postData
+    const droppedBodySize = !this.dropBodies
+      ? undefined
+      : typeof raw === 'string'
+        ? Buffer.byteLength(raw, 'utf8')
+        : request.hasPostData === true
+          ? -1
+          : undefined
     const postData =
-      typeof raw === 'string'
+      typeof raw === 'string' && !this.dropBodies
         ? ingestPostData(
             raw,
             request.headers as Record<string, unknown> | undefined,
@@ -436,6 +487,7 @@ export class HarBuilder {
       method: typeof request.method === 'string' ? request.method : 'GET',
       requestHeaders: toHarHeaders(request.headers as Record<string, unknown> | undefined),
       ...(postData !== undefined ? { postData } : {}),
+      ...(droppedBodySize !== undefined ? { droppedBodySize } : {}),
       monotonicSeconds: typeof params.timestamp === 'number' ? params.timestamp : Number.NaN,
       ...(typeof params.wallTime === 'number' ? { wallTimeSeconds: params.wallTime } : {})
     })
@@ -447,6 +499,10 @@ export class HarBuilder {
     if (typeof requestId !== 'string' || !response) return
     const entry = this.pending.get(requestId)
     if (!entry) return
+    this.applyResponse(entry, response)
+  }
+
+  private applyResponse(entry: PendingRequest, response: Record<string, unknown>): void {
     entry.status = typeof response.status === 'number' ? response.status : 0
     entry.statusText = typeof response.statusText === 'string' ? response.statusText : ''
     entry.responseHeaders = toHarHeaders(response.headers as Record<string, unknown> | undefined)
@@ -459,6 +515,7 @@ export class HarBuilder {
     const entry = this.pending.get(requestId)
     if (!entry) return
     entry.finished = true
+    if (typeof params.timestamp === 'number') entry.endMonotonicSeconds = params.timestamp
     if (typeof params.encodedDataLength === 'number') {
       entry.encodedDataLength = params.encodedDataLength
     }
@@ -475,12 +532,14 @@ export class HarBuilder {
     const entry = this.pending.get(requestId)
     if (!entry) return
     entry.finished = true
+    if (typeof params.timestamp === 'number') entry.endMonotonicSeconds = params.timestamp
     entry.failed = typeof params.errorText === 'string' ? params.errorText : 'unknown error'
   }
 
   /** Request ids that are complete and whose body is worth trying to fetch. */
   finishedRequestIds(): string[] {
-    return this.order.filter((id) => this.pending.get(id)?.finished === true)
+    // Redirect hops have no body to fetch (and their key is not a CDP request id).
+    return this.order.filter((id) => this.pending.get(id)?.finished === true && this.pending.get(id)?.hop !== true)
   }
 
   /** Attach a body fetched by the caller. Ignored for an unknown id. */
@@ -507,8 +566,15 @@ export class HarBuilder {
    * `resolveTMs` converts CDP MonotonicTime seconds to the capture timeline and
    * returns `null` for an entry that cannot be placed — DC-1, so that entry is
    * **dropped**, not emitted with a zero.
+   *
+   * `annotate` adds custom (`_`-prefixed, as HAR allows) fields to the entry of
+   * a request id, e.g. the replay step that sent it; every hop of a redirect
+   * chain is annotated with the chain's request id.
    */
-  build(resolveTMs: (monotonicSeconds: number) => number | null): {
+  build(
+    resolveTMs: (monotonicSeconds: number) => number | null,
+    annotate?: (requestId: string) => Record<`_${string}`, unknown> | undefined
+  ): {
     har: HarLog
     truncated: boolean
     dropped: number
@@ -519,13 +585,19 @@ export class HarBuilder {
     for (const id of this.order) {
       const p = this.pending.get(id)
       if (!p) continue
-      const tMs = resolveTMs(p.monotonicSeconds)
+      const tMs = Number.isFinite(p.monotonicSeconds) ? resolveTMs(p.monotonicSeconds) : null
       if (tMs === null) {
         // DC-1: no timestamp, no entry. Never a guessed or zeroed one.
         dropped++
         continue
       }
 
+      // Start to finish on the browser's own clock; 0 when the request never finished (HAR has no
+      // "unknown" for `time`). The whole of it is filed under `wait`: CDP's per-phase timing is not kept.
+      const elapsed =
+        p.endMonotonicSeconds !== undefined && Number.isFinite(p.monotonicSeconds) && p.endMonotonicSeconds >= p.monotonicSeconds
+          ? Math.round((p.endMonotonicSeconds - p.monotonicSeconds) * 1_000_000) / 1000
+          : 0
       const { body, truncated } = capBody(p.responseBody, p.mimeType ?? '', this.bodyCapBytes)
       if (truncated) this.truncatedAny = true
 
@@ -542,7 +614,7 @@ export class HarBuilder {
           p.wallTimeSeconds !== undefined
             ? new Date(p.wallTimeSeconds * 1000).toISOString()
             : new Date(0).toISOString(),
-        time: 0,
+        time: elapsed,
         _t_ms: tMs,
         request: {
           method: p.method,
@@ -555,11 +627,11 @@ export class HarBuilder {
           // The size that was *sent*, which stays truthful even when nothing was
           // retained — the difference between "no body" and "a body we did not
           // keep" is exactly what a reader needs.
-          bodySize: post?.originalSize ?? 0,
+          bodySize: post?.originalSize ?? p.droppedBodySize ?? 0,
           ...(postText !== undefined
             ? { postData: { mimeType: post!.mimeType, text: postText } }
             : {}),
-          ...(post?.dropped ? { comment: post.dropped } : {})
+          ...(post?.dropped ? { comment: post.dropped } : p.droppedBodySize !== undefined ? { comment: REQUEST_BODY_NOT_KEPT } : {})
         },
         response: {
           status: p.status ?? 0,
@@ -568,13 +640,16 @@ export class HarBuilder {
           headers: p.responseHeaders ?? [],
           cookies: [],
           content: body,
-          redirectURL: '',
+          redirectURL: p.redirectURL ?? '',
           headersSize: -1,
           bodySize: p.encodedDataLength ?? -1,
           ...(p.failed ? { _error: p.failed } : {})
         },
         cache: {},
-        timings: { send: 0, wait: 0, receive: 0 }
+        timings: { send: 0, wait: elapsed, receive: 0 },
+        // Still open when the log was built (a long poll, a stream): its `time` 0 is not a duration.
+        ...(p.finished !== true ? { _unfinished: true } : {}),
+        ...annotate?.(p.requestId)
       })
     }
 

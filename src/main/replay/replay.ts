@@ -23,6 +23,8 @@ import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowI
 import { locatorLayer, type Flow, type FlowStep, type LocatorLayer, type Selector } from '@shared/flow/schema'
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
 import { EvidenceCollector, type AppCrash, type StepEvidence } from './evidence'
+import type { HarLog } from '../harvest/har'
+import type { RedactionRule } from '@shared/settings'
 import { decodePng, type RgbImage } from '../mobile/png'
 import { anchorCandidates } from './anchor-candidates'
 import { pickSuggestion, stepQuery, type Suggestion } from './suggest'
@@ -157,6 +159,11 @@ export interface FlowRun {
   opening?: Omit<StepEvidence, 'url'>
   /** The page's URL when the run ended, scrubbed. */
   finalUrl?: string
+  /**
+   * Browser runs (roadmap DT1): every request of the run, scrubbed, each tagged with the step that sent it (see
+   * RunNetwork). The run record writes it as `network.har`. Absent when the run sent no request.
+   */
+  network?: HarLog
 }
 
 export interface ReplayOptions extends FlowInputs {
@@ -174,6 +181,8 @@ export interface ReplayOptions extends FlowInputs {
    * finishes, the rest are `not_run`, and the run fails with the signal's reason.
    */
   signal?: AbortSignal
+  /** The workspace's redaction rules (settings), added to the pattern scan of the run HAR. */
+  redactionRules?: readonly RedactionRule[]
   /** Page screenshots around each step; default `off`. */
   stepScreenshots?: StepScreenshots
   /**
@@ -517,7 +526,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
       .catch(() => undefined)
   })
 
-  const evidence = new EvidenceCollector(client, options.sessionId, interp.redact)
+  const evidence = new EvidenceCollector(client, options.sessionId, interp.redact, undefined, options.redactionRules)
   let uninstall: (() => Promise<void>) | undefined
   let run: FlowRun | undefined
   try {
@@ -545,17 +554,28 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
 
 /** Files the collected evidence onto the run's steps (aligned with `flow.steps` by index). */
 function withEvidence(run: FlowRun, flow: Flow, evidence: EvidenceCollector): FlowRun {
+  const network = evidence.network(
+    flow.steps.map((s) => s.id),
+    run.startedAt
+  )
+  /** The step's evidence plus how many requests it sent (in the run HAR). */
+  const evidenceOf = (index: number): Omit<StepEvidence, 'url'> | StepEvidence | undefined => {
+    const e = evidence.forStep(index)
+    const requests = network?.perStep.get(index)
+    return requests ? { ...e, requests } : e
+  }
   const steps = run.steps.map((step, index) => {
-    const e = flow.steps[index]?.id === step.id ? evidence.forStep(index) : undefined
+    const e = flow.steps[index]?.id === step.id ? evidenceOf(index) : undefined
     return e ? { ...step, ...e } : step
   })
-  const opening = evidence.forStep(-1)
+  const opening = evidenceOf(-1)
   const finalUrl = evidence.finalUrl()
   return {
     ...run,
     steps,
     ...(opening ? { opening } : {}),
-    ...(finalUrl !== undefined ? { finalUrl } : {})
+    ...(finalUrl !== undefined ? { finalUrl } : {}),
+    ...(network ? { network: network.har } : {})
   }
 }
 
