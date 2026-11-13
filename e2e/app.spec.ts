@@ -103,6 +103,28 @@ test('the capture:// protocol serves the stored asset back as a real image', asy
   expect(probe.w).toBeGreaterThan(100)
   expect(probe.h).toBeGreaterThan(100)
 
+  // A <video> seeks with Range requests. Answering them with the whole file from
+  // byte 0 is what stalled seeking in long recordings: they must get a 206.
+  const id = await win.evaluate(async () => {
+    const res = await window.api.listLibrary()
+    return res.ok ? res.value[0].id : ''
+  })
+  const ranged = await app.evaluate(async ({ net }, url) => {
+    const partial = await net.fetch(url, { headers: { Range: 'bytes=0-7' } })
+    const beyond = await net.fetch(url, { headers: { Range: 'bytes=999999999-' } })
+    return {
+      status: partial.status,
+      contentRange: partial.headers.get('content-range'),
+      bytes: [...new Uint8Array(await partial.arrayBuffer())],
+      beyond: beyond.status
+    }
+  }, `capture://asset/${id}`)
+  expect(ranged.status).toBe(206)
+  expect(ranged.contentRange).toMatch(/^bytes 0-7\/\d+$/)
+  // The PNG signature: the right eight bytes, not merely eight bytes.
+  expect(ranged.bytes).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  expect(ranged.beyond).toBe(416)
+
   // The two tests above drove the API directly, so the store now holds items the
   // React tree never saw. Reset it before the UI-driven tests so the on-screen
   // state and the store agree.

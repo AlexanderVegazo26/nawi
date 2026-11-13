@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { promises as fs } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { CAPTURE_SCHEME, IPC } from '@shared/ipc'
-import { formatOf } from '@shared/types'
+import { formatOf, mediaKindOf } from '@shared/types'
 import type {
   AgentAccessState,
   AnnotationDoc,
@@ -42,6 +42,7 @@ import { findAdb } from './mobile/doctor'
 import { captureScreen } from './mobile/screen'
 import { SERVE_EXIT_NO_ENDPOINT, isServeMode, serveReadyLine } from './headless'
 import { CloseGuard } from './close-guard'
+import { fileResponse } from './range'
 import { hotkeyBindings, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
 const isDev = !app.isPackaged
@@ -139,8 +140,11 @@ function registerProtocol(): void {
       if (kind === 'asset') {
         const item = await library.getItem(key)
         if (!item) return new Response('Not found', { status: 404 })
-        // net.fetch streams the file, which matters for multi-hundred-MB recordings.
-        return net.fetch(pathToFileURL(item.filePath).toString())
+        // Streamed, which matters for multi-hundred-MB recordings, and range-aware:
+        // a <video> seeks with `Range`, and answering every seek with the whole
+        // file from byte 0 stalled or restarted playback of long recordings.
+        if (mediaKindOf(item.kind) === null) return net.fetch(pathToFileURL(item.filePath).toString())
+        return await fileResponse(item.filePath, formatOf(item).mime, request.headers.get('range'))
       }
 
       if (kind === 'freeze') {
