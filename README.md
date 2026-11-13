@@ -4,6 +4,122 @@ A screen capture and recording studio — capture, record, annotate, edit, libra
 
 Electron + React + TypeScript. Windows-first, but the codebase is cross-platform.
 
+## Download
+
+Releases are listed at <https://github.com/AlexanderVegazo26/nawi/releases>;
+[releases/latest](https://github.com/AlexanderVegazo26/nawi/releases/latest) is
+the newest one. Each release is tagged `v<version>` — version 0.1.1 is `v0.1.1`.
+In the table, `<v>` is the version number.
+
+| Platform | File to pick | Notes |
+|---|---|---|
+| Windows | `Nawi-Setup-<v>.exe` | One NSIS installer for both x64 and arm64; it installs the build matching your machine. |
+| macOS, Apple Silicon | `Nawi-<v>-arm64.dmg` | |
+| macOS, Intel | `Nawi-<v>.dmg` | |
+| Linux, Debian/Ubuntu | `nawi_<v>_amd64.deb` or `nawi_<v>_arm64.deb` | Preferred over the AppImage — see [AppImage and the Chromium sandbox](#appimage-and-the-chromium-sandbox). |
+| Linux, Fedora/RHEL | `nawi-<v>.x86_64.rpm` | x64 only. |
+| Linux, other | `Nawi-<v>.AppImage` (x64) or `Nawi-<v>-arm64.AppImage` | No install step; may need a workaround on Ubuntu 24.04 and later. |
+
+A release also carries `Nawi-<v>-mac.zip` and `Nawi-<v>-arm64-mac.zip` (the
+macOS app zipped instead of in a disk image), and `latest*.yml` and `.blockmap`
+files. The last two are update metadata, not something to download.
+
+**Every build is unsigned**: no Windows code-signing certificate, no Apple
+Developer ID, no notarization. Windows SmartScreen warns before the installer
+runs, and macOS Gatekeeper blocks a downloaded copy until its quarantine flag is
+cleared. The steps for each are under [Windows](#windows), [macOS](#macos) and
+[Linux](#linux) in [Installing and first run](#installing-and-first-run).
+
+## System requirements
+
+- **A 64-bit x64 or arm64 machine.** Those are the only architectures built
+  (`electron-builder.yml`).
+- **Windows 10 or later; macOS 13 (Ventura) or later.** These are the minimums
+  the bundled Electron (45.2.3) states for itself in its README's *Platform
+  support* section. Nawi adds no check of its own and has not been tested at
+  those minimums.
+- **Linux:** Electron gives no version number — it supports major distributions
+  (Ubuntu, Fedora, Debian) in releases still supported by both Chromium and the
+  distribution. Screen capture and recording need a desktop session; see
+  [Linux](#linux) for the sandbox note that applies to the AppImage.
+- **macOS permissions:** Screen Recording for any capture, and Microphone if you
+  record with the microphone track on. Both are granted in System Settings; the
+  walk-through is under [macOS](#macos).
+- **Node.js, for the `nawi` CLI and the MCP stdio bridge — even with the
+  packaged app.** Both are plain scripts unpacked next to the app and run by
+  *your* `node`, not by the app's own runtime (`asarUnpack` in
+  `electron-builder.yml` exists for exactly that). Node 26 is the version this
+  repo declares (`engines` in `package.json`, `.nvmrc`) and the only one CI runs
+  them on; older versions are untested. The app itself needs no Node installed.
+- **Building from source:** Node 26 or later and npm.
+- **Android tooling** (`mobile_*` tools) needs adb from the Android SDK;
+  `nawi mobile-doctor` reports what is missing. `nawi mobile-inspect` reads an
+  `.apk` with no SDK installed.
+
+## Where your data lives, and uninstalling
+
+Everything Nawi stores is in one per-user folder, Electron's `userData`
+directory:
+
+| OS | Folder |
+|---|---|
+| Windows | `%APPDATA%\nawi` |
+| macOS | `~/Library/Application Support/nawi` |
+| Linux | `$XDG_CONFIG_HOME/nawi`, or `~/.config/nawi` when that is unset |
+
+The folder name is the lowercase package name, not "Nawi". These are the paths
+the CLI and the MCP bridge themselves use to find the running app
+(`src/mcp/endpoint.ts`). Starting the app or `nawi serve` with
+`--user-data-dir <dir>` uses another folder instead.
+
+| Inside it | What |
+|---|---|
+| `settings.json` | Settings, including the global hotkeys |
+| `library/index.json` | The library's records (one flat JSON array) |
+| `library/assets/` | The captured images and finished recordings |
+| `library/captures/<id>/v<n>/` | Per-capture sidecar revisions |
+| `library/recordings/<id>/` | Recordings in progress, and interrupted ones awaiting recovery |
+| `runs/`, `studies/`, `explorations/` | Saved flow runs, `mobile_study` and `mobile_explore` results |
+| `ai/` | The model access layer's response cache and outbound log |
+| `mcp.json` | The agent endpoint's address and token; present only while Nawi runs |
+
+**Uninstalling the app does not delete this folder.** Remove the app the usual
+way for your system (Windows: *Settings → Apps*; macOS: move `Nawi.app` to the
+Trash; Linux: remove the `nawi` package, or delete the AppImage), then delete the
+folder above yourself if you also want your captures and settings gone.
+
+**If the library comes up empty after a crash or a hand edit:** when
+`library/index.json` cannot be parsed, Nawi does not overwrite it. It renames it
+to `index.json.corrupt-<timestamp>` in the same `library` folder and starts with
+an empty library. Your files are still in `library/assets/`, and the renamed
+index still names them. To get the library back, quit Nawi, repair the JSON in
+the `.corrupt-` file and put it back as `index.json` — merging in any records
+from a new `index.json` if you have captured since.
+
+## Known limitations
+
+The ones a new user meets first. Feature-level gaps are in
+[Known gaps](#known-gaps).
+
+- **No application icon.** `resources/` holds only the macOS entitlements file,
+  so every build shows the default Electron icon.
+- **Unsigned builds** on every platform; see [Download](#download).
+- **No auto-update.** `electron-updater` is a dependency but nothing in `src/`
+  imports it, and `publish` is unset in `electron-builder.yml`. To update,
+  download a newer release and install it over the old one.
+- **Global hotkeys are held for as long as the app is open**, not only while
+  recording, and the default stop-recording chord — `Ctrl+Shift+S`
+  (`Cmd+Shift+S` on macOS) — is "Save As" in many other applications. While
+  Nawi runs, that chord goes to Nawi. The bindings are the `hotkeys` entries in
+  `settings.json`; an empty string leaves an action unbound.
+- **Closing the main window with the window's own close button discards unsaved
+  annotations without asking.** The editor's own close (its button, or
+  `Ctrl+W`) does ask; the window's close button does not go through it.
+- **Webcam on macOS:** the build declares the microphone entitlement and usage
+  string but neither for the camera (`resources/entitlements.mac.plist`,
+  `mac.extendInfo` in `electron-builder.yml`), so the webcam track cannot be
+  expected to work in a signed macOS build. Not tested on a Mac.
+
 ## Quick start
 
 For contributors building from source. If you just want to *use* Nawi, go to
@@ -31,7 +147,7 @@ npm run dev
 | `npm run test:agent` | Typecheck + unit suite, with a fix-ready report in `.test-report/summary.md` |
 | `npm run test:e2e` | Builds, then runs Playwright against the real app |
 | `npm run test:renderer` | The main window's UI in Playwright Chromium (no Electron): axe a11y + responsive checks |
-| `npm run package` | Builds an unpacked app into `release/win-unpacked/` |
+| `npm run package` | Builds an unpacked app for the machine you are on: `release/win-unpacked/` on Windows, `release/mac/` on macOS, `release/linux-unpacked/` on Linux (on an arm64 machine: `win-arm64-unpacked`, `mac-arm64`, `linux-arm64-unpacked`) |
 | `npm run dist` | Builds a distributable installer for the current platform |
 | `npm run dist:win` / `dist:mac` / `dist:linux` | Builds one platform's installers explicitly |
 
@@ -39,15 +155,22 @@ npm run dev
 
 | Platform | Artifacts | Architectures |
 |---|---|---|
-| Windows | NSIS installer (`.exe`) | x64, arm64 |
-| macOS | `.dmg` + `.zip` | x64, arm64 |
-| Linux | AppImage, `.deb`, `.rpm` | x64, arm64 (rpm x64 only) |
+| Windows | NSIS installer (`.exe`) | x64 and arm64 in **one** installer |
+| macOS | `.dmg` + `.zip` | x64, arm64 (a file each) |
+| Linux | AppImage, `.deb`, `.rpm` | x64, arm64 (a file each; rpm x64 only) |
 
-Every platform ships **separate x64 and arm64 builds** (except the Linux `.rpm`,
-which is x64 only) — pick the one matching your hardware.
+macOS and Linux ship **separate x64 and arm64 files** (except the Linux `.rpm`,
+which is x64 only) — pick the one matching your hardware. Windows is different:
+electron-builder puts both architectures into a single `Nawi-Setup-<version>.exe`
+(the name is `nsis.artifactName` in `electron-builder.yml`), and the installer
+picks the right one. The exact file names are in [Download](#download).
 
-The macOS `.zip` is required, not optional: `electron-updater` looks the update
-artifact up by its zip and auto-update is silently dead without one.
+**There is no auto-update yet.** `electron-updater` is a dependency, but nothing
+in `src/` imports it and `publish` is unset in `electron-builder.yml`, so an
+installed Nawi never looks for a newer version: you update by downloading a newer
+release. The macOS `.zip` and the `latest*.yml` / `.blockmap` files are built
+anyway because `electron-updater` would need them once it is wired up (its macOS
+updater looks the update up by its zip).
 
 **electron-builder cannot cross-compile** — a macOS `.dmg` can only be produced
 on macOS. `.github/workflows/release.yml` runs the three-OS matrix that actually
@@ -113,9 +236,10 @@ recorded at all**. Here is the whole matrix before the per-OS steps.
 
 ### Windows
 
-1. Pick the NSIS installer (`.exe`) for your architecture — **arm64** for
-   Windows-on-ARM, **x64** otherwise — and run it. **SmartScreen will warn you**,
-   because the build is not code-signed. Choose **More info → Run anyway**.
+1. Download `Nawi-Setup-<version>.exe` and run it. There is one installer for
+   both architectures; it installs the arm64 build on Windows-on-ARM and the x64
+   build otherwise. **SmartScreen will warn you**, because the build is not
+   code-signed. Choose **More info → Run anyway**.
 2. Launch Nawi and take a screenshot. **Windows has no per-app screen-capture
    permission**, so there is nothing to grant and nothing to relaunch for.
 3. Record. **System audio is captured on Windows and only on Windows** — Nawi
@@ -139,7 +263,8 @@ apart from policy.
 ### macOS
 
 1. Open the `.dmg` and drag Nawi to Applications. Pick the build matching your
-   hardware: **arm64** for Apple Silicon, **x64** for Intel.
+   hardware: `Nawi-<version>-arm64.dmg` for Apple Silicon, `Nawi-<version>.dmg`
+   (no suffix) for Intel.
 2. **Gatekeeper will block it.** The build is neither signed nor notarized, so a
    *downloaded* copy is quarantined and macOS reports *"Nawi is damaged and
    can't be opened"* (exact wording varies by macOS version). It is not damaged.
@@ -175,12 +300,15 @@ apart from policy.
 
 ### Linux
 
-1. Install the package for your distribution — `.AppImage` (x64/arm64), `.deb`
-   (Debian/Ubuntu, x64/arm64), or `.rpm` (Fedora/RHEL, **x64 only**). An
-   AppImage must be marked executable before it will run:
+1. Install the package for your distribution — `.deb` (Debian/Ubuntu,
+   x64/arm64) or `.rpm` (Fedora/RHEL, **x64 only**) where you can, otherwise the
+   `.AppImage` (x64/arm64). The packages install to `/opt/Nawi`. An AppImage
+   must be marked executable before it will run:
    ```bash
    chmod +x Nawi-*.AppImage && ./Nawi-*.AppImage
    ```
+   If it aborts at once, see
+   [AppImage and the Chromium sandbox](#appimage-and-the-chromium-sandbox).
 2. Screen capture goes through **your desktop environment's screen-sharing
    settings**, not an app-level permission — that is the wording Nawi itself
    uses, because it has no way to name your particular desktop's settings app.
@@ -195,24 +323,117 @@ apart from policy.
    — same as macOS, and equally expected. Microphone and webcam are prompted when
    you press Record with that track ticked.
 
+#### AppImage and the Chromium sandbox
+
+On systems that restrict unprivileged user namespaces — Ubuntu 24.04 and later
+do by default — Electron can abort at startup with:
+
+```
+The SUID sandbox helper binary was found, but is not configured correctly.
+Rather than run without sandboxing I'm aborting now.
+```
+
+This project's own CI hit exactly that on `ubuntu-latest`, when `nawi serve`
+started Electron. Nothing is wrong with your download.
+
+- **Prefer the `.deb` or `.rpm`.** Their post-install script (electron-builder's
+  stock one) sets up the `chrome-sandbox` helper under `/opt/Nawi` and, where
+  AppArmor is enabled and accepts it, installs an AppArmor profile for the app.
+  An AppImage has no install step, so nothing does that for it.
+- **If you have to use the AppImage**, the standard workaround is to start it
+  with Chromium's `--no-sandbox` switch:
+  ```bash
+  ./Nawi-*.AppImage --no-sandbox
+  ```
+  Be clear about what that does: it **turns off Chromium's process sandbox** for
+  the whole app, which is one of the protections listed under
+  [Security posture](#security-posture). Nawi never passes that switch itself
+  and has no setting for it; it is your call, per launch.
+- `nawi serve` accepts only `--user-data-dir` and does not pass `--no-sandbox`
+  on, so on an affected system run it against a `.deb`/`.rpm` install.
+
 ### Putting the `nawi` CLI on your PATH
 
 Nawi ships a `nawi` command-line front end, but **the installers deliberately do
 not modify your system PATH** — an installer mutating machine-wide PATH leaves
 residue behind on uninstall. Two ways to get it:
 
-- `npm install -g .` from a clone of this repo, or
-- point your shell at the copy inside the installed app. It is unpacked from the
-  asar precisely so plain `node` can run it:
+- from a clone of this repo, build first and then install — `bin` points at
+  `out/cli/index.js`, and `out/` is build output that is not in git:
+  ```bash
+  npm install
+  npm run build
+  npm install -g .
+  ```
+- or point your shell at the copy inside the installed app. It is unpacked from
+  the asar precisely so plain `node` can run it:
   - Windows — `<install dir>\resources\app.asar.unpacked\out\cli\index.js`
   - macOS — `/Applications/Nawi.app/Contents/Resources/app.asar.unpacked/out/cli/index.js`
   - Linux — `<install dir>/resources/app.asar.unpacked/out/cli/index.js`
+    (`<install dir>` is `/opt/Nawi` for the `.deb` and `.rpm`)
+
+  Run it as `node <that path> <command>`, or wrap that in a shell alias or
+  script.
+
+Either way the CLI is run by your own Node.js — see
+[System requirements](#system-requirements).
+
+> **Linux packages:** going by electron-builder's stock post-install script, the
+> `.deb` and `.rpm` link `/usr/bin/nawi` to the *application* executable
+> (`/opt/Nawi/nawi`), not to this CLI. On such an install a bare `nawi` starts
+> the app, so give the CLI a different alias name. This is read from the
+> packaging template, not checked on an installed system.
 
 What the CLI can do is in [Agent access](#agent-access--mcp-and-cli).
 
+### Connecting an MCP client
+
+An MCP client does not talk to the app directly. It starts the **stdio bridge**,
+a small script shipped with Nawi, and the bridge forwards every message to the
+running app's loopback endpoint.
+
+- **The bridge script** is unpacked next to the CLI:
+  - Windows — `<install dir>\resources\app.asar.unpacked\out\mcp\stdio-bridge.js`
+  - macOS — `/Applications/Nawi.app/Contents/Resources/app.asar.unpacked/out/mcp/stdio-bridge.js`
+  - Linux — `<install dir>/resources/app.asar.unpacked/out/mcp/stdio-bridge.js`
+  - from a clone — `out/mcp/stdio-bridge.js`, after `npm run build`
+- **The endpoint file** is `mcp.json` in the data folder
+  ([Where your data lives](#where-your-data-lives-and-uninstalling)). Nawi
+  writes it at startup with the endpoint's URL (`http://127.0.0.1:<port>/mcp`,
+  a new port each start), a bearer token and its process id, with owner-only
+  file permissions (mode 0600), and removes it when it quits.
+- **The token** is random, generated on every start, and never printed. You do
+  not copy it into the client: the bridge reads `mcp.json` itself on each
+  request, so a restarted Nawi is picked up without touching the client's
+  configuration. A client that speaks HTTP to the URL directly instead has to
+  send `Authorization: Bearer <token>` and re-read the file after every restart.
+- **`NAWI_MCP_CONFIG=<path to an mcp.json>`** in the bridge's (or CLI's)
+  environment points it at another profile, such as one started with
+  `nawi serve --user-data-dir <dir>`.
+
+A client entry is then just "run `node` on that file". For clients that take the
+common `mcpServers` JSON form it looks like this — **an example**: the file it
+goes in and the exact keys depend on your client, and the path on your install:
+
+```json
+{
+  "mcpServers": {
+    "nawi": {
+      "command": "node",
+      "args": ["/Applications/Nawi.app/Contents/Resources/app.asar.unpacked/out/mcp/stdio-bridge.js"]
+    }
+  }
+}
+```
+
+Nawi (or `nawi serve`) must already be running: the bridge never starts the app,
+and answers with a JSON-RPC error saying so when it is not. Agent access can be
+paused from the app, and a paused Nawi refuses tool calls with
+`AGENT_ACCESS_PAUSED`.
+
 ## Agent access — MCP and CLI
 
-Nawi exposes twenty-three tools over a loopback JSON-RPC endpoint: `capture_screen`,
+Nawi exposes 24 tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
@@ -821,20 +1042,27 @@ alone.
 
 ## Keyboard shortcuts
 
-Global (work while the app is unfocused):
+Global (work while the app is unfocused). The defaults are defined once as
+`CommandOrControl+…` (`DEFAULT_HOTKEYS` in `src/shared/settings.ts`), so the
+modifier is Ctrl on Windows and Linux and Cmd on macOS:
 
-| Action | Shortcut |
-|---|---|
-| Capture region | `Ctrl+Shift+1` |
-| Capture full screen | `Ctrl+Shift+2` |
-| Capture window | `Ctrl+Shift+3` |
-| Start recording | `Ctrl+Shift+4` |
-| Stop recording | `Ctrl+Shift+S` |
-| Show main window | `Ctrl+Shift+0` |
+| Action | Windows / Linux | macOS |
+|---|---|---|
+| Capture region | `Ctrl+Shift+1` | `Cmd+Shift+1` |
+| Capture full screen | `Ctrl+Shift+2` | `Cmd+Shift+2` |
+| Capture window | `Ctrl+Shift+3` | `Cmd+Shift+3` |
+| Start recording | `Ctrl+Shift+4` | `Cmd+Shift+4` |
+| Stop recording | `Ctrl+Shift+S` | `Cmd+Shift+S` |
+| Show main window | `Ctrl+Shift+0` | `Cmd+Shift+0` |
+
+They are registered when the app starts and held until it quits (`nawi serve`
+registers none), and they are the `hotkeys` entries of `settings.json`. See
+[Known limitations](#known-limitations) for what that costs you in other apps.
 
 In the editor: `A R E T H B N C V` select a tool, `1`–`8` pick a colour, `[`/`]`
 adjust stroke, `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Ctrl+S` save, `Ctrl+C` copy,
-`Ctrl+Shift+E` export, `Ctrl+0/+/−` zoom.
+`Ctrl+Shift+E` export, `Ctrl+0/+/−` zoom. On macOS use Cmd in place of Ctrl for
+all of these (the editor accepts either modifier).
 
 > Export is `Ctrl+Shift+E`, not `Ctrl+Shift+S`: a global hotkey is intercepted
 > before the focused window ever sees it, so binding Export to the same chord as
@@ -912,7 +1140,9 @@ test was skipped (for example the browser suites with no Playwright Chromium
 installed) or a step was left out. `-- <files>` narrows the Vitest run,
 `-- --no-typecheck` skips the typecheck.
 
-64 Playwright tests across six specs drive the actual built app:
+81 Playwright tests across eight spec files in `e2e/` drive the actual built
+app (the count is the `test(...)` declarations in `e2e/*.spec.ts`; a few skip
+themselves by platform or when no screen source is available):
 
 | Spec | Covers |
 |---|---|
@@ -920,8 +1150,10 @@ installed) or a step was left out. `-- <files>` narrows the Vitest run,
 | `annotation.spec.ts` | Drawing and persisting shapes, undo/redo, tool and palette bindings |
 | `recording.spec.ts` | The record lifecycle and track selection |
 | `conformance.spec.ts` | UX-SPEC conformance over required screen states |
-| `mcp.spec.ts` | The sixteen tools over the loopback endpoint, redaction gating, the agent kill switch |
+| `mcp.spec.ts` | The 24 tools over the loopback endpoint, token and origin checks, the agent kill switch, the stdio bridge |
 | `cli.spec.ts` | The `nawi` binary's exit-code contract, including its refusal to launch the app |
+| `permission-recovery.spec.ts` | The media-access status the platform reports, and the recovery card for a recording that fails in the recorder window |
+| `serve.spec.ts` | `nawi serve`: the published endpoint, other commands attaching, a second serve on the same profile, a clean stop |
 
 Unit tests live beside their subjects (`*.test.ts`) and cover the pure layers —
 container selection, the sidecar/library store, redaction gating, HAR harvest,
@@ -984,3 +1216,62 @@ CDP selectors and the MCP projection/revision model.
   cannot be separated, muted independently or re-balanced afterwards.
 - The library is a flat JSON index. That's correct at this scale and keeps the app
   free of native modules; it is not intended to scale to six figures of captures.
+
+## Contributing
+
+Set up as in [Quick start](#quick-start) (Node 26 or later), then run the checks
+that apply to your change before opening a pull request:
+
+```bash
+npm run typecheck      # tsc over the node and web projects
+npm run test:unit      # vitest
+npm run test:renderer  # main-window UI in Playwright Chromium: a11y + responsive
+npm run test:e2e       # builds, then drives the real Electron app
+```
+
+`npm run test:agent` runs the typecheck and the unit suite together and writes
+`.test-report/summary.md`; it is what CI's verify job runs. The renderer suite
+and the browser-driven unit suites need Playwright's Chromium
+(`npx playwright install chromium`). The E2E suite needs a display — on a
+headless Linux machine run it as `xvfb-run --auto-servernum npm run test:e2e`,
+as CI does. What each suite covers is in [Testing](#testing).
+
+CI (`.github/workflows/ci.yml`) runs **on pull requests, weekly (Mondays 07:00
+UTC) and on manual dispatch — not on every push to `main`**. It runs
+`test:agent` and `test:renderer` on Ubuntu, then the E2E suite on Ubuntu and
+Windows. Nothing runs on macOS, so a change to macOS-specific behaviour is
+unverified until someone tries it on a Mac.
+
+## Releasing
+
+For maintainers. `.github/workflows/release.yml` does the building; a release is
+a tag.
+
+1. Bump `version` in `package.json` and `package-lock.json`
+   (`npm version <version> --no-git-tag-version` edits both) and commit.
+2. Tag that commit `v<version>` and push the commit and the tag:
+   ```bash
+   git tag v<version>
+   git push origin main v<version>
+   ```
+   **The tag must match the version in `package.json`.** The file names come
+   from `package.json`, not from the tag, and nothing in the workflow compares
+   the two — a mismatched tag gives a release whose files carry another version.
+3. The `v*` tag starts the workflow: `verify` (typecheck and unit tests), then
+   `build` on `windows-latest`, `macos-latest` and `ubuntu-latest`, then
+   `publish`, which creates the GitHub release for the tag **as a draft** with
+   every file attached.
+4. Review the draft on the
+   [releases page](https://github.com/AlexanderVegazo26/nawi/releases) — the
+   files should be the ones listed under [Download](#download) — and publish it.
+   Until then it is not public and `/releases/latest` does not point at it.
+
+Running the workflow by hand (*Run workflow*) with `publish` off builds the same
+files and only uploads them as workflow artifacts (`nawi-windows`, `nawi-macos`,
+`nawi-linux`); with `publish` on it creates a draft release named
+`manual-<run id>`. The builds are unsigned unless the signing secrets named in
+[Installers](#installers) exist in the repository.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

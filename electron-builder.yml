@@ -37,6 +37,11 @@ win:
   # CSC_KEY_PASSWORD automatically; without them the installer ships UNSIGNED
   # and SmartScreen will warn on first run.
 nsis:
+  # No spaces in the installer name. The default is "Nawi Setup <version>.exe";
+  # GitHub rewrites the spaces to dots when the file is uploaded as a release
+  # asset ("Nawi.Setup.<version>.exe"), while latest.yml names the dashed form,
+  # so the file an updater or a README link asks for is not the file that exists.
+  artifactName: ${productName}-Setup-${version}.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true

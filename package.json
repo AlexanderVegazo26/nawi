@@ -1,6 +1,6 @@
 {
   "name": "nawi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Nawi — a modern screen capture, recording and annotation studio.",
   "main": "./out/main/index.js",
   "bin": {

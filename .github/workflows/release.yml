@@ -108,6 +108,7 @@ jobs:
             release/*.rpm
             release/*.yml
             release/*.blockmap
+            !release/builder-debug.yml
           if-no-files-found: error
 
   publish:
