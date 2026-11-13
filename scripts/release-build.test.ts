@@ -103,3 +103,23 @@ describe.skipIf(process.platform === 'win32')('scripts/release-build.ts command'
     expect(result.stderr).toContain('usage: node scripts/release-build.ts <dist:win|dist:mac|dist:linux>')
   })
 })
+
+describe('macOS packaging declares every device the recorder opens', () => {
+  const builder = parse(readFileSync(path.join(root, 'electron-builder.yml'), 'utf8')) as {
+    mac: { entitlements: string; extendInfo: Record<string, string> }
+  }
+  const plist = readFileSync(path.join(root, builder.mac.entitlements), 'utf8')
+  const recorder = readFileSync(path.join(root, 'src/renderer/lib/recorder.ts'), 'utf8')
+  const granted = (key: string): boolean => new RegExp(`<key>${key.replace(/\./g, '\\.')}</key>\\s*<true/>`).test(plist)
+
+  // Under the hardened runtime a device needs the entitlement, and macOS kills
+  // the process outright when the usage string is missing.
+  it.each([
+    ['microphone', /getUserMedia\(\{\s*audio/, 'com.apple.security.device.audio-input', 'NSMicrophoneUsageDescription'],
+    ['camera', /getUserMedia\(\{\s*video/, 'com.apple.security.device.camera', 'NSCameraUsageDescription']
+  ])('%s: the entitlement and the usage string', (_device, use, entitlement, usage) => {
+    expect(recorder, 'the recorder no longer opens this device; drop the row').toMatch(use)
+    expect(granted(entitlement), `${entitlement} missing from ${builder.mac.entitlements}`).toBe(true)
+    expect(builder.mac.extendInfo[usage]?.trim(), `${usage} missing from mac.extendInfo`).toBeTruthy()
+  })
+})

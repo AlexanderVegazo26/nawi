@@ -14,6 +14,8 @@
     electron-builder.yml's mac.extendInfo — the entitlement grants the
     capability, the plist string is what macOS shows in the prompt, and a
     missing string is an immediate crash rather than a denial.
+  - device.camera: `recorder.ts` (openCamera) calls getUserMedia({ video }) for
+    the webcam track. Paired with NSCameraUsageDescription, for the same reason.
   - files.user-selected.read-write: the save/export dialogs write captures to
     wherever the user picks.
 
@@ -30,6 +32,8 @@
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
     <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
     <true/>
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>

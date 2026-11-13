@@ -74,6 +74,10 @@ mac:
     NSMicrophoneUsageDescription: >-
       Nawi needs microphone access to record narration alongside your
       screen recordings.
+    # The webcam track: getUserMedia({ video }) in recorder.ts (openCamera).
+    # Missing, macOS kills the process the moment the camera is requested.
+    NSCameraUsageDescription: >-
+      Nawi needs camera access to include your webcam in screen recordings.
     # Screen recording is TCC-gated at first capture rather than by an
     # entitlement, but the string is what the user reads in the prompt.
     NSScreenCaptureUsageDescription: >-

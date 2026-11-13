@@ -107,10 +107,8 @@ The ones a new user meets first. Feature-level gaps are in
 - **No auto-update.** `electron-updater` is a dependency but nothing in `src/`
   imports it, and `publish` is unset in `electron-builder.yml`. To update,
   download a newer release and install it over the old one.
-- **Webcam on macOS:** the build declares the microphone entitlement and usage
-  string but neither for the camera (`resources/entitlements.mac.plist`,
-  `mac.extendInfo` in `electron-builder.yml`), so the webcam track cannot be
-  expected to work in a signed macOS build. Not tested on a Mac.
+- **Webcam on macOS** is declared (camera entitlement and usage string, as for
+  the microphone) but has not been tested on a Mac.
 
 ## Quick start
 
