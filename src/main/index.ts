@@ -41,6 +41,7 @@ import { MobileUiSession } from './mobile/ui-session'
 import { findAdb } from './mobile/doctor'
 import { captureScreen } from './mobile/screen'
 import { SERVE_EXIT_NO_ENDPOINT, isServeMode, serveReadyLine } from './headless'
+import { CloseGuard } from './close-guard'
 import { hotkeyBindings, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
 const isDev = !app.isPackaged
@@ -76,6 +77,8 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let mainWindow: BrowserWindow | null = null
+/** The main window's unsaved-annotations guard; one per window. */
+let closeGuard: CloseGuard | null = null
 
 /** State for an in-flight region selection. */
 interface RegionSession {
@@ -265,9 +268,20 @@ function createMainWindow(): void {
     webPreferences
   })
 
+  const win = mainWindow
+  const guard = new CloseGuard()
+  closeGuard = guard
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+  // The window's own close (X, Alt+F4, a quit) asks first while the editor has
+  // unsaved annotations, as the editor's in-app close does.
+  mainWindow.on('close', (event) => guard.onClose(event, win))
+  // A reloaded or crashed renderer has no editor and no unsaved work to protect,
+  // and must not be able to hold the window open.
+  mainWindow.webContents.on('did-start-loading', () => guard.setUnsaved(false))
+  mainWindow.webContents.on('render-process-gone', () => guard.setUnsaved(false))
   mainWindow.on('closed', () => {
     mainWindow = null
+    if (closeGuard === guard) closeGuard = null
     // The hidden recorder window is still a window, so `window-all-closed`
     // would never fire and the app would linger with no visible UI. A live
     // recording keeps its windows; see `shutdownWindows`.
@@ -520,6 +534,15 @@ function registerIpc(): void {
 
   ipcMain.on(IPC.commitRegion, (e, displayId: number, rect: Rect) => {
     void commitRegion(e.sender.id, displayId, rect)
+  })
+  // The close guard listens to the main window only: an overlay or the HUD shares
+  // the preload but has no say over whether the main window may close.
+  ipcMain.on(IPC.editorUnsaved, (e, unsaved: unknown) => {
+    if (mainWindow && e.sender === mainWindow.webContents) closeGuard?.setUnsaved(unsaved === true)
+  })
+  ipcMain.on(IPC.confirmClose, (e) => {
+    if (!mainWindow || e.sender !== mainWindow.webContents || !closeGuard) return
+    if (closeGuard.confirm(mainWindow).quit) app.quit()
   })
   ipcMain.on(IPC.cancelRegion, (e) => {
     const s = regionSession
@@ -925,6 +948,8 @@ app.whenReady().then(() => {
     if (!serveMode && BrowserWindow.getAllWindows().length === 0) createMainWindow()
   })
 })
+
+app.on('before-quit', () => closeGuard?.quitRequested())
 
 app.on('window-all-closed', () => {
   // Serve mode has no window to begin with; a tool's transient window closing must not end the daemon.

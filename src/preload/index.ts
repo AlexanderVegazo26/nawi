@@ -126,7 +126,10 @@ const api: NawiApi = {
     return () => {
       ipcRenderer.removeListener(IPC.shortcut, listener)
     }
-  }
+  },
+  setUnsavedChanges: (unsaved) => ipcRenderer.send(IPC.editorUnsaved, unsaved === true),
+  onCloseRequested: (cb) => subscribe<void>(IPC.closeRequested, () => cb()),
+  confirmWindowClose: () => ipcRenderer.send(IPC.confirmClose)
 }
 
 contextBridge.exposeInMainWorld('api', api)

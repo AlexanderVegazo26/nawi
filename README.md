@@ -107,9 +107,6 @@ The ones a new user meets first. Feature-level gaps are in
 - **No auto-update.** `electron-updater` is a dependency but nothing in `src/`
   imports it, and `publish` is unset in `electron-builder.yml`. To update,
   download a newer release and install it over the old one.
-- **Closing the main window with the window's own close button discards unsaved
-  annotations without asking.** The editor's own close (its button, or
-  `Ctrl+W`) does ask; the window's close button does not go through it.
 - **Webcam on macOS:** the build declares the microphone entitlement and usage
   string but neither for the camera (`resources/entitlements.mac.plist`,
   `mac.extendInfo` in `electron-builder.yml`), so the webcam track cannot be

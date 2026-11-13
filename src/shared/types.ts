@@ -527,6 +527,12 @@ export interface NawiApi {
 
   /* app */
   onShortcut(cb: (action: string) => void): () => void
+  /** The editor's unsaved state, so closing the window can ask first. */
+  setUnsavedChanges(unsaved: boolean): void
+  /** Fires when the window is being closed with unsaved changes. Returns an unsubscribe function. */
+  onCloseRequested(cb: () => void): () => void
+  /** Discard chosen: lets the close (or quit) that `onCloseRequested` held go ahead. */
+  confirmWindowClose(): void
 }
 
 /** Screen-recording access as the OS reports it; `unknown` when it cannot be read. */

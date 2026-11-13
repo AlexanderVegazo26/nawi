@@ -659,3 +659,30 @@ test('UX-VIS.3 — exported pixels are identical in dark and light themes', asyn
   const light = await exportUnder('light')
   expect(dark).toBe(light)
 })
+
+/* ------------------------------------------------------------------ *
+ * The window's own close button and unsaved annotations
+ * ------------------------------------------------------------------ */
+
+test('closing the window with unsaved annotations asks first, as the editor’s own close does', async () => {
+  await leaveEditor()
+  await openEditorOnAFreshCapture()
+  await win.locator('nav[aria-label="Annotation tools"]').press('x')
+  await drag({ x: 40, y: 40 }, { x: 160, y: 110 })
+  await expect(win.getByText('Unsaved')).toBeVisible()
+
+  // What the window's X (or Alt+F4) does: a plain close() on the main window.
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()
+      .find((w) => w.webContents.getURL().includes('index.html'))
+      ?.close()
+  })
+
+  await expect(win.getByText('Discard unsaved changes?')).toBeVisible()
+  await expect(win.getByText(/Discarding closes the window/)).toBeVisible()
+  expect(win.isClosed()).toBe(false)
+
+  await win.getByRole('button', { name: 'Keep editing' }).click()
+  await expect(win.getByText('Unsaved')).toBeVisible()
+  await leaveEditor()
+})

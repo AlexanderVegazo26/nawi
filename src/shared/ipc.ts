@@ -87,7 +87,16 @@ export const IPC = {
   mobileProgress: 'mobile:progress',
   getMobileScreen: 'mobile:screen',
 
-  shortcut: 'app:shortcut'
+  shortcut: 'app:shortcut',
+
+  /**
+   * The window-close guard (src/main/close-guard.ts): the editor reports unsaved
+   * changes (renderer -> main), main asks it to confirm a window close (main ->
+   * renderer), and Discard confirms it (renderer -> main). Main window only.
+   */
+  editorUnsaved: 'editor:unsaved',
+  closeRequested: 'app:close-requested',
+  confirmClose: 'app:confirm-close'
 } as const
 
 /** Custom scheme used to serve library assets and freeze frames to the renderer. */

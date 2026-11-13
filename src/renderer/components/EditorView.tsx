@@ -131,7 +131,8 @@ export function EditorView({
   const [zoom, setZoom] = useState(1)
   const [dirty, setDirty] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [confirmClose, setConfirmClose] = useState(false)
+  /** Which close the discard dialog is guarding: the editor's own, or the window's. */
+  const [confirmClose, setConfirmClose] = useState<false | 'editor' | 'window'>(false)
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; value: string } | null>(null)
   const [cropDraft, setCropDraft] = useState<Rect | null>(null)
 
@@ -787,9 +788,25 @@ export function EditorView({
   )
 
   const requestClose = useCallback(() => {
-    if (dirty) setConfirmClose(true)
+    if (dirty) setConfirmClose('editor')
     else onClose()
   }, [dirty, onClose])
+
+  /*
+   * The window's own close (X, Alt+F4, quit) asks too. Main holds that close
+   * while this reports unsaved changes and asks for the same dialog; Discard
+   * then lets the window close.
+   */
+  useEffect(() => {
+    window.api.setUnsavedChanges(dirty)
+  }, [dirty])
+  useEffect(() => {
+    const off = window.api.onCloseRequested(() => setConfirmClose('window'))
+    return () => {
+      off()
+      window.api.setUnsavedChanges(false)
+    }
+  }, [])
 
   /* ---------------- keyboard ---------------- */
   useEffect(() => {
@@ -1367,14 +1384,17 @@ export function EditorView({
               <Button autoFocusInModal onClick={() => setConfirmClose(false)}>
                 Keep editing
               </Button>
-              <Button variant="danger" onClick={onClose}>
+              <Button
+                variant="danger"
+                onClick={confirmClose === 'window' ? () => window.api.confirmWindowClose() : onClose}
+              >
                 Discard
               </Button>
             </>
           }
         >
           Your annotations on <strong className="text-text-primary">{item.name}</strong> haven&apos;t been
-          saved. Discarding closes the editor and loses them.
+          saved. Discarding closes {confirmClose === 'window' ? 'the window' : 'the editor'} and loses them.
         </Modal>
       )}
     </div>
