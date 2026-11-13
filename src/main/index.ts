@@ -43,6 +43,7 @@ import { captureScreen } from './mobile/screen'
 import { SERVE_EXIT_NO_ENDPOINT, isServeMode, serveReadyLine } from './headless'
 import { CloseGuard } from './close-guard'
 import { fileResponse } from './range'
+import { isAppPage } from './navigation'
 import { hotkeyBindings, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
 const isDev = !app.isPackaged
@@ -251,9 +252,9 @@ function hardenWindow(win: BrowserWindow): void {
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event, url) => {
-    const devServer = process.env['ELECTRON_RENDERER_URL']
-    const sameOrigin = devServer && url.startsWith(devServer)
-    if (!sameOrigin && !url.startsWith('file:')) {
+    // Only the app's own pages: any other document would inherit the preload API.
+    const devServer = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+    if (!isAppPage(url, join(__dirname, '../renderer'), devServer)) {
       event.preventDefault()
       if (url.startsWith('https:')) void shell.openExternal(url)
     }
