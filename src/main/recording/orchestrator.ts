@@ -73,6 +73,14 @@ let status: RecordingStatus = idleStatus()
  */
 let reportedFailure: string | null = null
 
+/**
+ * The main window closed while a recording was active, so `shutdownWindows`
+ * kept the recorder and HUD alive. Honoured when the recording ends: without
+ * that, those windows outlived it invisibly, `window-all-closed` never fired,
+ * and on Windows/Linux the process stayed up holding the global hotkeys.
+ */
+let shutdownDeferred = false
+
 function requireHost(): RecordingHost {
   if (!host) throw new Error('recording orchestrator is not installed')
   return host
@@ -416,6 +424,13 @@ function publish(next: RecordingStatus): void {
   void updateTray(next)
   if (next.phase === 'idle' || next.phase === 'error') hideHud()
   else showHud()
+  if (shutdownDeferred && !isActive(next)) {
+    shutdownDeferred = false
+    // Only if the main window is still gone: one reopened meanwhile (a second
+    // launch, the dock) wants these windows kept for its next recording. After
+    // this handler has replied, since the recorder is usually the sender.
+    if (!requireHost().mainWindow()) setTimeout(shutdownWindows, 0)
+  }
 }
 
 /** Every path that ends a recording routes through here, so nothing ends silently. */
@@ -700,10 +715,15 @@ export function install(
  * A recording in progress is the one exception: the windows stay, because the
  * recording is the user's work and the HUD is still on screen, so the app is
  * not invisible. Killing the engine here would silently end a recording the
- * user never asked to stop.
+ * user never asked to stop. The shutdown is then deferred, and `publish` runs
+ * it once the recording is no longer active.
  */
 export function shutdownWindows(): void {
-  if (status.phase !== 'idle' && status.phase !== 'error') return
+  if (isActive()) {
+    shutdownDeferred = true
+    return
+  }
+  shutdownDeferred = false
   stopTray()
   if (hudWindow && !hudWindow.isDestroyed()) hudWindow.destroy()
   if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.destroy()

@@ -197,3 +197,48 @@ describe('onActiveChanged', () => {
     expect(seen).toEqual([true, false])
   })
 })
+
+describe('shutdownWindows — main window closed mid-recording', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5))
+
+  it('keeps the recording windows while recording, and tears them down once it ends', async () => {
+    const h = await setup()
+    await startRecording(h)
+
+    // index.ts calls this from the main window's `closed` handler.
+    h.setMainWindow(null)
+    h.orchestrator.shutdownWindows()
+    expect(h.recorder().destroyed).toBe(false)
+    expect(h.hud().destroyed).toBe(false)
+
+    // Stopped from the HUD: the engine finalizes, then publishes idle.
+    await engineReportsIdle(h)
+    await tick()
+    // Left alive, these windows kept `window-all-closed` from ever firing.
+    expect(h.recorder().destroyed).toBe(true)
+    expect(h.hud().destroyed).toBe(true)
+  })
+
+  it('also tears them down when the recording ends in an error', async () => {
+    const h = await setup()
+    await startRecording(h)
+    h.setMainWindow(null)
+    h.orchestrator.shutdownWindows()
+
+    await engineReportsIdle(h, 'the disk is full')
+    await tick()
+    expect(h.recorder().destroyed).toBe(true)
+  })
+
+  it('keeps them when the main window was reopened before the recording ended', async () => {
+    const h = await setup()
+    await startRecording(h)
+    h.setMainWindow(null)
+    h.orchestrator.shutdownWindows()
+    h.setMainWindow(fakeWindow('main'))
+
+    await engineReportsIdle(h)
+    await tick()
+    expect(h.recorder().destroyed).toBe(false)
+  })
+})
