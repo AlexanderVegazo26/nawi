@@ -78,11 +78,15 @@ jobs:
       - run: npm run install-electron
 
       - name: Build installers
-        run: npm run ${{ matrix.script }}
+        # Through scripts/release-build.ts, not `npm run` directly: a secret
+        # that doesn't exist arrives as an empty string, and electron-builder
+        # takes an empty CSC_LINK as a certificate path (macOS: "<repo> not a
+        # file"). The wrapper unsets the empty ones so the build is unsigned.
+        run: node scripts/release-build.ts ${{ matrix.script }}
         env:
-          # Provided only if the secrets exist; electron-builder skips signing
-          # when they are absent rather than failing, so unsigned builds still
-          # produce artifacts. See electron-builder.yml for what that costs.
+          # Signing turns on when these secrets exist; when they don't, the
+          # wrapper drops the empty values and electron-builder builds unsigned
+          # artifacts. See electron-builder.yml for what that costs.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
