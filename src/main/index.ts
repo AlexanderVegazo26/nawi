@@ -41,7 +41,7 @@ import { MobileUiSession } from './mobile/ui-session'
 import { findAdb } from './mobile/doctor'
 import { captureScreen } from './mobile/screen'
 import { SERVE_EXIT_NO_ENDPOINT, isServeMode, serveReadyLine } from './headless'
-import { HOTKEY_ACTIONS, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
+import { hotkeyBindings, hotkeysDiffer, type HotkeyAction, type Settings } from '@shared/settings'
 
 const isDev = !app.isPackaged
 
@@ -729,10 +729,17 @@ function broadcastSettings(next: Settings): void {
   }
 }
 
+/** action -> accelerator Nawi currently holds, so a resync touches only what changed. */
+const heldShortcuts = new Map<HotkeyAction, string>()
+
 /**
- * Binds the accelerators currently in settings, replacing whatever was bound
- * before. Still best-effort — another app may already own a chord — but now the
- * strings come from a user-editable file, so a malformed accelerator (which
+ * Brings the registered accelerators in line with settings and recording state
+ * (`hotkeyBindings`): stop is held only while a recording is active, start only
+ * while none is. Diffed against what is held, so a recording starting or a theme
+ * change never blinks the other chords off.
+ *
+ * Still best-effort — another app may already own a chord — and the strings come
+ * from a user-editable file, so a malformed accelerator (which
  * `globalShortcut.register` throws on, rather than returning false) must not abort
  * the loop and silently cost the user their remaining hotkeys.
  */
@@ -740,26 +747,30 @@ async function registerShortcuts(): Promise<void> {
   // A background daemon must not take chords away from the user's desktop.
   if (serveMode) return
   const current = await settings.getSettings()
-  globalShortcut.unregisterAll()
+  const wanted = new Map(
+    hotkeyBindings(current.hotkeys, recording.isActive()).map((b) => [b.action, b.accelerator])
+  )
 
-  const bind = (accel: string, action: string): void => {
-    // An empty chord means the action was deliberately left unbound — either by
-    // the user, or by collision resolution yielding it. Asking Electron to
-    // register '' throws, so don't.
-    if (!accel) return
+  for (const [action, accel] of heldShortcuts) {
+    if (wanted.get(action) === accel) continue
+    globalShortcut.unregister(accel)
+    heldShortcuts.delete(action)
+  }
+
+  for (const [action, accel] of wanted) {
+    if (heldShortcuts.has(action)) continue
     try {
       const ok = globalShortcut.register(accel, () => {
         mainWindow?.show()
         mainWindow?.focus()
         mainWindow?.webContents.send(IPC.shortcut, action)
       })
-      if (!ok) console.warn(`[shortcut] could not register ${accel} for ${action}`)
+      if (ok) heldShortcuts.set(action, accel)
+      else console.warn(`[shortcut] could not register ${accel} for ${action}`)
     } catch (err) {
       console.warn(`[shortcut] could not register ${accel} for ${action}:`, err)
     }
   }
-
-  for (const action of HOTKEY_ACTIONS) bind(current.hotkeys[action], action)
 }
 
 /**
@@ -896,6 +907,7 @@ app.whenReady().then(() => {
     bound ??= initial.hotkeys
     return registerShortcuts()
   })
+  recording.onActiveChanged(() => void registerShortcuts())
 
   app.on('activate', () => {
     if (!serveMode && BrowserWindow.getAllWindows().length === 0) createMainWindow()
@@ -914,6 +926,7 @@ let endpointShutdown: 'running' | 'closing' | 'closed' = 'running'
 
 app.on('will-quit', (event) => {
   globalShortcut.unregisterAll()
+  heldShortcuts.clear()
   // Removes userData/mcp.json as well, so a bridge spawned after we exit reports
   // "Nawi is not running" rather than a bare connection refusal. The quit waits
   // for that (bounded): a fire-and-forget close could be cut off by the exit and

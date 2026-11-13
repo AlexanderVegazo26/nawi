@@ -418,10 +418,10 @@ Saving an edited library item **overwrites in place**; there is no versioning in
 | Capture fullscreen | `Ctrl+Shift+2` | `Ctrl+Opt+Cmd+2` |
 | Capture window | `Ctrl+Shift+3` | `Ctrl+Opt+Cmd+3` |
 | Start recording | `Ctrl+Shift+4` | `Ctrl+Opt+Cmd+4` |
-| **Stop recording** | `Ctrl+Shift+S` | `Ctrl+Opt+Cmd+S` |
+| **Stop recording** | `Ctrl+Shift+5` | `Ctrl+Opt+Cmd+S` |
 | Show main window | `Ctrl+Shift+0` | `Ctrl+Opt+Cmd+0` |
 
-macOS uses the four-modifier `Ctrl+Opt+Cmd` set deliberately: `Cmd+Shift+3/4/5` are owned by the OS and must not be taken. Windows avoids `PrintScreen` and `Win+Shift+S` for the same reason. Per **A5**, the four Windows `Ctrl+Shift+<digit>` bindings are the expected-collision candidates (language-bar / IME layout switching) and are the ones most likely to exercise the registration-failure path — test them first.
+macOS uses the four-modifier `Ctrl+Opt+Cmd` set deliberately: `Cmd+Shift+3/4/5` are owned by the OS and must not be taken. Windows avoids `PrintScreen` and `Win+Shift+S` for the same reason. Per **A5**, the four Windows `Ctrl+Shift+<digit>` bindings are the expected-collision candidates (language-bar / IME layout switching) and are the ones most likely to exercise the registration-failure path — test them first. Stop is `Ctrl+Shift+5`, not `Ctrl+Shift+S` ("Save As" in nearly every application), and is registered only while a recording is active; start only while none is.
 
 **In-app (window-scoped).** `Ctrl` below = `Cmd` on macOS. None of these duplicates a global binding.
 
@@ -449,7 +449,7 @@ macOS uses the four-modifier `Ctrl+Opt+Cmd` set deliberately: `Cmd+Shift+3/4/5` 
 | Playback | `Space` | Play/pause |
 | Playback | `←` / `→` | Seek ∓5s |
 
-Export is `Ctrl+Shift+E`, **not** `Ctrl+Shift+S`: the latter is the global stop-recording hotkey and would be swallowed before the editor ever received it, making Export unreachable at all times. Bare-key entries in this table are subject to the §6.1 / §5 suppression rule while a text field has focus.
+Export is `Ctrl+Shift+E`, **not** `Ctrl+Shift+S`: that chord was the global stop-recording hotkey until settings version 2, and a user who binds it there again would have it swallowed before the editor ever received it. Bare-key entries in this table are subject to the §6.1 / §5 suppression rule while a text field has focus.
 
 ### 7.3 Mode exclusion and repeated capture
 
@@ -516,7 +516,7 @@ One reuse decision worth naming: **3-stop segmented controls instead of sliders*
 **To `ui-engineer` (primary):**
 - §8 states accessibility *requirements*; you own measuring and adjusting the §1.5 tokens to satisfy them. If a token can't meet its ratio, change the token and report it — do not relax the ratio.
 - The five non-negotiables that are easy to get quietly wrong: the region overlay's keyboard path (§3.5 / UX-CAP-06), the recording widget's exclusion from captured frames (§4.2), the two distinct library empty states (§5.1), bare-key suppression inside text fields (§6.1 / UX-EDT-04), and the mode-exclusion table (§7.3 / UX-MODE-01).
-- Export is `Ctrl+Shift+E`. Do not "fix" it to `Ctrl+Shift+S` — that is the global stop-recording hotkey and would swallow it.
+- Export is `Ctrl+Shift+E`. Do not "fix" it to `Ctrl+Shift+S` — a user may still bind that chord globally.
 - Undo must cover crop and blur (§6.5) — store pre-operation regions; do not flatten until export.
 - Any interaction not specified here is a gap in this spec. Bring it back rather than inventing it.
 

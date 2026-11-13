@@ -382,8 +382,36 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+/** Whether a recording is under way: anything but `idle` and `error`. */
+export function isActive(s: RecordingStatus = status): boolean {
+  return s.phase !== 'idle' && s.phase !== 'error'
+}
+
+type ActiveListener = (active: boolean) => void
+const activeListeners = new Set<ActiveListener>()
+
+/**
+ * Notified when a recording becomes active or stops being active — not on every
+ * status tick. `index.ts` uses it to hold the stop hotkey only while there is
+ * something to stop.
+ */
+export function onActiveChanged(fn: ActiveListener): () => void {
+  activeListeners.add(fn)
+  return () => activeListeners.delete(fn)
+}
+
 function publish(next: RecordingStatus): void {
+  const wasActive = isActive(status)
   status = next
+  if (isActive(next) !== wasActive) {
+    for (const fn of activeListeners) {
+      try {
+        fn(isActive(next))
+      } catch (err) {
+        console.error('[recording] active listener failed', err)
+      }
+    }
+  }
   broadcast(IPC.recordingStatus, next)
   void updateTray(next)
   if (next.phase === 'idle' || next.phase === 'error') hideHud()

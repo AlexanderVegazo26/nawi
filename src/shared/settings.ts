@@ -57,7 +57,7 @@ export interface RedactionRule {
 }
 
 export interface Settings {
-  version: 1
+  version: typeof SETTINGS_VERSION
   /** action -> Electron accelerator. */
   hotkeys: Record<HotkeyAction, string>
   theme: ThemePreference
@@ -121,10 +121,14 @@ export function defaultAiSettings(): AiSettings {
 }
 
 /**
- * The six accelerators that were hardcoded in `registerShortcuts()` before the
- * settings layer existed. Changing a value here changes the out-of-box binding.
+ * The accelerators every install shipped with up to settings version 1.
+ *
+ * Kept only so `sanitizeSettings` can recognise an untouched old default and
+ * move it to the current one; nothing binds these any more. Two of them were
+ * defects, not choices: `CommandOrControl+Shift+S` is "Save As" in nearly every
+ * application, and on macOS `Cmd+Shift+3`/`4` are the system screenshot chords.
  */
-export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
+export const LEGACY_DEFAULT_HOTKEYS: Readonly<Record<HotkeyAction, string>> = {
   'capture-region': 'CommandOrControl+Shift+1',
   'capture-fullscreen': 'CommandOrControl+Shift+2',
   'capture-window': 'CommandOrControl+Shift+3',
@@ -133,10 +137,96 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   'show-main': 'CommandOrControl+Shift+0'
 }
 
-export function defaultSettings(): Settings {
+/** `process.platform` in main, `navigator.platform` in a renderer; this module may use neither's types. */
+function runtimePlatform(): string {
+  const g = globalThis as { process?: { platform?: string }; navigator?: { platform?: string } }
+  return g.process?.platform ?? g.navigator?.platform ?? ''
+}
+
+/** True for `darwin` (main) and `MacIntel`-style values (renderer). */
+export function isMacPlatform(platform: string): boolean {
+  return /darwin|mac/i.test(platform)
+}
+
+/**
+ * The out-of-box bindings for a platform (docs/UX-SPEC.md §4).
+ *
+ * macOS uses the four-modifier `Ctrl+Opt+Cmd` set because `Cmd+Shift+3/4/5` are
+ * the system's screenshot chords. Windows and Linux keep `Ctrl+Shift+<digit>`,
+ * except that stop-recording is `Ctrl+Shift+5` rather than `Ctrl+Shift+S`, which
+ * is "Save As" everywhere. Stop is bound only while a recording is active
+ * (`hotkeyBindings`), so even that chord is borrowed for the recording only.
+ */
+export function defaultHotkeys(platform: string = runtimePlatform()): Record<HotkeyAction, string> {
+  if (isMacPlatform(platform)) {
+    return {
+      'capture-region': 'Control+Alt+Command+1',
+      'capture-fullscreen': 'Control+Alt+Command+2',
+      'capture-window': 'Control+Alt+Command+3',
+      'record-start': 'Control+Alt+Command+4',
+      'record-stop': 'Control+Alt+Command+S',
+      'show-main': 'Control+Alt+Command+0'
+    }
+  }
   return {
-    version: 1,
-    hotkeys: { ...DEFAULT_HOTKEYS },
+    'capture-region': 'CommandOrControl+Shift+1',
+    'capture-fullscreen': 'CommandOrControl+Shift+2',
+    'capture-window': 'CommandOrControl+Shift+3',
+    'record-start': 'CommandOrControl+Shift+4',
+    'record-stop': 'CommandOrControl+Shift+5',
+    'show-main': 'CommandOrControl+Shift+0'
+  }
+}
+
+/** This platform's defaults. Changing a value in `defaultHotkeys` changes the out-of-box binding. */
+export const DEFAULT_HOTKEYS: Readonly<Record<HotkeyAction, string>> = defaultHotkeys()
+
+/**
+ * Which hotkeys to hold right now.
+ *
+ * A global accelerator is taken away from every other application for as long
+ * as it is registered, so the recording chords are held only when they can do
+ * something: stop while a recording is active, start while none is. The capture
+ * chords and show-main stay global, since reaching Nawi from another app is what
+ * they are for. Unbound actions (`''`) are left out.
+ */
+export function hotkeyBindings(
+  hotkeys: Record<HotkeyAction, string>,
+  recordingActive: boolean
+): Array<{ action: HotkeyAction; accelerator: string }> {
+  return HOTKEY_ACTIONS.filter((action) => {
+    if (action === 'record-stop') return recordingActive
+    if (action === 'record-start') return !recordingActive
+    return true
+  })
+    .map((action) => ({ action, accelerator: hotkeys[action] }))
+    .filter((binding) => binding.accelerator !== '')
+}
+
+/**
+ * Moves accelerators still at a version-1 default to this platform's current
+ * default. Only a file written before version 2 is touched, so a chord chosen
+ * after the upgrade — even one that happens to equal an old default — is kept,
+ * and so is every binding the user changed before it.
+ */
+function migrateLegacyHotkeys(raw: unknown, platform: string): unknown {
+  if (!isRecord(raw) || raw.version === SETTINGS_VERSION || !isRecord(raw.hotkeys)) return raw
+  const current = defaultHotkeys(platform)
+  const hotkeys: Record<string, unknown> = { ...raw.hotkeys }
+  for (const action of HOTKEY_ACTIONS) {
+    if (!Object.prototype.hasOwnProperty.call(hotkeys, action)) continue
+    if (hotkeys[action] === LEGACY_DEFAULT_HOTKEYS[action]) hotkeys[action] = current[action]
+  }
+  return { ...raw, hotkeys }
+}
+
+/** Version 2: per-platform hotkey defaults, stop no longer `Ctrl+Shift+S`. */
+export const SETTINGS_VERSION = 2
+
+export function defaultSettings(platform: string = runtimePlatform()): Settings {
+  return {
+    version: SETTINGS_VERSION,
+    hotkeys: defaultHotkeys(platform),
     theme: 'system',
     captureDefaults: {
       copyToClipboard: true,
@@ -343,8 +433,8 @@ function mergeAi(base: AiSettings, patch: unknown): AiSettings {
  * missing or malformed from the defaults. Used on the read path so a hand-edited
  * or half-written file degrades field-by-field instead of all at once.
  */
-export function sanitizeSettings(raw: unknown): Settings {
-  return mergeSettings(defaultSettings(), raw)
+export function sanitizeSettings(raw: unknown, platform: string = runtimePlatform()): Settings {
+  return mergeSettings(defaultSettings(platform), migrateLegacyHotkeys(raw, platform))
 }
 
 /**
@@ -391,7 +481,7 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
   const p: Record<string, unknown> = isRecord(patch) ? patch : {}
   const theme = p.theme
   return {
-    version: 1,
+    version: SETTINGS_VERSION,
     hotkeys: mergeHotkeys(base.hotkeys, p.hotkeys),
     theme: THEMES.includes(theme as ThemePreference) ? (theme as ThemePreference) : base.theme,
     captureDefaults: mergeCaptureDefaults(base.captureDefaults, p.captureDefaults),

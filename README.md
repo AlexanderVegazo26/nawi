@@ -107,11 +107,6 @@ The ones a new user meets first. Feature-level gaps are in
 - **No auto-update.** `electron-updater` is a dependency but nothing in `src/`
   imports it, and `publish` is unset in `electron-builder.yml`. To update,
   download a newer release and install it over the old one.
-- **Global hotkeys are held for as long as the app is open**, not only while
-  recording, and the default stop-recording chord — `Ctrl+Shift+S`
-  (`Cmd+Shift+S` on macOS) — is "Save As" in many other applications. While
-  Nawi runs, that chord goes to Nawi. The bindings are the `hotkeys` entries in
-  `settings.json`; an empty string leaves an action unbound.
 - **Closing the main window with the window's own close button discards unsaved
   annotations without asking.** The editor's own close (its button, or
   `Ctrl+W`) does ask; the window's close button does not go through it.
@@ -1042,31 +1037,34 @@ alone.
 
 ## Keyboard shortcuts
 
-Global (work while the app is unfocused). The defaults are defined once as
-`CommandOrControl+…` (`DEFAULT_HOTKEYS` in `src/shared/settings.ts`), so the
-modifier is Ctrl on Windows and Linux and Cmd on macOS:
+Global (work while the app is unfocused). The defaults differ per platform
+(`defaultHotkeys` in `src/shared/settings.ts`): macOS uses `Ctrl+Opt+Cmd`
+because `Cmd+Shift+3/4/5` are the system's screenshot chords.
 
 | Action | Windows / Linux | macOS |
 |---|---|---|
-| Capture region | `Ctrl+Shift+1` | `Cmd+Shift+1` |
-| Capture full screen | `Ctrl+Shift+2` | `Cmd+Shift+2` |
-| Capture window | `Ctrl+Shift+3` | `Cmd+Shift+3` |
-| Start recording | `Ctrl+Shift+4` | `Cmd+Shift+4` |
-| Stop recording | `Ctrl+Shift+S` | `Cmd+Shift+S` |
-| Show main window | `Ctrl+Shift+0` | `Cmd+Shift+0` |
+| Capture region | `Ctrl+Shift+1` | `Ctrl+Opt+Cmd+1` |
+| Capture full screen | `Ctrl+Shift+2` | `Ctrl+Opt+Cmd+2` |
+| Capture window | `Ctrl+Shift+3` | `Ctrl+Opt+Cmd+3` |
+| Start recording | `Ctrl+Shift+4` | `Ctrl+Opt+Cmd+4` |
+| Stop recording | `Ctrl+Shift+5` | `Ctrl+Opt+Cmd+S` |
+| Show main window | `Ctrl+Shift+0` | `Ctrl+Opt+Cmd+0` |
 
-They are registered when the app starts and held until it quits (`nawi serve`
-registers none), and they are the `hotkeys` entries of `settings.json`. See
-[Known limitations](#known-limitations) for what that costs you in other apps.
+The capture and show-window chords are held while the app runs; start is held
+only while nothing is recording and stop only while something is, so neither
+takes a chord away from other apps when it could do nothing (`nawi serve`
+registers none). They are the `hotkeys` entries of `settings.json`; an empty
+string leaves an action unbound. A settings file from 0.1.1 or earlier that
+still has the old defaults (`Ctrl+Shift+S` for stop, `Cmd+Shift+<digit>` on
+macOS) is moved to these on first read; a chord you changed is kept.
 
 In the editor: `A R E T H B N C V` select a tool, `1`–`8` pick a colour, `[`/`]`
 adjust stroke, `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Ctrl+S` save, `Ctrl+C` copy,
 `Ctrl+Shift+E` export, `Ctrl+0/+/−` zoom. On macOS use Cmd in place of Ctrl for
 all of these (the editor accepts either modifier).
 
-> Export is `Ctrl+Shift+E`, not `Ctrl+Shift+S`: a global hotkey is intercepted
-> before the focused window ever sees it, so binding Export to the same chord as
-> global stop-recording would make Export unreachable at all times.
+> A global hotkey is intercepted before the focused window ever sees it, which is
+> why no default takes `Ctrl+Shift+S` (Save As) and why Export is `Ctrl+Shift+E`.
 
 ## Architecture
 

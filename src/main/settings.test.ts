@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DEFAULT_HOTKEYS } from '@shared/settings'
+import {
+  DEFAULT_HOTKEYS,
+  LEGACY_DEFAULT_HOTKEYS,
+  defaultHotkeys,
+  hotkeyBindings,
+  isMacPlatform,
+  sanitizeSettings
+} from '@shared/settings'
 import type { Settings } from '@shared/settings'
 
 /**
@@ -37,7 +44,7 @@ describe('defaults', () => {
     const settings = await loadModule()
     const s = await settings.getSettings()
 
-    expect(s.version).toBe(1)
+    expect(s.version).toBe(2)
     expect(s.theme).toBe('system')
     expect(s.hotkeys).toEqual(DEFAULT_HOTKEYS)
     expect(s.maskedApps).toEqual([])
@@ -48,17 +55,93 @@ describe('defaults', () => {
     await expect(fs.access(settingsFile())).rejects.toThrow()
   })
 
-  it('defaults the six hotkeys to the accelerators main used to hardcode', async () => {
+  it('defaults stop-recording to a chord that is not Save As (Windows/Linux)', async () => {
     const settings = await loadModule()
     const s = await settings.getSettings()
+    // This suite runs on Linux and Windows runners, both of which use this set.
     expect(s.hotkeys).toEqual({
       'capture-region': 'CommandOrControl+Shift+1',
       'capture-fullscreen': 'CommandOrControl+Shift+2',
       'capture-window': 'CommandOrControl+Shift+3',
       'record-start': 'CommandOrControl+Shift+4',
-      'record-stop': 'CommandOrControl+Shift+S',
+      'record-stop': 'CommandOrControl+Shift+5',
       'show-main': 'CommandOrControl+Shift+0'
     })
+  })
+})
+
+describe('per-platform defaults and the version-1 migration', () => {
+  /** Chords that belong to someone else and must never be a default. */
+  const SAVE_AS = /^(CommandOrControl|Command|Cmd|Control|Ctrl)\+Shift\+S$/i
+  const MAC_SCREENSHOT = /^(CommandOrControl|Command|Cmd)\+Shift\+[345]$/i
+
+  it('takes neither Save As nor a macOS screenshot chord on any platform', () => {
+    for (const platform of ['win32', 'linux', 'darwin', 'Win32', 'MacIntel', 'Linux x86_64']) {
+      const defaults = defaultHotkeys(platform)
+      for (const chord of Object.values(defaults)) {
+        expect(chord, `${platform}: ${chord}`).not.toMatch(SAVE_AS)
+        if (isMacPlatform(platform)) expect(chord, `${platform}: ${chord}`).not.toMatch(MAC_SCREENSHOT)
+      }
+      const chords = Object.values(defaults)
+      expect(new Set(chords.map((c) => c.toLowerCase())).size).toBe(chords.length)
+    }
+  })
+
+  it('moves an untouched version-1 default to this platform’s default', () => {
+    const v1 = { version: 1, hotkeys: { ...LEGACY_DEFAULT_HOTKEYS } }
+    expect(sanitizeSettings(v1, 'win32').hotkeys).toEqual(defaultHotkeys('win32'))
+    expect(sanitizeSettings(v1, 'darwin').hotkeys).toEqual(defaultHotkeys('darwin'))
+  })
+
+  it('keeps every chord the user customised in a version-1 file', () => {
+    const v1 = {
+      version: 1,
+      hotkeys: { ...LEGACY_DEFAULT_HOTKEYS, 'record-stop': 'Alt+F10', 'capture-region': 'Alt+F9' }
+    }
+    const s = sanitizeSettings(v1, 'win32')
+    expect(s.hotkeys['record-stop']).toBe('Alt+F10')
+    expect(s.hotkeys['capture-region']).toBe('Alt+F9')
+    expect(s.hotkeys['show-main']).toBe(defaultHotkeys('win32')['show-main'])
+  })
+
+  it('leaves a version-2 file alone, even a chord equal to an old default', async () => {
+    // Chosen after the upgrade, so it is the user's choice, not a stale default.
+    const v2 = { version: 2, hotkeys: { 'record-stop': 'CommandOrControl+Shift+S' } }
+    expect(sanitizeSettings(v2, 'win32').hotkeys['record-stop']).toBe('CommandOrControl+Shift+S')
+
+    // And the migration is persisted as version 2 by the next write.
+    await fs.writeFile(settingsFile(), JSON.stringify({ version: 1, hotkeys: LEGACY_DEFAULT_HOTKEYS }), 'utf-8')
+    const settings = await loadModule()
+    expect((await settings.getSettings()).hotkeys['record-stop']).toBe(DEFAULT_HOTKEYS['record-stop'])
+    await settings.updateSettings({ theme: 'dark' })
+    const onDisk = JSON.parse(await fs.readFile(settingsFile(), 'utf-8')) as Settings
+    expect(onDisk.version).toBe(2)
+    expect(onDisk.hotkeys['record-stop']).toBe(DEFAULT_HOTKEYS['record-stop'])
+  })
+})
+
+describe('hotkeyBindings — which chords are held', () => {
+  const keys = defaultHotkeys('win32')
+  const actions = (active: boolean): string[] => hotkeyBindings(keys, active).map((b) => b.action)
+
+  it('holds stop only while a recording is active', () => {
+    expect(actions(false)).not.toContain('record-stop')
+    expect(actions(true)).toContain('record-stop')
+  })
+
+  it('releases start while a recording is active, and keeps the capture chords global', () => {
+    expect(actions(false)).toContain('record-start')
+    expect(actions(true)).not.toContain('record-start')
+    for (const active of [false, true]) {
+      expect(actions(active)).toEqual(
+        expect.arrayContaining(['capture-region', 'capture-fullscreen', 'capture-window', 'show-main'])
+      )
+    }
+  })
+
+  it('skips an unbound action', () => {
+    const unbound = hotkeyBindings({ ...keys, 'capture-region': '' }, false)
+    expect(unbound.map((b) => b.action)).not.toContain('capture-region')
   })
 })
 
