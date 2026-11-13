@@ -180,3 +180,27 @@ describe('LibraryItemKind is read exhaustively', () => {
     await expect(library.readItemBytes(ID)).rejects.toThrow(/has no media bytes/)
   })
 })
+
+describe('purging a capture', () => {
+  it('removes its sidecar revisions along with the asset once the undo window expires', async () => {
+    const library = await loadModule()
+    await library.saveSidecarRevision(ID, validSidecar())
+    await library.saveSidecarRevision(ID, validSidecar())
+    const item = await library.getItem(ID)
+    await expect(fs.access(join(captureDir(ID), 'v2'))).resolves.toBeUndefined()
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await library.deleteItem(ID)
+      vi.advanceTimersByTime(library.UNDO_WINDOW_MS + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const gone = (path: string): Promise<boolean> => fs.access(path).then(() => false, () => true)
+    await expect.poll(() => gone(item!.filePath)).toBe(true)
+    await expect.poll(() => gone(captureDir(ID))).toBe(true)
+    // Only that capture's directory: the captures root itself stays.
+    await expect(fs.access(join(libraryRoot(), 'captures'))).resolves.toBeUndefined()
+  })
+})

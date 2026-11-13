@@ -13,7 +13,7 @@ import {
   writeRevisionAtomically,
   type RevisionFile
 } from './sidecar/store'
-import { parseRevision } from './sidecar/paths'
+import { captureDir, isCaptureId, parseRevision } from './sidecar/paths'
 
 /**
  * Flat-file library store.
@@ -289,6 +289,18 @@ async function purgeItem(id: string): Promise<void> {
   await mutateIndex((items) => items.filter((i) => i.id !== id))
   // Best-effort asset cleanup — a missing file must not fail the delete.
   await fs.rm(target.filePath, { force: true }).catch(() => undefined)
+  // And its sidecar revisions, which otherwise outlived the capture forever.
+  // `captureDir` refuses anything but a UUID, so the path is always
+  // `<library>/captures/<uuid>`. Queued behind any revision being written, so
+  // one landing mid-purge cannot leave a directory behind; a later write finds
+  // no item and fails.
+  if (!isCaptureId(id)) return
+  const dir = captureDir(root(), id)
+  const removal = sidecarChain
+    .catch(() => undefined)
+    .then(() => fs.rm(dir, { recursive: true, force: true }))
+  sidecarChain = removal
+  await removal.catch(() => undefined)
 }
 
 /**
