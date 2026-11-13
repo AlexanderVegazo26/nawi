@@ -84,6 +84,20 @@ jobs:
       - run: npm ci
       - run: npm run install-electron
 
+      # e2e/serve.spec.ts spawns the real `nawi serve`, which keeps Chromium's
+      # sandbox on. Ubuntu 24.04 runners block unprivileged user namespaces, so
+      # Chromium falls back to the setuid helper, and `npm ci` leaves that
+      # helper owned by the runner user: the app aborts ("SUID sandbox helper
+      # ... is not configured correctly", exit 1). The other specs pass only
+      # because Playwright's electron.launch adds --no-sandbox on Linux. Set the
+      # helper up the way electron-builder's .deb after-install script does,
+      # rather than turning the sandbox off.
+      - name: Set up Chromium's setuid sandbox helper (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
       - name: Install Playwright browsers and OS dependencies
         # `--with-deps` installs Chromium's shared libraries. Electron ships its
         # own Chromium but links against the same GTK stack, so on Linux this is
