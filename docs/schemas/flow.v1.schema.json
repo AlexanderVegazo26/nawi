@@ -1718,6 +1718,50 @@
               "action"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              "intent": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "\\S"
+              },
+              "note": {
+                "type": "string"
+              },
+              "disabled": {
+                "type": "boolean"
+              },
+              "timeout_ms": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 600000
+              },
+              "action": {
+                "type": "string",
+                "const": "permission"
+              },
+              "answer": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "while_using",
+                  "once",
+                  "deny"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "answer"
+            ],
+            "additionalProperties": false
           }
         ]
       }

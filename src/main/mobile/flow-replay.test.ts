@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { parseFlow, type Flow } from '../../shared/flow'
-import { planSwipes, replayAndroidFlow, type AndroidReplayRequest } from './flow-replay'
+import { planSwipes, PROMPT_GONE_TIMEOUT_MS, replayAndroidFlow, type AndroidReplayRequest } from './flow-replay'
 import { crashLogLine } from './crash'
 import { anr, javaCrash, nativeCrash } from './fixtures/crash-logs'
-import { DEVICE_AHEAD_MS, device, ID, PKG, SHOP_LAUNCHER, type Device } from './fixtures/shop-app'
+import { DEVICE_AHEAD_MS, device, ID, PKG, PROMPT_BUTTONS, promptButtonBox, SHOP_LAUNCHER, type Device } from './fixtures/shop-app'
 import { decodePng } from './png'
 
 /**
@@ -1025,6 +1025,157 @@ describe('replayAndroidFlow background (roadmap M5d-5)', () => {
     expect(r).toMatchObject({ status: 'failed', error: 'stopped during step b1: user stop' })
     expect(r.steps.map((s) => s.status)).toEqual(['not_run', 'not_run'])
     expect(d.lines).toEqual([RESOLVE, 'input keyevent KEYCODE_HOME'])
+  })
+})
+
+describe('replayAndroidFlow permission (roadmap M5d-6)', () => {
+  const LOCATION = 'Allow Shop to access this device’s location?'
+  const CAMERA = 'Allow Shop to take pictures and record video?'
+  const tapIn = (b: [number, number, number, number]): string => `input tap ${Math.floor((b[0] + b[2]) / 2)} ${Math.floor((b[1] + b[3]) / 2)}`
+  const asks = (...answers: Array<Array<'allow' | 'while_using' | 'once' | 'deny'>>) =>
+    answers.map((a, i) => ({ message: i === 0 ? LOCATION : CAMERA, answers: a, accuracy: i === 0 }))
+  const TRACK_THEN = (steps: string): Flow => flow(`  - { id: p0, action: click, target: { selectors: [{ text: Track }] } }\n${steps}`)
+
+  it('taps the answer button of the prompt the app showed, by its id, then goes on in the app; three runs alike', async () => {
+    const f = TRACK_THEN(
+      `  - { id: p1, action: permission, answer: while_using, intent: Let the app use the location while in use }\n  - { id: p2, action: assert, target: { selectors: [{ id: "${ID('status')}" }] }, expect: { visible: true } }\n`
+    )
+    const outcomes: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const d = device('order', { permission: { on: 'track', asks: asks(['while_using', 'once', 'deny']), showAfterReads: 2 } })
+      const r = await run(f, d)
+      expect(r.status, `run ${i + 1}: ${JSON.stringify(r.steps.find((s) => s.status === 'failed'))}`).toBe('passed')
+      expect(d.answered, 'the prompt got the step\'s answer, once').toEqual(['while_using'])
+      expect(d.prompting(), 'and closed').toBe(false)
+      outcomes.push(JSON.stringify({ lines: d.lines, steps: r.steps.map((s) => [s.id, s.status, s.durationMs]) }))
+    }
+    expect(new Set(outcomes).size, 'three replays must send the same commands and take the same time').toBe(1)
+    const d = device('order', { permission: { on: 'track', asks: asks(['while_using', 'once', 'deny']) } })
+    await run(f, d)
+    expect(d.lines, 'Track, then only the "While using the app" button (never the Precise choice above it)').toEqual(['input tap 540 375', tapIn(promptButtonBox(0))])
+  })
+
+  it('answers prompts that come one after another, each step its own, told apart by what they ask', async () => {
+    const d = device('order', { permission: { on: 'track', asks: asks(['while_using', 'once', 'deny'], ['allow', 'deny']) } })
+    const r = await run(
+      TRACK_THEN(
+        `  - { id: p1, action: permission, answer: once }\n  - { id: p2, action: permission, answer: deny }\n  - { id: p3, action: assert, target: { selectors: [{ text: Track }] }, expect: { enabled: true } }\n`
+      ),
+      d
+    )
+    expect(r.status, JSON.stringify(r.steps.find((s) => s.status === 'failed'))).toBe('passed')
+    expect(d.answered).toEqual(['once', 'deny'])
+    expect(d.lines).toEqual(['input tap 540 375', tapIn(promptButtonBox(1)), tapIn(promptButtonBox(1))])
+  })
+
+  it('finds "allow" and "deny" by their other ids too (Allow all; Don\'t allow and don\'t ask again)', async () => {
+    for (const [answer, id] of [
+      ['allow', 'permission_allow_all_button'],
+      ['deny', 'permission_deny_and_dont_ask_again_button'],
+      ['allow', 'permission_allow_always_button'],
+      ['deny', 'permission_no_upgrade_button']
+    ] as const) {
+      const d = device('order', { permission: { on: 'track', asks: asks([answer]) } })
+      const dump = d.host.exec
+      // The same prompt, with the other id the answer can have on a device.
+      d.host.exec = async (file, args, ms) => {
+        const r = await dump(file, args, ms)
+        return (args[3] ?? '').startsWith('uiautomator dump') ? { ...r, stdout: r.stdout.replace(`:id/${PROMPT_BUTTONS[answer].id}"`, `:id/${id}"`) } : r
+      }
+      const r = await run(TRACK_THEN(`  - { id: p1, action: permission, answer: ${answer} }\n`), d)
+      expect(r.status, `${answer} by ${id}: ${JSON.stringify(r.steps.find((s) => s.status === 'failed'))}`).toBe('passed')
+      expect(d.answered).toEqual([answer])
+    }
+  })
+
+  it('fails naming what the prompt offers when it has no button for the answer, and taps nothing', async () => {
+    const d = device('order', { permission: { on: 'track', asks: asks(['while_using', 'once', 'deny']) } })
+    const r = await run(TRACK_THEN('  - { id: p1, action: permission, answer: allow, timeout_ms: 1000 }\n'), d)
+    expect(r.steps[1]).toMatchObject({
+      status: 'failed',
+      error: `Android's permission prompt (${JSON.stringify(LOCATION)}) has no "Allow" button: it offers "While using the app", "Only this time", "Don’t allow"`
+    })
+    expect(d.lines, 'no tap on the prompt').toEqual(['input tap 540 375'])
+    expect(d.answered).toEqual([])
+  })
+
+  it('fails when no prompt shows (the app did not ask), without tapping anything', async () => {
+    const d = device('order')
+    const r = await run(flow('  - { id: p1, action: permission, answer: deny, timeout_ms: 1000 }\n'), d)
+    expect(r.steps[0]).toMatchObject({
+      status: 'failed',
+      error: `Android's permission prompt is not on screen: ${PKG} has not asked for a permission (Android asks only while it is neither granted nor denied for good: an earlier run, or mobile_open's grant, may have settled it; reset it with pm clear or pm revoke)`
+    })
+    expect(d.lines).toEqual([])
+  })
+
+  it('never taps a disabled answer button', async () => {
+    const d = device('order', { permission: { on: 'track', asks: asks(['allow', 'deny']), disabled: true } })
+    const r = await run(TRACK_THEN('  - { id: p1, action: permission, answer: allow, timeout_ms: 1000 }\n'), d)
+    expect(r.steps[1].error).toBe(`the "Allow" button of Android's permission prompt (${JSON.stringify(LOCATION)}) is disabled`)
+    expect(d.lines).toEqual(['input tap 540 375'])
+  })
+
+  it('fails when the prompt is still up after its answer was tapped', async () => {
+    const d = device('order', { permission: { on: 'track', asks: asks(['allow', 'deny']), stays: true } })
+    const r = await run(TRACK_THEN('  - { id: p1, action: permission, answer: deny, timeout_ms: 1000 }\n'), d)
+    expect(r.steps[1].error).toBe(`Android's permission prompt (${JSON.stringify(LOCATION)}) is still on screen after tapping "Don’t allow"`)
+    expect(r.steps[1].durationMs ?? 0, 'it waits PROMPT_GONE_TIMEOUT_MS for the prompt to go, past a shorter step timeout').toBeGreaterThanOrEqual(PROMPT_GONE_TIMEOUT_MS)
+    expect(d.lines, 'one tap only').toEqual(['input tap 540 375', tapIn(promptButtonBox(1))])
+  })
+
+  /** The fake device with each screen read passed through `edit` from the answer tap at `box` on. */
+  const editedAfter = (d: Device, box: [number, number, number, number] | null, edit: (dump: string) => string): void => {
+    const exec = d.host.exec
+    let on = box === null
+    d.host.exec = async (file, args, ms) => {
+      const line = args[3] ?? ''
+      if (box !== null && line === tapIn(box)) on = true
+      const r = await exec(file, args, ms)
+      return on && line.startsWith('uiautomator dump') ? { ...r, stdout: edit(r.stdout) } : r
+    }
+  }
+
+  it('answers an app that asks again with the same message, told apart by the "don\'t ask again" button it then shows', async () => {
+    const same = [0, 1].map(() => ({ message: LOCATION, answers: ['while_using', 'once', 'deny'] as Array<'while_using' | 'once' | 'deny'> }))
+    const d = device('order', { permission: { on: 'track', asks: same } })
+    // From the first answer on, the prompt's deny button is the "don't ask again" one, as Android 11+ shows on a re-ask.
+    editedAfter(d, promptButtonBox(2), (dump) => dump.replace(':id/permission_deny_button"', ':id/permission_deny_and_dont_ask_again_button"'))
+    const r = await run(TRACK_THEN('  - { id: p1, action: permission, answer: deny }\n  - { id: p2, action: permission, answer: deny }\n'), d)
+    expect(r.status, JSON.stringify(r.steps.find((s) => s.status === 'failed'))).toBe('passed')
+    expect(d.answered).toEqual(['deny', 'deny'])
+  })
+
+  it('does not take a half-drawn prompt (no message) after the answer for the next question', async () => {
+    const d = device('order', { permission: { on: 'track', asks: asks(['allow', 'deny']), stays: true } })
+    editedAfter(d, promptButtonBox(0), (dump) => dump.replace(/<node [^>]*:id\/permission_message"[^>]*\/>/, ''))
+    const r = await run(TRACK_THEN('  - { id: p1, action: permission, answer: allow, timeout_ms: 1000 }\n'), d)
+    expect(r.steps[1].error).toBe('Android\'s permission prompt ("' + LOCATION + '") is still on screen after tapping "Allow"')
+  })
+
+  it('taps the plain "Don\'t allow" when the prompt also shows its "don\'t ask again" form', async () => {
+    const d = device('order', { permission: { on: 'track', asks: asks(['deny', 'deny']) } })
+    // The first of the two buttons becomes the "don't ask again" one: the step must take the second.
+    editedAfter(d, null, (dump) => dump.replace(':id/permission_deny_button"', ':id/permission_deny_and_dont_ask_again_button"'))
+    const r = await run(TRACK_THEN('  - { id: p1, action: permission, answer: deny }\n'), d)
+    expect(r.status, JSON.stringify(r.steps.find((s) => s.status === 'failed'))).toBe('passed')
+    expect(d.lines).toEqual(['input tap 540 375', tapIn(promptButtonBox(1))])
+  })
+
+  it('does not take an empty screen read after the answer for the prompt gone', async () => {
+    const d = device('order', { permission: { on: 'track', asks: asks(['allow', 'deny']), stays: true } })
+    const exec = d.host.exec
+    let answeredAt: number | null = null
+    // Every read after the answer is empty (between two windows), as a dump can be while windows change.
+    d.host.exec = async (file, args, ms) => {
+      const line = args[3] ?? ''
+      if (line === tapIn(promptButtonBox(0))) answeredAt = d.lines.length
+      const r = await exec(file, args, ms)
+      return answeredAt !== null && line.startsWith('uiautomator dump') ? { ...r, stdout: '<hierarchy rotation="0"></hierarchy>' } : r
+    }
+    const r = await run(TRACK_THEN('  - { id: p1, action: permission, answer: allow, timeout_ms: 1000 }\n'), d)
+    expect(r.steps[1], 'an empty read says nothing about the prompt: the step waits, then fails as still answering').toMatchObject({ status: 'failed' })
+    expect(r.steps[1].error).toMatch(/^Android's permission prompt \(.*\) is still on screen after tapping "Allow"$/)
   })
 })
 

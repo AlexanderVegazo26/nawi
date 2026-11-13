@@ -1007,6 +1007,8 @@ class StepRunner {
         throw new StepFailure('rotate (turning the device) is only for android flows')
       case 'background':
         throw new StepFailure('background (sending the app to the background and back) is only for android flows')
+      case 'permission':
+        throw new StepFailure("permission (answering Android's permission prompt) is only for android flows")
     }
   }
 

@@ -940,8 +940,10 @@ alone.
   and a touch before the turned screen is read is not recorded; a flow that turns the screen starts with a
   rotate to where the recording started, so it replays alike however the device stands). A screen read takes about 2 s:
   a touch that comes before the read after the previous screen change is not
-  recorded, and the warnings say so (as they do for swipes and taps on
-  Android's permission prompt). Stops after the idle time without a
+  recorded, and the warnings say so (as they do for swipes). A tap on an
+  answer of Android's permission prompt becomes a `permission` step with that
+  answer; other taps in the prompt (its location accuracy choice) are
+  warnings. Stops after the idle time without a
   touch, the time limit, a cancel or pause, or an unplugged device; prints the
   flow or writes it to `--output` (checked before recording starts).
 - **Drop an APK on the window** (Mobile view, `src/renderer/components/MobileView.tsx`,
@@ -991,6 +993,25 @@ alone.
   fails the step at its timeout without sending anything else, as does an
   app that goes on in picture-in-picture (not handled yet); an app with no
   single launcher activity is not sent away at all.
+  A `permission` step (M5d-6, `src/main/mobile/permission-prompt.ts`)
+  answers Android's runtime permission prompt with
+  `answer: allow | while_using | once | deny`: it waits until the prompt
+  shows, taps the button for that answer, found by its view id so the
+  device's language does not matter ("Allow all" counts as allow, and the
+  "don't ask again" form of "Don't allow" as deny), then waits until the
+  prompt is gone or asks something else (an app asking for several
+  permissions shows one prompt after another: one step each). A prompt
+  without that answer fails the step, naming the answers it offers, and
+  nothing is tapped; so does a step with no prompt on screen, which is what
+  a replay meets when an earlier run (or `mobile_open`, which grants every
+  runtime permission by default) already settled that permission: Android
+  asks only while it is not granted or denied for good, so reset it first
+  (`adb shell pm clear <package>`, or `pm revoke <package> <permission>`).
+  Only the answer buttons are ever pressed: a location prompt keeps its
+  default accuracy. The dump does not say which app a prompt is for, so a
+  prompt another app brought up at that moment would be answered too.
+  Back while the prompt is up is recorded as `answer: deny` (Back cancels the
+  prompt, which denies).
   `run_flow` / `nawi run` use it for android flows (M5b,
   `src/main/mobile/flow-device.ts`): the run goes to the connected device or
   running emulator (`target` / `--target <serial|avd>` when several are
@@ -1027,7 +1048,8 @@ alone.
   field's text (a password becomes `${secret.<name>}`, never its value), and
   Back, Home and Enter as presses, a long press as a click with `hold_ms`
   (M5d-3), a turned screen as a `rotate` step (M5d-4), leaving the app and coming back as a `background` step
-  (M5d-5); taps on another app's window and swipes are reported, not recorded. `mobile_record` / `nawi mobile-record`
+  (M5d-5), an answer to Android's permission prompt as a `permission` step (M5d-6); taps on another app's window
+  and swipes are reported, not recorded. `mobile_record` / `nawi mobile-record`
   (M5c-2) runs it live on a device.
 
 ## Keyboard shortcuts
@@ -1160,9 +1182,9 @@ CDP selectors and the MCP projection/revision model.
   and explored with safe taps into a screen graph (`mobile_explore`: no scrolling,
   long-press or swipes yet, and a run that loses its way stops instead of
   relaunching the app; the graph is not shown in the Mobile view yet), and android flows replay on it
-  (`nawi run`: taps, long presses, typing, keys, scrolling to a view or by a delta, turning the screen, sending the app to the background and back, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
-  taps, long presses, typing, Back/Home/Enter, the screen turning, leaving the app and coming back; swipes are not recorded as scroll steps yet, there are no deep link
-  or permission-dialog steps yet, and a tap must wait for the screen
+  (`nawi run`: taps, long presses, typing, keys, scrolling to a view or by a delta, turning the screen, sending the app to the background and back, answering Android's permission prompt, deep links, waits, assertions, with the screen around each step and the app's log in the record; a crash or ANR fails the step with its report), and are recorded from the device (`nawi mobile-record`:
+  taps, long presses, typing, Back/Home/Enter, the screen turning, leaving the app and coming back, answers to Android's permission prompt; swipes are not recorded as scroll steps yet, there are no deep link
+  steps yet, a `permission` step needs the app to ask again on every replay (Nawi does not reset a permission an earlier run granted or denied for good, and `mobile_open` grants every permission by default), and a tap must wait for the screen
   read after the previous screen change, about 2 s, which also goes for a touch right after the screen turned), but there is no inspector or input on that screen yet and the recorder
   is not in the Mobile view yet, Nawi does not create a virtual device for you
   (the doctor prints the commands), first-run screens are tapped past only when

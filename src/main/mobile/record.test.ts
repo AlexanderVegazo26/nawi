@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseFlow, stringifyFlow, type FlowStep } from '../../shared/flow'
 import { keyLines, touchLines } from './fixtures/getevent'
-import { device, ID, PKG, SHOP_LAUNCHER, type Device } from './fixtures/shop-app'
+import { device, ID, PKG, PRECISE_BOX, promptButtonBox, SHOP_LAUNCHER, type Device } from './fixtures/shop-app'
 import { replayAndroidFlow } from './flow-replay'
 import { dumpLine, parseUiDump, type UiScreen } from './hierarchy'
 import {
@@ -286,6 +286,52 @@ describe('flowFromAndroidRecording on the fake shop app', () => {
     expect(new Set(runs).size, 'three replays send the same commands').toBe(1)
   })
 
+  it('records answers to Android\'s permission prompts as permission steps, not as leaving the app, and replays them green three times (M5d-6)', async () => {
+    const LOCATION = 'Allow Shop to access this device’s location?'
+    const CAMERA = 'Allow Shop to take pictures and record video?'
+    const opts = {
+      permission: {
+        on: 'cart',
+        asks: [
+          { message: LOCATION, answers: ['while_using', 'once', 'deny'] as const, accuracy: true },
+          { message: CAMERA, answers: ['while_using', 'once', 'deny'] as const }
+        ].map((a) => ({ ...a, answers: [...a.answers] }))
+      }
+    }
+    const mid = (b: [number, number, number, number]): [number, number] => [Math.floor((b[0] + b[2]) / 2), Math.floor((b[1] + b[3]) / 2)]
+    const s: Session = { d: device('orders', opts), events: [], t: 5000, reader: new GestureReader([PANEL], DISPLAY) }
+    await tap(s, 980, 175) // the cart: the app asks for the location, then the camera
+    await tap(s, ...mid(PRECISE_BOX)) // the location prompt's Precise choice: not an answer
+    await tap(s, ...mid(promptButtonBox(0))) // While using the app
+    await tap(s, ...mid(promptButtonBox(2))) // Don't allow (the camera)
+    await key(s, 'KEY_BACK', 'KEYCODE_BACK')
+    const result = flowFromAndroidRecording({ package: PKG, display: DISPLAY, events: s.events, after: await snapshot(s.d) })
+    expect(result.warnings).toEqual([
+      'A tap on "Precise" in Android\'s permission prompt is not recorded: only its answer buttons (allow, while using the app, only this time, don\'t allow) are steps.',
+      `The flow answers Android\'s permission prompt: Android asks only while a permission is neither granted nor denied for good, so before each replay reset what this recording settled (adb shell pm clear ${PKG}, or pm revoke ${PKG} <permission>).`
+    ])
+    expect(result.flow.steps).toEqual([
+      { id: 's1', action: 'click', intent: 'Tap "Cart"', target: { selectors: [{ id: ID('cart') }, { desc: 'Cart' }] } },
+      { id: 's2', action: 'permission', intent: `Answer "${LOCATION}" with "While using the app"`, answer: 'while_using' },
+      { id: 's3', action: 'permission', intent: `Answer "${CAMERA}" with "Don’t allow"`, answer: 'deny' },
+      { id: 's4', action: 'press', key: 'Back' }
+    ])
+    expect(s.d.answered).toEqual(['while_using', 'deny'])
+    expect(s.d.stack, 'Back left the cart for the order list').toEqual(['orders'])
+    const reparsed = parseFlow(stringifyFlow(result.flow))
+    if (!reparsed.ok) throw new Error(`recorded flow does not parse: ${JSON.stringify(reparsed.errors)}`)
+    const runs: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const d = device('orders', opts)
+      const r = await replayAndroidFlow({ adb: 'adb', serial: 'emulator-5560', flow: reparsed.flow }, d.host)
+      expect(r.status, `replay ${i + 1}: ${JSON.stringify(r.steps.find((st) => st.status !== 'passed'))}`).toBe('passed')
+      expect(d.answered, 'the replay gave the prompts the recorded answers').toEqual(s.d.answered)
+      expect(d.stack, 'and ended on the same screen').toEqual(s.d.stack)
+      runs.push(JSON.stringify(d.lines))
+    }
+    expect(new Set(runs).size, 'three replays send the same commands').toBe(1)
+  })
+
   it('records the same flow from the same session every time', async () => {
     const a = await recordShopSession()
     const b = await recordShopSession()
@@ -415,7 +461,7 @@ describe('flowFromAndroidRecording on single screens', () => {
     expect(r.warnings).toEqual(['The volumeup key is not recorded: it changes the device, not the app.'])
   })
 
-  it('leaves out taps on other apps\' windows, Android\'s permission prompt, swipes and dropped strokes, saying why', () => {
+  it('leaves out taps on other apps\' windows, the permission prompt\'s other views, swipes and dropped strokes, saying why', () => {
     const prompt: V = { pkg: 'com.google.android.permissioncontroller', cls: 'android.widget.Button', text: 'Allow', clickable: true, b: [100, 1000, 980, 1200] }
     const launcher: V = { pkg: 'com.android.launcher3', cls: 'android.widget.TextView', text: 'Clock', clickable: true, b: [0, 2200, 300, 2400] }
     const s = snap([SAVE, prompt, launcher])
@@ -432,13 +478,68 @@ describe('flowFromAndroidRecording on single screens', () => {
     )
     expect(r.flow.steps).toEqual([])
     expect(r.warnings).toEqual([
-      'A tap on "Allow" in Android\'s permission prompt is not recorded: grant the permission before the run (the profile\'s permissions.grant).',
+      'A tap on "Allow" in Android\'s permission prompt is not recorded: only its answer buttons (allow, while using the app, only this time, don\'t allow) are steps.',
       'A tap at (100, 2300) on "Clock" is not recorded: it landed on com.android.launcher3, not com.example.app.',
       'A swipe at (500, 150) on "Save" is not recorded: the recorder does not turn swipes into scroll steps yet (add a scroll step to the flow by hand).',
       'A 2-finger gesture at (500, 150) on "Save" is not recorded: android flows have no step for it yet.',
       'A touch at (500, 150) is not recorded: the device dropped some of its events.',
       'A tap at (500, 2000) is not recorded: no view is there on the screen it landed on.'
     ])
+  })
+
+  it('records a tap or long press on a prompt answer by its id as that answer, whatever the label, and never a disabled one (M5d-6)', () => {
+    const P = 'com.google.android.permissioncontroller'
+    const message: V = { pkg: P, id: 'com.android.permissioncontroller:id/permission_message', text: 'Allow App to send you notifications?', b: [100, 700, 980, 850] }
+    const allow: V = { pkg: P, id: 'com.android.permissioncontroller:id/permission_allow_button', cls: 'android.widget.Button', text: 'Permitir', clickable: true, b: [100, 1000, 980, 1150] }
+    const deny: V = { pkg: P, id: 'com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button', cls: 'android.widget.Button', text: 'No permitir', clickable: true, b: [100, 1200, 980, 1350] }
+    // The prompt alone, as a real dump shows it while it is up: the app is not in it.
+    const shot: Snapshot = { screen: parseUiDump(`<hierarchy rotation="0">${nodeXml({ pkg: P, cls: 'android.widget.FrameLayout', b: [28, 500, 1052, 1964], kids: [message, allow, deny] })}</hierarchy>`), keyboard: null }
+    const app = snap([SAVE])
+    const r = rec(
+      [
+        { input: stroke(500, 150), before: app },
+        { input: stroke(500, 1050), before: shot },
+        { input: stroke(500, 1250, 900), before: shot },
+        { input: stroke(500, 150), before: app }
+      ],
+      app
+    )
+    expect(r.warnings).toEqual([`The flow answers Android\'s permission prompt: Android asks only while a permission is neither granted nor denied for good, so before each replay reset what this recording settled (adb shell pm clear ${'com.example.app'}, or pm revoke ${'com.example.app'} <permission>).`])
+    expect(r.flow.steps.map((st) => (st.action === 'permission' ? [st.action, st.answer, st.intent] : [st.action]))).toEqual([
+      ['click'],
+      ['permission', 'allow', 'Answer "Allow App to send you notifications?" with "Permitir"'],
+      ['permission', 'deny', 'Answer "Allow App to send you notifications?" with "No permitir"'],
+      ['click']
+    ])
+    const off = (v: V): V => ({ ...v, kids: undefined })
+    const disabledXml = nodeXml(off({ ...allow })).replace('enabled="true"', 'enabled="false"')
+    const grey: Snapshot = { screen: parseUiDump(`<hierarchy rotation="0">${disabledXml}</hierarchy>`), keyboard: null }
+    const r2 = rec([{ input: stroke(500, 1050), before: grey }], app)
+    expect(r2.flow.steps).toEqual([])
+    expect(r2.warnings).toEqual(['A tap on "Permitir" in Android\'s permission prompt is not recorded: that button was disabled, so it answered nothing.'])
+
+    // Back while the prompt is up cancels it, which denies: replayed as "Don't allow", not as a Back to the app.
+    const back = rec([{ input: stroke(500, 150), before: app }, { input: pressKey('KEY_BACK'), before: shot }, { input: stroke(500, 150), before: app }], app)
+    expect(back.flow.steps.map((st) => (st.action === 'permission' ? [st.action, st.answer, st.intent] : [st.action]))).toEqual([
+      ['click'],
+      ['permission', 'deny', 'Answer "Allow App to send you notifications?" with Back (denied)'],
+      ['click']
+    ])
+
+    // Swiping home from the prompt leaves the app as much as from the app itself: one background step, no launcher tap.
+    const launcher: V = { pkg: 'com.android.launcher3', cls: 'android.widget.TextView', text: 'Clock', clickable: true, b: [0, 2200, 300, 2400] }
+    const home: Snapshot = { screen: parseUiDump(`<hierarchy rotation="0">${nodeXml({ pkg: 'com.android.launcher3', cls: 'android.widget.FrameLayout', b: [0, 0, 1080, 2400], kids: [launcher] })}</hierarchy>`), keyboard: null }
+    const away = rec(
+      [
+        { input: stroke(500, 150), before: app },
+        { input: stroke(540, 2300, 200, [540, 1200]), before: shot },
+        { input: stroke(100, 2300), before: home },
+        { input: stroke(500, 150), before: app }
+      ],
+      app
+    )
+    expect(away.flow.steps.map((st) => st.action)).toEqual(['click', 'background', 'click'])
+    expect(away.warnings, 'the swipe up was the Home gesture, and the launcher tap is not a step').toEqual([])
   })
 
   it('records a long press as a click holding as long as the finger rested (rounded up to 100 ms, 600 ms to 10 s), on the view a tap would get (M5d-3)', () => {
@@ -490,7 +591,7 @@ describe('flowFromAndroidRecording on single screens', () => {
     const r = rec([{ input: stroke(500, 1100, 900), before: s }, { input: stroke(500, 150, 900), before: disabled }], s)
     expect(r.flow.steps).toEqual([])
     expect(r.warnings).toEqual([
-      'A long press on "Allow" in Android\'s permission prompt is not recorded: grant the permission before the run (the profile\'s permissions.grant).',
+      'A long press on "Allow" in Android\'s permission prompt is not recorded: only its answer buttons (allow, while using the app, only this time, don\'t allow) are steps.',
       'A long press at (500, 150) on "Off" is not recorded: that view was disabled, so the long press did nothing.'
     ])
   })

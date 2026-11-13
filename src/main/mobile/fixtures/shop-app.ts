@@ -1,3 +1,4 @@
+import type { PermissionAnswer } from '../../../shared/flow/schema'
 import type { ExecResult } from '../doctor'
 import type { AndroidReplayHost } from '../flow-replay'
 import { encodePng } from '../png'
@@ -194,6 +195,45 @@ export interface DeviceOptions {
     restore?: { stdout?: string; killed?: boolean; stays?: boolean; fails?: boolean }
     returnReads?: number
   }
+  /**
+   * Roadmap M5d-6, Android's permission prompt: a tap on the control with resource id name `on` makes the app ask, one
+   * prompt after another (`asks`: what each prompt says, the answers it offers in that order, and `accuracy` = the
+   * location prompt's Precise/Approximate choice above them). As on a real device, a screen read while one shows has
+   * only the prompt's window (package PROMPT_PKG, view ids under `com.android.permissioncontroller:id/`), never the
+   * app's. A tap on an answer button closes it (the next one shows) and is kept in `answered`; `stays` = it stays up
+   * whatever is tapped; `disabled` = its answer buttons are disabled; `showAfterReads` = screen reads after the tap
+   * before the first prompt shows (default 0).
+   */
+  permission?: { on: string; asks: PromptAsk[]; stays?: boolean; disabled?: boolean; showAfterReads?: number }
+}
+
+export interface PromptAsk {
+  message: string
+  answers: PermissionAnswer[]
+  accuracy?: boolean
+}
+
+/** The package that draws the fake device's permission prompt (a Google build's, like the loop emulator's). */
+export const PROMPT_PKG = 'com.google.android.permissioncontroller'
+const PROMPT_ID = (name: string): string => `com.android.permissioncontroller:id/${name}`
+/** The fake prompt's answer buttons: view id name and label, as API 36 shows them. */
+export const PROMPT_BUTTONS: Readonly<Record<PermissionAnswer, { id: string; text: string }>> = {
+  allow: { id: 'permission_allow_button', text: 'Allow' },
+  while_using: { id: 'permission_allow_foreground_only_button', text: 'While using the app' },
+  once: { id: 'permission_allow_one_time_button', text: 'Only this time' },
+  deny: { id: 'permission_deny_button', text: 'Don’t allow' }
+}
+/** Where the fake prompt draws its n-th answer button (0-based), and its Precise choice. */
+export const promptButtonBox = (n: number): Box => [133, 1398 + n * 157, 947, 1545 + n * 157]
+export const PRECISE_BOX: Box = [157, 917, 498, 1330]
+
+/** The prompt's controls for one ask, as the dump shows them. */
+function promptControls(ask: PromptAsk, disabled: boolean): Control[] {
+  return [
+    { id: PROMPT_ID('permission_message'), pkg: PROMPT_PKG, text: ask.message, bounds: [133, 721, 947, 854] },
+    ...(ask.accuracy ? [{ cls: 'android.widget.RadioButton', id: PROMPT_ID('permission_location_accuracy_radio_fine'), pkg: PROMPT_PKG, text: 'Precise', bounds: PRECISE_BOX }] : []),
+    ...ask.answers.map((a, n): Control => ({ cls: 'android.widget.Button', id: PROMPT_ID(PROMPT_BUTTONS[a].id), pkg: PROMPT_PKG, text: PROMPT_BUTTONS[a].text, bounds: promptButtonBox(n), enabled: !disabled }))
+  ]
 }
 
 export interface Device {
@@ -215,6 +255,10 @@ export interface Device {
   rotation(): number
   /** Whether the app is in the background now (M5d-5): the launcher is on screen, its screens kept. */
   away(): boolean
+  /** The answers given to the permission prompt, in order (M5d-6). */
+  answered: PermissionAnswer[]
+  /** Whether a permission prompt is on screen now. */
+  prompting(): boolean
 }
 
 /** The launcher component the fake device names for the shop app (M5d-5). */
@@ -258,6 +302,11 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
   let empty = 0
   let keyboard = false
   let focused: string | null = null
+  /** The prompts still to answer (M5d-6), the first on screen once `promptIn` reads have passed. */
+  const prompts: PromptAsk[] = []
+  let promptIn = 0
+  const answered: PermissionAnswer[] = []
+  const promptUp = (): boolean => prompts.length > 0 && promptIn === 0
   const top = (): string => stack[stack.length - 1]
   const loaded = (name: string): Control[] => screens[name].controls.filter((c) => (c.fromRead ?? 0) <= (readsOf[name] ?? 0))
   /** What is on screen in drawing order: a scrollable view's shown content right after (over) the view. */
@@ -267,6 +316,12 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
     reads++
     over.onRead?.(reads, screens)
     if (returning > 0) returning--
+    if (prompts.length > 0 && promptIn > 0) promptIn--
+    if (promptUp()) {
+      // Only the prompt's window, as a real dump shows it: the app's views are not in it.
+      const inner = promptControls(prompts[0], over.permission?.disabled === true).map((c) => node(PROMPT_PKG, c, c.text ?? '')).join('')
+      return `UI hierchary dumped to: /data/local/tmp/x.xml\n<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="${rotationNow()}">${node(PROMPT_PKG, { cls: 'android.widget.FrameLayout', bounds: [28, 500, 1052, 1964] }, '', inner)}</hierarchy>`
+    }
     if (empty > 0) {
       empty--
       return 'UI hierchary dumped to: /data/local/tmp/x.xml\n<?xml version=\'1.0\' encoding=\'UTF-8\' standalone=\'yes\' ?><hierarchy rotation="0"></hierarchy>'
@@ -404,7 +459,24 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       .pop()
   }
   function tapAt(x: number, y: number): ExecResult {
+    if (promptUp()) {
+      // The prompt is in front of the app: a tap lands on it or nowhere.
+      const ask = prompts[0]
+      const n = ask.answers.findIndex((_a, i) => {
+        const b = promptButtonBox(i)
+        return x >= b[0] && x < b[2] && y >= b[1] && y < b[3]
+      })
+      if (n >= 0 && !over.permission?.disabled) {
+        answered.push(ask.answers[n])
+        if (!over.permission?.stays) prompts.shift()
+      }
+      return ok()
+    }
     const hit = hitAt(x, y)
+    if (over.permission && hit?.id === ID(over.permission.on)) {
+      prompts.splice(0, prompts.length, ...over.permission.asks)
+      promptIn = over.permission.showAfterReads ?? 0
+    }
     if (over.crashOn && hit?.id === ID(over.crashOn.control) && crashedAtRead === null) {
       crashedAtRead = reads
       crashedAtClock = clock
@@ -429,5 +501,5 @@ export function device(start = 'login', over: DeviceOptions = {}): Device {
       return { code: 0, stdout: encodePng({ width: w, height: h, rgb }), stderr: '' }
     }
   }
-  return { host, lines, evidenceLines, crashReads, typed, stack, offsets, settings, rotation: () => shown, away: () => away }
+  return { host, lines, evidenceLines, crashReads, typed, stack, offsets, settings, rotation: () => shown, away: () => away, answered, prompting: promptUp }
 }

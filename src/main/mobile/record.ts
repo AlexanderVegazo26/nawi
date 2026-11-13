@@ -3,6 +3,7 @@ import { parseFlow, stringifyFlow } from '../../shared/flow/yaml'
 import { labelOf, PERMISSION_PACKAGES } from './blockers'
 import { isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
 import { DEFAULT_LONG_PRESS_TIMEOUT_MS, shortestHold } from './long-press'
+import { answerOf, permissionPrompt, promptShown } from './permission-prompt'
 import { orientationOf } from './rotation'
 
 /**
@@ -19,7 +20,10 @@ import { orientationOf } from './rotation'
  * Output: click, fill and press steps with layered locators (resource id, content description, text: each kept only
  * when it finds that view alone among the app's views), plus one warning per thing that was not recorded and why.
  * - A tap is resolved on the screen it landed on: the topmost view under the finger, then its nearest tappable
- *   ancestor. A tap on another app's window (Android's permission prompt, the launcher) is not a step.
+ *   ancestor. A tap on another app's window (the launcher, a share sheet) is not a step.
+ * - A tap on an answer button of Android's permission prompt becomes a `permission` step with that answer (M5d-6);
+ *   other taps in the prompt (a location accuracy choice) are warnings. The prompt is Android's window, not the
+ *   app's, and a screen dump while it shows has only that window: it is not the app leaving.
  * - Typing is not seen as keys (the on-screen keyboard is another app, and taps on its area are skipped): it is read
  *   from how the focused text field's text changed between screens, and becomes one `fill` with the final text,
  *   replacing the tap that focused the field (a fill taps it itself). A password field's text is hidden by Android,
@@ -563,7 +567,9 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     const end = input.kind === 'key' ? input.t : input.t1
     const swipedBefore = swipeWarning
     swipeWarning = null
-    if (away === null && k > 0 && shows(snapshots[k - 1].screen) && elsewhere(before.screen)) {
+    // Android's permission prompt hides the app from the dump without the app going anywhere (M5d-6).
+    const fromApp = k > 0 && (shows(snapshots[k - 1].screen) || promptShown(snapshots[k - 1].screen))
+    if (away === null && fromApp && elsewhere(before.screen) && !promptShown(before.screen)) {
       // Gone without Home or the app switcher: gesture navigation's swipe up (not a scroll to warn about), or a tap.
       if (swipedBefore !== null) warnings.splice(swipedBefore, 1)
       away = { key: null, t: lastEnd, left: true, back: lastEnd }
@@ -592,6 +598,13 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
       // Back while the keyboard is up only closes the keyboard; the replayer closes it before each tap itself.
       if (!press || (press === 'Back' && before.keyboard !== null)) continue
       if (!(press in ANDROID_KEYS)) continue
+      if (press === 'Back' && promptShown(before.screen) && !shows(before.screen)) {
+        // Back on Android's permission prompt cancels it, which denies (M5d-6): replayed as a tap on "Don't allow",
+        // since a Back sent before the prompt shows would go to the app instead.
+        const asked = permissionPrompt(before.screen)?.message
+        push({ id: '', action: 'permission', intent: asked ? `Answer "${asked}" with Back (denied)` : "Close Android's permission prompt with Back (denied)", answer: 'deny' })
+        continue
+      }
       if (press === 'Home' || press === 'AppSwitch') {
         // Whether this leaves the app shows on the next screens: a background step once the app is back.
         away = { key: press, t: input.t, left: false, back: input.t }
@@ -627,12 +640,24 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
       warnings.push(`${what} at ${where} is not recorded: no view is there on the screen it landed on.`)
       continue
     }
+    if (PERMISSION_PACKAGES.has(found.target.package)) {
+      // A long press on a button clicks it when the finger lifts: an answer either way.
+      const answer = answerOf(found.target) ?? answerOf(found.hit)
+      if (answer === null) {
+        warnings.push(`${what}${on} in Android's permission prompt is not recorded: only its answer buttons (allow, while using the app, only this time, don't allow) are steps.`)
+        continue
+      }
+      if (!found.target.enabled) {
+        warnings.push(`${what}${on} in Android's permission prompt is not recorded: that button was disabled, so it answered nothing.`)
+        continue
+      }
+      const asked = permissionPrompt(before.screen)?.message
+      const button = label ? `"${label}"` : answer
+      push({ id: '', action: 'permission', intent: asked ? `Answer "${asked}" with ${button}` : `Answer Android's permission prompt with ${button}`, answer })
+      continue
+    }
     if (found.target.package !== pkg) {
-      warnings.push(
-        PERMISSION_PACKAGES.has(found.target.package)
-          ? `${what}${on} in Android's permission prompt is not recorded: grant the permission before the run (the profile's permissions.grant).`
-          : `${what} at ${where}${on} is not recorded: it landed on ${found.target.package || 'the system'}, not ${pkg}.`
-      )
+      warnings.push(`${what} at ${where}${on} is not recorded: it landed on ${found.target.package || 'the system'}, not ${pkg}.`)
       continue
     }
     if (!found.target.enabled) {
@@ -684,6 +709,11 @@ export function flowFromAndroidRecording(rec: AndroidRecording): AndroidRecordin
     return false
   })
   kept.forEach((s, i) => (s.id = `s${i + 1}`))
+  if (kept.some((s) => s.action === 'permission')) {
+    warnings.push(
+      `The flow answers Android's permission prompt: Android asks only while a permission is neither granted nor denied for good, so before each replay reset what this recording settled (adb shell pm clear ${pkg}, or pm revoke ${pkg} <permission>).`
+    )
+  }
   for (const s of kept) if (s.intent) s.intent = oneLine(s.intent, MAX_INTENT_CHARS)
 
   const flow: Flow = { version: FLOW_VERSION, name: rec.name ?? `Recorded on ${pkg}`, target: { kind: 'android', package: pkg }, steps: kept }

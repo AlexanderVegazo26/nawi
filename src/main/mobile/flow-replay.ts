@@ -1,5 +1,16 @@
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '../../shared/flow/interpolate'
-import { ANDROID_KEYS, ANDROID_MIN_SWIPE_PX, DEFAULT_BACKGROUND_MS, locatorLayer, MAX_HOLD_MS, type AndroidOrientation, type Flow, type FlowStep, type Selector } from '../../shared/flow/schema'
+import {
+  ANDROID_KEYS,
+  ANDROID_MIN_SWIPE_PX,
+  DEFAULT_BACKGROUND_MS,
+  locatorLayer,
+  MAX_HOLD_MS,
+  type AndroidOrientation,
+  type Flow,
+  type FlowStep,
+  type PermissionAnswer,
+  type Selector
+} from '../../shared/flow/schema'
 import type { DeviceLogLine } from '../replay/evidence'
 import type { FlowRun, LocatorMiss, StepProgress, StepRun, StepScreenshots } from '../replay/replay'
 import { findAll } from './blockers'
@@ -7,6 +18,7 @@ import { ANR_POLL_MS, CRASH_POLL_MS, crashMessage, logLineKey, startCrashWatch, 
 import type { Exec, ExecResult } from './doctor'
 import { MAX_LOGCAT_LINES, readDeviceClockOffset, startAndroidEvidence, toUiLocator, type AndroidEvidence } from './flow-evidence'
 import { center, isTextField, type UiBounds, type UiNode, type UiScreen } from './hierarchy'
+import { ANSWER_LABELS, buttonFor, permissionPrompt, promptKey, type PromptButton } from './permission-prompt'
 import { LONG_PRESS_TIMEOUT_LINE, parseLongPressTimeout, shortestHold } from './long-press'
 import { KEYBOARD_SHOWN_LINE, launcherLine, parseAmStart, parseLauncher, readScreen, severalLaunchers } from './open'
 import {
@@ -92,6 +104,11 @@ export const LAST_STEP_CRASH_SETTLE_MS = 1_000
  * ended it while it was away, as it would for a person.
  */
 export const RESTORE_FLAGS = '0x10200000'
+/**
+ * How long a `permission` step waits for Android's prompt to go after its answer was tapped, at least (M5d-6): the
+ * step's own deadline when later, so a prompt that showed just before the deadline still gets time to close.
+ */
+export const PROMPT_GONE_TIMEOUT_MS = 5_000
 /** A deep link is a URI with a scheme, on one line. */
 const DEEP_LINK_RE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\s\x00-\x1f\x7f]+$/
 
@@ -543,6 +560,45 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
   }
 
   /**
+   * Answer Android's permission prompt (roadmap M5d-6): wait until it shows with the button for `answer` (found by its
+   * view id, so the device's language does not matter), tap that button, then wait until the prompt is gone or asks
+   * something else (an app asking for several permissions in a row shows one prompt after another; a fully drawn
+   * prompt with another message or other buttons is the next question, a half-drawn one is not told apart). This is
+   * the one step that taps outside the app: the prompt is Android's window, and only its answer buttons are pressed.
+   */
+  const answerPermission = async (answer: PermissionAnswer, deadline: number): Promise<void> => {
+    const asks = (message: string | null): string => (message === null ? '' : ` (${JSON.stringify(message)})`)
+    const shown = await poll<{ button: PromptButton; message: string | null; key: string | null }>(deadline, (screen) => {
+      const prompt = permissionPrompt(screen)
+      if (prompt === null) {
+        return {
+          wait: `Android's permission prompt is not on screen: ${pkg} has not asked for a permission (Android asks only while it is neither granted nor denied for good: an earlier run, or mobile_open's grant, may have settled it; reset it with pm clear or pm revoke)`
+        }
+      }
+      const button = buttonFor(prompt, answer)
+      const what = `Android's permission prompt${asks(prompt.message)}`
+      if (button === undefined) {
+        const offers = prompt.buttons.length === 0 ? 'no answer button' : prompt.buttons.map((b) => JSON.stringify(b.label)).join(', ')
+        return { wait: `${what} has no ${ANSWER_LABELS[answer]} button: it offers ${offers}` }
+      }
+      if (!button.node.enabled) return { wait: `the ${JSON.stringify(button.label)} button of ${what} is disabled` }
+      if (!hasSize(button.node.bounds)) return { wait: `the ${JSON.stringify(button.label)} button of ${what} has no size on screen` }
+      return { ok: { button, message: prompt.message, key: promptKey(prompt) } }
+    })
+    const at = center(shown.button.node.bounds!)
+    // Only integers parsed from the dump reach the shell here.
+    await must(`input tap ${at.x} ${at.y}`, 'answer the permission prompt')
+    await poll<null>(Math.max(deadline, host.now() + PROMPT_GONE_TIMEOUT_MS), (screen) => {
+      // An empty read (between two windows) says nothing about the prompt.
+      const prompt = screen.nodes.length === 0 ? undefined : permissionPrompt(screen)
+      const next = prompt === undefined || prompt === null ? null : promptKey(prompt)
+      return prompt === null || (next !== null && next !== shown.key)
+        ? { ok: null }
+        : { wait: `Android's permission prompt${asks(shown.message)} is still on screen after tapping ${JSON.stringify(shown.button.label)}` }
+    })
+  }
+
+  /**
    * Tap the step's view, first hiding the on-screen keyboard; with `holdMs`, keep the finger on it that long (a long
    * press: `input swipe` that starts and ends on the same point and lifts after holdMs).
    */
@@ -840,6 +896,9 @@ export async function replayAndroidFlow(req: AndroidReplayRequest, host: Android
         return
       case 'background':
         await background(step.ms ?? DEFAULT_BACKGROUND_MS, deadline - host.now())
+        return
+      case 'permission':
+        await answerPermission(step.answer, deadline)
         return
       default:
         throw new StepFailure(`"${step.action}" steps are not supported in android flows yet`)

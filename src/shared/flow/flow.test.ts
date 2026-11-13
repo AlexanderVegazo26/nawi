@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { ANDROID_ORIENTATIONS, FLOW_ACTIONS, LOCATOR_LAYERS, locatorLayer, type Flow, type FlowStep, type Selector } from './schema'
+import { ANDROID_ORIENTATIONS, FLOW_ACTIONS, PERMISSION_ANSWERS, LOCATOR_LAYERS, locatorLayer, type Flow, type FlowStep, type Selector } from './schema'
 import { formatFlowDocument, formatFlowErrors, parseFlow, stringifyFlow, type FlowError } from './yaml'
 
 const LOGIN = `# login flow
@@ -325,6 +325,15 @@ describe('flow files — android target (roadmap M5)', () => {
     expect(zero.ok, 'ms: 0 = Home and straight back, a valid step').toBe(true)
   })
 
+  it('parses android permission steps with each answer, written back as they were (M5d-6)', () => {
+    for (const answer of PERMISSION_ANSWERS) {
+      const r = parseFlow(androidWith('s1', `  - { id: s1, action: permission, answer: ${answer}, intent: Let the app use the camera }`))
+      if (!r.ok) throw new Error(`a permission step answering ${answer} should parse in an android flow:\n${formatFlowErrors(r.errors)}`)
+      expect(r.flow.steps[0], `a permission step keeps its answer ${answer}`).toEqual({ id: 's1', action: 'permission', answer, intent: 'Let the app use the camera' })
+      expect(stringifyFlow(r.flow)).toContain(`answer: ${answer}`)
+    }
+  })
+
   it('rejects a package name that is not an Android application id', () => {
     const e = onlyError(ANDROID.replace('package: dev.nawi.shop', 'package: "shop; rm -rf /"'))
     expect(e).toMatchObject({ path: 'target.package', message: 'must be an Android package name such as com.example.app' })
@@ -350,6 +359,9 @@ describe('flow files — android target (roadmap M5)', () => {
     ['a background step with a negative time away', '  - { id: s1, action: background, ms: -1 }', 'steps[0].ms', /expected number to be >=0/],
     ['a background step longer than 10 minutes', '  - { id: s1, action: background, ms: 600001 }', 'steps[0].ms', /600000/],
     ['a background step in fractions of a ms', '  - { id: s1, action: background, ms: 1.5 }', 'steps[0].ms', /expected int/],
+    ['a permission step with no answer', '  - { id: s1, action: permission }', 'steps[0].answer', /expected one of "allow"\|"while_using"\|"once"\|"deny"/],
+    ['a permission step with an answer that is not one', '  - { id: s1, action: permission, answer: always }', 'steps[0].answer', /expected one of "allow"/],
+    ['a permission step aimed at a view', '  - { id: s1, action: permission, answer: allow, target: { selectors: [ { text: Allow } ] } }', 'steps[0].target', /unknown key "target"/],
     ['a background step aimed at a view', '  - { id: s1, action: background, target: { selectors: [ { text: Cart } ] } }', 'steps[0].target', /unknown key "target"/],
     ['a scroll too short to be a swipe', '  - { id: s5, action: scroll, target: { selectors: [ { text: Deals } ] }, delta: [30, 30] }', 'steps[4].delta', /moves at least 48 px: a shorter swipe is a tap/]
   ])('rejects %s, at the field', (_what, step, path, message) => {
@@ -372,6 +384,11 @@ describe('flow files — android target (roadmap M5)', () => {
   it('rejects a background step in a browser flow (sending the app away is for android flows)', () => {
     const e = onlyError(loginWith('  - { id: s2, action: press, key: Enter }', '  - { id: s2, action: background, ms: 500 }'))
     expect(e).toMatchObject({ path: 'steps[1].action', message: 'background (sending the app to the background and back) is only for android flows' })
+  })
+
+  it('rejects a permission step in a browser flow (answering Android\'s prompt is for android flows)', () => {
+    const e = onlyError(loginWith('  - { id: s2, action: press, key: Enter }', '  - { id: s2, action: permission, answer: allow }'))
+    expect(e).toMatchObject({ path: 'steps[1].action', message: "permission (answering Android's permission prompt) is only for android flows" })
   })
 
   it('rejects a desc locator in a browser flow', () => {
@@ -486,6 +503,8 @@ function stepFor(id: string, action: (typeof FLOW_ACTIONS)[number]): fc.Arbitrar
         return fc.record({ orientation: fc.constantFrom(...ANDROID_ORIENTATIONS) })
       case 'background':
         return fc.record({ ms: fc.integer({ min: 0, max: 600_000 }) }, { requiredKeys: [] })
+      case 'permission':
+        return fc.record({ answer: fc.constantFrom(...PERMISSION_ANSWERS) })
     }
   })()
   return fc.tuple(common, extra).map(([c, e]) => ({ id, action, ...c, ...e }) as FlowStep)
@@ -501,7 +520,7 @@ const flowArb: fc.Arbitrary<Flow> = fc
     ),
     fc.dictionary(name, fc.oneof(tricky.filter((s) => !s.includes('${')), fc.constant('${env.X}')), { maxKeys: 3 }),
     // Android-only actions are refused in the browser and desktop flows this draws (their own tests cover them).
-    fc.array(fc.constantFrom(...FLOW_ACTIONS.filter((a) => a !== 'rotate' && a !== 'background')), { maxLength: 8 })
+    fc.array(fc.constantFrom(...FLOW_ACTIONS.filter((a) => a !== 'rotate' && a !== 'background' && a !== 'permission')), { maxLength: 8 })
   )
   .chain(([flowName, description, flowTarget, vars, actions]) =>
     fc.tuple(...actions.map((a, i) => stepFor(`s${i + 1}`, a))).map((steps) => {

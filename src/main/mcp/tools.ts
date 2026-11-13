@@ -1439,9 +1439,10 @@ const mobileRecord = defineTool({
     'typing becomes one fill step per field with the final text, Back/Enter (and a Home that did not leave the app) become press steps, a touch resting ' +
     'past the device\'s touch & hold delay becomes a click with hold_ms (a long press), and the screen turning becomes a ' +
     'rotate step (a recording that turns the screen starts with one to where it started), and leaving the app with Home or ' +
-    'the app switcher and coming back to it becomes a background step with the time away (ms). A password ' +
+    'the app switcher and coming back to it becomes a background step with the time away (ms), and a tap on an answer of ' +
+    'Android\'s permission prompt (or Back while it shows, a deny) becomes a permission step (answer: allow, while_using, once or deny). A password ' +
     'field\'s text is never read: its fill types ${secret.<name>} at run time. Swipes, taps on other ' +
-    'apps (a permission prompt) and touches that came before the screen after the previous tap was read (a read takes ' +
+    'apps (or on the permission prompt\'s other views, such as its location accuracy choice) and touches that came before the screen after the previous tap was read (a read takes ' +
     'about 2 seconds) are not steps: warnings say which and why. Recording stops after idle_seconds without a touch ' +
     '(once something was recorded), after max_seconds, when cancelled (or agent access is paused: what was recorded ' +
     'is kept), when the device stops sending touches, or when its screen can no longer be read. `target` and `package` work like mobile_explore (default: ' +
