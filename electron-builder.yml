@@ -114,18 +114,18 @@ linux:
 
 # Publishing target for electron-updater.
 #
-# >>> DELIBERATELY UNSET. <<< This repository has no git remote yet, so there is
-# no correct owner/repo to write here, and a GUESSED one is worse than none:
-# electron-builder bakes these values into app-update.yml, and electron-updater
-# would then poll a nonexistent repository forever — no error, no updates, and
-# nothing in a local build that reveals it.
+# >>> DELIBERATELY UNSET. <<< The remote is github.com/AlexanderVegazo26/nawi,
+# but publishing is not electron-builder's job here: the dist:* scripts pass
+# `--publish never`, and .github/workflows/release.yml builds each platform on
+# its own runner and uploads the installers to a draft GitHub release itself
+# (on a `v*` tag, or a manual run with `publish` ticked).
 #
-# Set it when the remote exists:
+# Auto-update is not wired: nothing in src/ imports electron-updater. Leave this
+# unset until it is — electron-builder bakes these values into app-update.yml,
+# and they only mean something once the app actually checks for updates. When
+# that lands:
 #
 #   publish:
 #     provider: github
-#     owner: <github-user-or-org>
-#     repo: <repository-name>
-#
-# `--publish never` on the dist:* scripts means local builds never upload
-# regardless; CI passes GH_TOKEN and can publish once this block is filled in.
+#     owner: AlexanderVegazo26
+#     repo: nawi
