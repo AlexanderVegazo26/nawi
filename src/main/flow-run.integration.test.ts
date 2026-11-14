@@ -130,6 +130,30 @@ describeWithBrowser('runFlowFile against a real Chromium', () => {
     expect(JSON.stringify(report), 'the reply carries no image bytes').not.toMatch(/\/9j\//)
   }, 60_000)
 
+  it('DT1b: trace: true saves trace.json in the record, names it in run.json and the reply, never without a record', async () => {
+    const file = write('sign-in-trace.nawi.yaml', SIGN_IN)
+    const runs = join(root, 'runs-trace')
+    const input = { file, headless: true, env: { TEST_EMAIL: 'a@b.example' }, secrets: { pw: PASSWORD }, vars: { plan: 'Professional' }, trace: true }
+    const report = await runFlowFile(input, deps({ record: { dir: runs, appVersion: '0.1.0-test' } }))
+    expect(report.status, why(report)).toBe('passed')
+    expect(report.trace_json, why(report)).toBe('trace.json')
+    expect(report.trace_error, why(report)).toBeUndefined()
+    const dir = report.run_dir!
+    expect(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).trace_json).toBe('trace.json')
+    const text = readFileSync(join(dir, 'trace.json'), 'utf8')
+    expect(text.includes(PASSWORD), 'the typed secret must not reach the trace').toBe(false)
+    const trace = JSON.parse(text) as { traceEvents: Array<{ name?: string; ph?: string; cat?: string }> }
+    expect(
+      trace.traceEvents.filter((e) => e.cat === 'blink.user_timing' && e.ph === 'b').map((e) => e.name),
+      'one measure per step'
+    ).toEqual(['Step 1: s1 (fill)', 'Step 2: s2 (fill)', 'Step 3: s3 (select)', 'Step 4: s4 (press)', 'Step 5: s5 (assert)', 'Step 6: s6 (screenshot)'])
+    expect(readFileSync(join(dir, 'report.html'), 'utf8')).toContain("The run's performance trace is in trace.json")
+
+    const unrecorded = await runFlowFile(input, deps())
+    expect(unrecorded.status, why(unrecorded)).toBe('passed')
+    expect('trace_json' in unrecorded || 'trace_error' in unrecorded, 'the trace lives only in a record').toBe(false)
+  }, 90_000)
+
   it('reports the failing step and leaves the rest not_run; the var default applies without an override', async () => {
     const file = write('sign-in-default.nawi.yaml', SIGN_IN)
     const report = await runFlowFile({ file, headless: true, env: { TEST_EMAIL: 'a@b.example' }, secrets: { pw: PASSWORD }, stepTimeoutMs: 1500 }, deps())

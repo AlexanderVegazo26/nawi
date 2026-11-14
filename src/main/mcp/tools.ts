@@ -738,6 +738,9 @@ const runFlow = defineTool({
     'With screenshots "all" (default) the record also has the page before and after each step (steps[].shots: ' +
     'JPEG paths inside run_dir, PNG for an Android device\'s screen; fields that received a secret are masked); "failed" keeps only the page the ' +
     'failing step left, "off" none. ' +
+    'Browser flows with trace: true also get a performance trace in the record (trace_json: "trace.json" inside run_dir, ' +
+    "which the browser's Performance panel opens; each step is a measure on its Timings track; only this page's processes, " +
+    'secrets and token-like URL parameters scrubbed); trace_error says why when the browser would not trace. ' +
     'Nawi launches a fresh browser with a throwaway profile (headed unless headless is true), or opens a new tab ' +
     'in a browser already listening for DevTools on this machine (cdp_endpoint). ${env.*} and ${secret.*} values ' +
     'come only from this call\'s env and secrets; secret values are scrubbed from everything reported. ' +
@@ -766,6 +769,10 @@ const runFlow = defineTool({
       .enum(['all', 'failed', 'off'])
       .default('all')
       .describe('Page screenshots around each step in the run record.'),
+    trace: z
+      .boolean()
+      .default(false)
+      .describe('Browser flows: record a performance trace of the run into the record (trace.json).'),
     target: z
       .string()
       .regex(TARGET_RE, 'an adb serial (see mobile_doctor devices) or an AVD name')
@@ -786,6 +793,7 @@ const runFlow = defineTool({
           cdpEndpoint: args.cdp_endpoint,
           stepTimeoutMs: args.step_timeout_ms,
           screenshots: args.screenshots,
+          trace: args.trace,
           device: args.target,
           launch: args.launch
         },

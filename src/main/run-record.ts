@@ -57,8 +57,10 @@ const STEP_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'
 const STEP_ID_RE = new RegExp(`^${STEP_ID}$`)
 /** Roadmap DT1: the run's requests, a HAR file next to run.json. */
 export const NETWORK_HAR = 'network.har'
+/** Roadmap DT1b: the run's performance trace (opt-in), a file next to run.json that the browser's Performance panel opens. */
+export const TRACE_JSON = 'trace.json'
 /** A file a run folder holds besides run.json/junit.xml/report.html, relative to it: a screenshot (`steps/003-save.after.jpg`) or NETWORK_HAR. */
-export const RUN_ASSET_RE = new RegExp(`^(?:steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.(?:jpg|png))|network\\.har)$`)
+export const RUN_ASSET_RE = new RegExp(`^(?:steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.(?:jpg|png))|network\\.har|trace\\.json)$`)
 /** Folders a write in progress uses; one older than this was left by a crash. */
 const STALE_TEMP_MS = 60 * 60 * 1000
 
@@ -151,6 +153,13 @@ export interface RunRecord {
    * Opens in a browser's network panel. Absent when the run sent no request.
    */
   network_har?: typeof NETWORK_HAR
+  /**
+   * Browser runs asked to trace (roadmap DT1b): a performance trace in the run folder (always `trace.json`, Chrome's
+   * JSON trace format) that opens in the browser's Performance panel, each step a measure on its Timings track.
+   */
+  trace_json?: typeof TRACE_JSON
+  /** Why a run asked to trace has no `trace_json` (the browser refused or never finished the trace). */
+  trace_error?: string
   steps: RecordedStep[]
 }
 
@@ -232,6 +241,16 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
   const opening = run.opening && recordedEvidence(run.opening)
   // Passed steps only: a failed step's own error is what to read, not the drift note.
   const fallbacks = run.steps.filter((s) => s.status === 'passed' && s.matched?.fallback === true).map((s) => s.id)
+  // The trace is optional and can be huge: if it cannot be serialized, the record says why and is saved without it.
+  let traceBytes: Buffer | undefined
+  let traceError = run.traceError
+  if (run.trace) {
+    try {
+      traceBytes = Buffer.from(`${JSON.stringify(run.trace)}\n`)
+    } catch (error) {
+      traceError = `the trace could not be saved: ${error instanceof Error ? error.message : String(error)}`
+    }
+  }
   const record: RunRecord = {
     version: RUN_RECORD_VERSION,
     run_id: input.runId,
@@ -248,9 +267,12 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     ...(fallbacks.length > 0 ? { fallback_step_ids: fallbacks } : {}),
     ...(input.healOf !== undefined ? { heal_of: input.healOf } : {}),
     ...(run.network ? { network_har: NETWORK_HAR } : {}),
+    ...(traceBytes ? { trace_json: TRACE_JSON } : {}),
+    ...(traceError !== undefined ? { trace_error: traceError } : {}),
     steps
   }
   if (run.network) assets.set(NETWORK_HAR, Buffer.from(`${JSON.stringify(run.network)}\n`))
+  if (traceBytes) assets.set(TRACE_JSON, traceBytes)
   return { record, assets }
 }
 

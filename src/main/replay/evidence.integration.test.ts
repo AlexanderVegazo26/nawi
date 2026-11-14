@@ -77,6 +77,11 @@ describeWithBrowser('replay evidence (F4b) against a real Chromium', () => {
         res.writeHead(200, { 'content-type': 'text/html' }).end(PAGE)
       } else if (req.url === '/net') {
         res.writeHead(200, { 'content-type': 'text/html' }).end(NET_PAGE)
+      } else if (req.url?.startsWith('/busy')) {
+        // DT1b: another tab that keeps its renderer busy while a run traces.
+        res
+          .writeHead(200, { 'content-type': 'text/html' })
+          .end(`<!doctype html><title>busy</title><script>setInterval(() => performance.mark('other-tab-busy'), 5)</script>`)
       } else if (req.url?.startsWith('/api/login')) {
         req.resume()
         res.writeHead(201, { 'content-type': 'application/json', 'set-cookie': 'sid=c00k1e' }).end('{"ok":true}')
@@ -201,4 +206,69 @@ steps:
     expect(post._t_ms as number).toBeLessThan(run.durationMs)
     expect(run.steps.map((s) => s.requests), why(run)).toEqual([undefined, 1])
   }, 60_000)
+
+  it("DT1b: a traced run's trace has each step as a measure around what the page did in it, only this page's processes, no secret", async () => {
+    // Another tab with a private URL and its own script: its renderer must stay out of this run's trace.
+    const other = await client.send<{ targetId: string }>('Target.createTarget', { url: `${origin}/busy?other-tab-private=1` })
+    try {
+      const parsed = parseFlow(`version: 1
+name: Trace
+target: { kind: browser, url: "${origin}/net" }
+steps:
+  - { id: type, action: fill, target: { selectors: [{ id: pw }] }, value: "\${secret.pw}" }
+  - { id: send, action: click, target: { selectors: [{ id: send }] } }
+  - { id: sent, action: assert, target: { selectors: [{ role: status }] }, expect: { text: "sent 201" } }
+`)
+      if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors))
+      const secret = (n: string): string | undefined => (n === 'pw' ? SECRET : undefined)
+      const run = await replayFlow(client, parsed.flow, { sessionId, secret, trace: true })
+      expect(run.status, why(run)).toBe('passed')
+      expect(run.traceError, 'the browser traced the run').toBeUndefined()
+      const events = run.trace?.traceEvents ?? []
+      const json = JSON.stringify(run.trace)
+      for (const leak of [SECRET, encodeURIComponent(SECRET), 't0k3n', 'c00k1e', 'other-tab-private', 'user-data-dir']) {
+        expect(json.includes(leak), `${leak} reached the trace`).toBe(false)
+      }
+      expect(events.some((e) => e.name === 'TracingStartedInBrowser'), 'the panel needs the page it traced').toBe(true)
+      expect(events.filter((e) => e.name === 'other-tab-busy').length, "the other tab's renderer must stay out of the trace").toBe(0)
+      expect(run.trace?.metadata.nawi.other_process_events, 'the browser did report other processes, which were left out').toBeGreaterThan(0)
+
+      const measures = events.filter((e) => e.cat === 'blink.user_timing' && (e.ph === 'b' || e.ph === 'e'))
+      const span = (name: string): [number, number] => {
+        const [b, e] = measures.filter((m) => m.name === name).map((m) => m.ts as number)
+        return [b, e]
+      }
+      expect(measures.map((m) => `${m.ph} ${m.name}`), json.slice(0, 2000)).toEqual([
+        'b Step 1: type (fill)', 'e Step 1: type (fill)',
+        'b Step 2: send (click)', 'e Step 2: send (click)',
+        'b Step 3: sent (assert)', 'e Step 3: sent (assert)'
+      ])
+      // The clock bridge: the page's own click handling (on the trace clock) lies inside the click step's measure,
+      // within the bridge's accuracy (half the sync command's round trip, about a millisecond; 2 ms of slack).
+      const SLACK_US = 2_000
+      const [sendBegin, sendEnd] = span('Step 2: send (click)')
+      const [, sentEnd] = span('Step 3: sent (assert)')
+      const clicks = events.filter((e) => e.name === 'EventDispatch' && (e.args as { data?: { type?: string } })?.data?.type === 'click')
+      expect(clicks.length, 'the page dispatched the click').toBeGreaterThan(0)
+      for (const click of clicks) {
+        expect(click.ts as number, `click at ${click.ts} outside the step's measure ${sendBegin}..${sendEnd}`).toBeGreaterThanOrEqual(sendBegin - SLACK_US)
+        expect(click.ts as number, `click at ${click.ts} outside the step's measure ${sendBegin}..${sendEnd}`).toBeLessThanOrEqual(sendEnd + SLACK_US)
+      }
+      // The login request the click sent starts after the click began, and before the assert that waits for its answer
+      // ended (the browser can start it a moment after the click step returned, as evidence.ts notes for requests).
+      const sends = events.filter((e) => e.name === 'ResourceSendRequest' && String((e.args as { data?: { url?: string } })?.data?.url).includes('/api/login'))
+      expect(sends.map((e) => (e.args as { data: { url: string } }).data.url), 'scrubbed like the HAR').toEqual([
+        `${origin}/api/login?who=\${secret.pw}&n=1`
+      ])
+      expect(sends[0].ts as number, `request at ${sends[0].ts}, click step from ${sendBegin}`).toBeGreaterThanOrEqual(sendBegin - SLACK_US)
+      expect(sends[0].ts as number, `request at ${sends[0].ts}, assert step until ${sentEnd}`).toBeLessThanOrEqual(sentEnd + SLACK_US)
+
+      // The trace was ended: the next run can trace again.
+      const again = await replayFlow(client, parsed.flow, { sessionId, secret, trace: true })
+      expect(again.traceError, 'a second traced run must not find the browser still tracing').toBeUndefined()
+      expect(again.trace?.traceEvents.length ?? 0).toBeGreaterThan(0)
+    } finally {
+      await client.send('Target.closeTarget', { targetId: other.targetId }).catch(() => undefined)
+    }
+  }, 90_000)
 })

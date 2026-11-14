@@ -23,6 +23,7 @@ import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowI
 import { locatorLayer, type Flow, type FlowStep, type LocatorLayer, type Selector } from '@shared/flow/schema'
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
 import { EvidenceCollector, type AppCrash, type StepEvidence } from './evidence'
+import { TraceRecorder, type TraceFile } from './trace'
 import type { HarLog } from '../harvest/har'
 import type { RedactionRule } from '@shared/settings'
 import { decodePng, type RgbImage } from '../mobile/png'
@@ -164,6 +165,10 @@ export interface FlowRun {
    * RunNetwork). The run record writes it as `network.har`. Absent when the run sent no request.
    */
   network?: HarLog
+  /** Browser runs with `trace` (roadmap DT1b): the run's performance trace (see TraceRecorder), written as `trace.json`. */
+  trace?: TraceFile
+  /** Why a run asked to trace has none. */
+  traceError?: string
 }
 
 export interface ReplayOptions extends FlowInputs {
@@ -185,6 +190,8 @@ export interface ReplayOptions extends FlowInputs {
   redactionRules?: readonly RedactionRule[]
   /** Page screenshots around each step; default `off`. */
   stepScreenshots?: StepScreenshots
+  /** Record a performance trace of the run (roadmap DT1b, `FlowRun.trace`); default off. */
+  trace?: boolean
   /**
    * Reads an asset the flow points at (`target.image`, relative to the flow
    * file), confined to the flow's folder. Without it the visual-anchor layer
@@ -527,11 +534,17 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
   })
 
   const evidence = new EvidenceCollector(client, options.sessionId, interp.redact, undefined, options.redactionRules)
+  const trace = options.trace
+    ? new TraceRecorder(client, options.sessionId, interp.redact, options.redactionRules)
+    : undefined
+  let traced: Awaited<ReturnType<TraceRecorder['stop']>> | undefined
   let uninstall: (() => Promise<void>) | undefined
   let run: FlowRun | undefined
   try {
     try {
       await evidence.start()
+      // Before the target opens, so its load is in the trace too.
+      await trace?.start()
       await session.send('Page.enable')
       uninstall = await installReplayHelpers(client, options.sessionId)
       if (openTarget) {
@@ -543,13 +556,16 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
     } catch (error) {
       run = abort(interp.redact(`could not open the flow's target: ${(error as Error).message ?? error}`))
     }
-    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence, options.stepScreenshots ?? 'off', options.onStep)
+    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence, options.stepScreenshots ?? 'off', options.onStep, trace)
   } finally {
+    // Always ended, even when a step threw: a browser left tracing refuses the next run's trace.
+    traced = await trace?.stop()
     evidence.stop()
     offDialog?.()
     await uninstall?.().catch(() => undefined)
   }
-  return withEvidence(run, flow, evidence)
+  const withTrace = traced?.trace ? { trace: traced.trace } : traced?.error !== undefined ? { traceError: traced.error } : {}
+  return { ...withEvidence(run, flow, evidence), ...withTrace }
 }
 
 /** Files the collected evidence onto the run's steps (aligned with `flow.steps` by index). */
@@ -592,7 +608,8 @@ async function runSteps(
   signal: AbortSignal | undefined,
   evidence: EvidenceCollector,
   shots: StepScreenshots,
-  onStep?: (event: StepProgress) => void
+  onStep?: (event: StepProgress) => void,
+  trace?: TraceRecorder
 ): Promise<FlowRun> {
   const steps: StepRun[] = []
   const settled = (index: number, step: FlowStep, status: StepProgress['status']): void => {
@@ -620,7 +637,9 @@ async function runSteps(
     }
     const before = shots === 'all' ? (lastAfter ?? (await runner.capturePage())) : undefined
     evidence.beginStep(index)
+    trace?.beginStep(index, step.id, step.action)
     const run = await runner.run(step)
+    trace?.endStep()
     await evidence.endStep()
     // After endStep: the URL read gave a navigation the step started time to land.
     const after = shots === 'all' || (shots === 'failed' && run.status === 'failed') ? await runner.capturePage() : undefined

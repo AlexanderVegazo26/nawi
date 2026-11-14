@@ -18,7 +18,7 @@ export const STEP_TIMEOUT_RANGE = { min: 100, max: 600_000 }
 
 export const RUN_USAGE = `nawi run <file.nawi.yaml> [--headless] [--var name=value ...] [--cdp-endpoint 9222]
                 [--step-timeout-ms 5000] [--screenshots all|failed|off] [--junit report.xml] [--json]
-                [--target <serial|avd>] [--no-launch]
+                [--trace] [--target <serial|avd>] [--no-launch]
 
   Replays a flow file in a fresh browser (or, for an android flow, on the connected device) and prints each step's result.
   --var name=value     Override a var the flow declares (repeatable).
@@ -27,6 +27,8 @@ export const RUN_USAGE = `nawi run <file.nawi.yaml> [--headless] [--var name=val
   --junit <file>       Also write the run's JUnit XML there (for CI test reporters).
   --screenshots <m>    Page screenshots in the record: all (before/after every step, the default),
                        failed (only the page the failing step left) or off. Secret fields are masked.
+  --trace              Browser flows: also record a performance trace (trace.json in the record), which the
+                       browser's Performance panel opens, with each step marked on its Timings track.
   --target <t>         Android flows: the adb serial or running AVD to use when several are connected.
   --no-launch          Android flows: run on the app as it is, instead of restarting it from its launcher.
   Every run is saved as a run record (run.json, junit.xml, step screenshots); its folder is printed.
@@ -41,6 +43,8 @@ export interface RunArgs {
   cdp_endpoint?: string
   step_timeout_ms?: number
   screenshots?: 'all' | 'failed' | 'off'
+  /** Browser flows: record a performance trace (roadmap DT1b). */
+  trace?: true
   /** Android flows: adb serial or AVD name. */
   target?: string
   /** Android flows: false = don't restart the app first. */
@@ -91,6 +95,9 @@ export function parseRunArgs(argv: string[], cwd: string): RunArgs {
         break
       case '--no-launch':
         out.launch = false
+        break
+      case '--trace':
+        out.trace = true
         break
       case '--screenshots': {
         const mode = value(i++, '--screenshots')
@@ -222,6 +229,9 @@ export interface RunReport {
   opening?: ReportEvidence
   run_dir?: string
   record_error?: string
+  /** Runs with --trace: the trace's path inside run_dir, or why there is none. */
+  trace_json?: string
+  trace_error?: string
   /** Android flows. */
   device?: ReportDevice
 }
@@ -290,6 +300,8 @@ export function renderRun(report: RunReport): string {
   )
   if (report.run_dir) lines.push(`record: ${report.run_dir}`)
   if (report.record_error) lines.push(`record not saved: ${report.record_error}`)
+  if (report.trace_json && report.run_dir) lines.push(`trace: ${join(report.run_dir, report.trace_json)}`)
+  if (report.trace_error) lines.push(`no trace: ${oneLine(report.trace_error)}`)
   return lines.join('\n')
 }
 

@@ -1,4 +1,4 @@
-import { NETWORK_HAR, describe, evidenceLines, missReason, scoreText, type RecordedStep, type RunRecord } from './run-record'
+import { NETWORK_HAR, TRACE_JSON, describe, evidenceLines, missReason, scoreText, type RecordedStep, type RunRecord } from './run-record'
 
 /**
  * Roadmap F4c: the run's self-contained HTML report (`runs/<run-id>/report.html`).
@@ -243,6 +243,11 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
     record.network_har === NETWORK_HAR
       ? `<p class="muted">Every request of the run, by step, is in ${NETWORK_HAR} next to this report (opens in a browser's network panel).</p>`
       : '',
+    record.trace_json === TRACE_JSON
+      ? `<p class="muted">The run's performance trace is in ${TRACE_JSON} next to this report (load it in the browser's Performance panel; each step is marked on its Timings track).</p>`
+      : typeof record.trace_error === 'string'
+        ? `<p class="muted">No performance trace: ${htmlEscape(record.trace_error)}</p>`
+        : '',
     `<h2>Steps (${record.steps.length})</h2>`,
     record.steps.length === 0 ? '<p class="muted">No step ran.</p>' : `<ol class="steps">${record.steps.map(step).join('')}</ol>`,
     '</main></body></html>',

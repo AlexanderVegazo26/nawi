@@ -427,7 +427,7 @@ Nawi exposes 24 tools over a loopback JSON-RPC endpoint: `capture_screen`,
 `capture_region`, `capture_element`, `start_recording`, `stop_recording`,
 `get_capture`, `get_state_layer` (CLI: `nawi state --capture_id <id>`), `list_captures`, `search_captures`, `annotate`,
 `redact`, `export_guide`, `export_flow` (CLI: `nawi export-flow --capture_id <id>`)
-`run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--junit report.xml] [--target <serial|avd>] [--no-launch]`),
+`run_flow` (CLI: `nawi run <file> [--headless] [--var name=value] [--screenshots all|failed|off] [--trace] [--junit report.xml] [--target <serial|avd>] [--no-launch]`),
 `list_runs` (CLI: `nawi runs [--limit 20] [--status failed]`), `get_run` (CLI: `nawi run-info --run_id <id>`),
 `get_heal_proposals` (CLI: `nawi heal <run_id> [--json]`), `apply_heal` (CLI: `nawi heal-apply <run_id> [--step id]`,
 or `nawi heal <run_id> --apply`; exit 1 when nothing was written) and
@@ -458,7 +458,7 @@ queued, or closes the request it sent. Code: `src/main/mcp/progress.ts`, `src/mc
 
 Saved runs are also MCP resources, so a client can read them without a tool call: `resources/list` names the
 record and HTML report of the 50 newest runs, `resources/templates/list` gives the patterns
-`nawi://runs/{run_id}/run.json`, `report.html`, `junit.xml`, `network.har` and `{+screenshot}` (a step's `screenshot` or
+`nawi://runs/{run_id}/run.json`, `report.html`, `junit.xml`, `network.har`, `trace.json` and `{+screenshot}` (a step's `screenshot` or
 `shots.before`/`shots.after` path from run.json, returned as base64), and `resources/read` returns one file
 (up to 8 MiB). A URI that isn't one of those is JSON-RPC -32602, a run or file that doesn't exist -32002; both
 carry Nawi's typed code in `error.data.code`, like tool errors. Only files a run writer makes are reachable
@@ -709,7 +709,19 @@ alone.
   `X-Api-Key`, `X-CSRF-Token`, `X-Session-Id`...; the CDP harvest's `network.har`
   drops the same ones), secret values and token-like URL parameters scrubbed as
   elsewhere (also in URLs inside header values), every string through the Tier B
-  pattern scan plus the workspace's redaction rules; at most 2,000 requests per run. `list_runs` / `get_run` (CLI `nawi runs`, `nawi run-info`) let an
+  pattern scan plus the workspace's redaction rules; at most 2,000 requests per run.
+  With `--trace` (MCP `trace: true`) a browser run also records a performance
+  trace (roadmap DT1b): `trace.json` in the record (named in run.json's
+  `trace_json` and the reply), in the browser's own JSON trace format, so it
+  loads in the browser's Performance panel, with each step as a measure
+  (`Step <n>: <id> (<action>)`) on its Timings track, placed through a clock
+  sync marker. Only the run's processes are kept (the browser, the GPU process
+  and the renderers of this page and its iframes; never other tabs or the
+  browser's own pages), no screenshot category is recorded, every string is
+  scrubbed like the HAR (secrets, token-like URL parameters, credential and
+  token-named headers, data: payloads), then Tier B plus the workspace rules;
+  at most 300,000 events. A browser that won't trace (already tracing
+  elsewhere) leaves `trace_error` instead and the run itself is unaffected. `list_runs` / `get_run` (CLI `nawi runs`, `nawi run-info`) let an
   agent browse the saved records: newest first, filter by status or flow file,
   one record in full by run id. Code: `src/main/run-record.ts`,
   `src/main/run-report.ts`.
@@ -1215,9 +1227,9 @@ CDP selectors and the MCP projection/revision model.
   `export_flow` only has input events to work with on captures whose sidecar
   carries them (for example DC-4 sidecars written by another tool). Wiring the
   harvest into browser recordings, run records and the flow editor land as
-  separate slices. Run records have the network (`network.har`, by step) but not
-  yet the rest of DT1's DevTools-grade recording: performance trace, DOM
-  mutations, coverage, accessibility tree, storage changes and an in-app
+  separate slices. Run records have the network (`network.har`, by step) and,
+  on request, a performance trace (`trace.json`), but not yet the rest of DT1's
+  DevTools-grade recording: console at all levels, DOM mutations, coverage, accessibility tree, storage changes and an in-app
   step timeline.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a

@@ -30,6 +30,11 @@ describe('nawi run: arguments', () => {
     expect(parseRunArgs(['/f.nawi.yaml'], '/x').screenshots, 'unset: the app decides').toBeUndefined()
   })
 
+  it('takes --trace, sent as run_flow\'s trace, and leaves it out when not given', () => {
+    expect(parseRunArgs(['/f.nawi.yaml', '--trace'], '/x').trace, '--trace').toBe(true)
+    expect('trace' in parseRunArgs(['/f.nawi.yaml'], '/x'), 'unset: the app default (off)').toBe(false)
+  })
+
   it('takes --target and --no-launch for android flows, sent as run_flow\'s target and launch', () => {
     expect(parseRunArgs(['/phone.nawi.yaml', '--target', 'emulator-5560', '--no-launch'], '/x')).toEqual({
       file: '/phone.nawi.yaml',
@@ -240,6 +245,15 @@ describe('nawi run: output and exit code', () => {
       /FAILED: .* ms\nrecord: \/u\/\.config\/nawi\/runs\/20261102T000000000Z-abc123$/
     )
     expect(renderRun({ ...failed, record_error: 'ENOSPC: no space left' })).toMatch(/\nrecord not saved: ENOSPC: no space left$/)
+  })
+
+  it('prints the trace as a path inside the run folder, or why there is none', () => {
+    const dir = '/u/.config/nawi/runs/20261102T000000000Z-abc123'
+    expect(renderRun({ ...failed, run_dir: dir, trace_json: 'trace.json' })).toMatch(new RegExp(`\\nrecord: ${dir}\\ntrace: ${dir}/trace\\.json$`))
+    expect(renderRun({ ...failed, trace_json: 'trace.json' }), 'no path without a saved record').not.toContain('trace:')
+    expect(renderRun({ ...failed, trace_error: 'the browser would not start a trace:\n  busy' })).toMatch(
+      /\nno trace: the browser would not start a trace: busy$/
+    )
   })
 
   it("prints the failing step's screenshot as a path inside the run folder", () => {

@@ -261,6 +261,11 @@ export function ingestPostData(
   return { mimeType, originalSize, parsed: redactParsed(parsed, staticOnly) }
 }
 
+/** A header no run file keeps: a credential (STRIPPED_HEADERS) or a token-named one (SECRET_HEADER_NAME). Any case. */
+export function isSecretHeader(name: string): boolean {
+  return STRIPPED.has(name.toLowerCase()) || SECRET_HEADER_NAME.test(name)
+}
+
 export interface HarHeader {
   name: string
   value: string
@@ -275,7 +280,7 @@ export function toHarHeaders(headers: Record<string, unknown> | undefined): HarH
   if (!headers) return []
   const out: HarHeader[] = []
   for (const [name, value] of Object.entries(headers)) {
-    if (STRIPPED.has(name.toLowerCase()) || SECRET_HEADER_NAME.test(name)) continue
+    if (isSecretHeader(name)) continue
     out.push({ name, value: typeof value === 'string' ? value : String(value) })
   }
   return out

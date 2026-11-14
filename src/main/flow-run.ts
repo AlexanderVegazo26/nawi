@@ -78,6 +78,11 @@ export interface FlowRunRequest {
    * `all` when a record is kept; never taken without one. Browser flows only.
    */
   screenshots?: StepScreenshots
+  /**
+   * Record a performance trace of the run into its record (`trace.json`, roadmap DT1b). Default off; never without a
+   * record. Browser flows only.
+   */
+  trace?: boolean
   /** Android flows: the adb serial or running AVD name to run on; default the only device connected. */
   device?: string
   /** Android flows: force-stop and start the app from its launcher first (default true); false runs on the app as it is. */
@@ -160,6 +165,10 @@ export interface FlowRunReport {
   run_dir?: string
   /** Why the run record could not be saved; the run's own result is unaffected. */
   record_error?: string
+  /** Runs with `trace`: the performance trace's path inside run_dir (`trace.json`), when the record was saved. */
+  trace_json?: string
+  /** Runs with `trace`: why there is no trace. */
+  trace_error?: string
 }
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
@@ -367,7 +376,7 @@ function report(
   file: string,
   flow: Flow,
   run: FlowRun,
-  saved: Pick<FlowRunReport, 'run_id' | 'run_dir' | 'record_error'> = {},
+  saved: Pick<FlowRunReport, 'run_id' | 'run_dir' | 'record_error' | 'trace_json' | 'trace_error'> = {},
   recorded?: RecordedStep[]
 ): FlowRunReport {
   return {
@@ -379,6 +388,7 @@ function report(
     ...(run.failedStepId !== undefined ? { failed_step_id: run.failedStepId } : {}),
     ...(run.opening ? { opening: trimEvidence(run.opening) } : {}),
     ...(run.finalUrl !== undefined ? { final_url: run.finalUrl } : {}),
+    ...(run.traceError !== undefined ? { trace_error: run.traceError } : {}),
     // buildRunRecord maps run.steps one to one, so the same index is the same step.
     steps: run.steps.map(({ screenshotPng, shots: _shotData, ...step }, index) => {
       const shots = recorded?.[index]?.shots
@@ -457,6 +467,9 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
   if (android && request.cdpEndpoint !== undefined) {
     throw new ToolError('INVALID_ARGUMENTS', 'cdp_endpoint is for browser flows; this flow targets an Android app (pick its device with target).', { file: request.file })
   }
+  if (android && request.trace === true) {
+    throw new ToolError('INVALID_ARGUMENTS', 'trace is for browser flows (a browser performance trace); this flow targets an Android app.', { file: request.file })
+  }
   if (!android && (request.device !== undefined || request.launch !== undefined)) {
     throw new ToolError('INVALID_ARGUMENTS', 'target and launch are for Android flows; this flow targets a browser.', { file: request.file })
   }
@@ -497,7 +510,16 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       }
       const dir = await writeRunRecord(deps.record.dir, record, assets, html)
       await pruneRuns(deps.record.dir, deps.record.keep ?? DEFAULT_KEEP_RUNS).catch(() => undefined)
-      return reply({ run_id: runId, run_dir: dir }, record.steps)
+      return reply(
+        {
+          run_id: runId,
+          run_dir: dir,
+          ...(record.trace_json ? { trace_json: record.trace_json } : {}),
+          // The record's reason wins: it also covers a trace that could not be saved.
+          ...(record.trace_error !== undefined ? { trace_error: record.trace_error } : {})
+        },
+        record.steps
+      )
     } catch (error) {
       return reply({ record_error: error instanceof Error ? error.message : String(error) })
     }
@@ -583,8 +605,9 @@ export async function runFlowFile(request: FlowRunRequest, deps: RunFlowDeps = {
       env,
       secret,
       defaultTimeoutMs: request.stepTimeoutMs,
-      // Shots live only in the record: none without one.
+      // Shots and the trace live only in the record: none without one.
       stepScreenshots: recording ? (request.screenshots ?? 'all') : 'off',
+      trace: recording && request.trace === true,
       signal: deps.signal,
       onStep: deps.onStep,
       loadAsset: (path) => readFlowAsset(real, path),

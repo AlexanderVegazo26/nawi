@@ -293,3 +293,19 @@ describe('toHtmlReport: network by step (roadmap DT1)', () => {
     expect(toHtmlReport(build().record, build().assets)).not.toContain('network.har')
   })
 })
+
+describe('toHtmlReport: the run trace (roadmap DT1b)', () => {
+  it('points to trace.json when the run has one', () => {
+    const { record, assets } = build({ ...RUN, trace: { traceEvents: [], metadata: { nawi: { dropped_events: 0, other_process_events: 0 } } } })
+    expect(toHtmlReport(record, assets)).toContain("The run's performance trace is in trace.json next to this report")
+  })
+
+  it('says why there is none, escaped, when the browser would not trace', () => {
+    const { record, assets } = build({ ...RUN, traceError: 'the browser would not start a trace: <b>busy</b>' })
+    expect(toHtmlReport(record, assets)).toContain('No performance trace: the browser would not start a trace: &lt;b&gt;busy&lt;/b&gt;')
+  })
+
+  it('says nothing about traces for a run that did not ask for one', () => {
+    expect(toHtmlReport(build().record, build().assets)).not.toMatch(/trace\.json|performance trace/i)
+  })
+})

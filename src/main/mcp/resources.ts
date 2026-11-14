@@ -15,6 +15,7 @@ import { within } from '../flow-run'
  *     nawi://runs/<run-id>/report.html
  *     nawi://runs/<run-id>/junit.xml
  *     nawi://runs/<run-id>/network.har (browser runs, roadmap DT1: the run's requests by step)
+ *     nawi://runs/<run-id>/trace.json (browser runs with trace, roadmap DT1b: the performance trace)
  *     nawi://runs/<run-id>/steps/<NNN-step>.png | .before.jpg | .after.jpg | .before.png | .after.png (Android)
  *
  * `resources/list` names the record and report of the newest runs;
@@ -94,6 +95,14 @@ export const RESOURCE_TEMPLATES: ResourceTemplate[] = [
     mimeType: 'application/json'
   },
   {
+    uriTemplate: `${RUN_URI_PREFIX}{run_id}/trace.json`,
+    name: 'run-trace',
+    title: 'Run performance trace',
+    description:
+      "Browser runs made with trace: the run's performance trace in Chrome's JSON trace format (opens in the browser's Performance panel), each step a `blink.user_timing` measure named `Step <n>: <id> (<action>)`. Only the run's own processes; secrets scrubbed. Present when run.json has `trace_json`; large traces exceed the read limit (open the file from run_dir instead).",
+    mimeType: 'application/json'
+  },
+  {
     uriTemplate: `${RUN_URI_PREFIX}{run_id}/{+screenshot}`,
     name: 'run-screenshot',
     title: 'Run screenshot',
@@ -104,7 +113,7 @@ export const RESOURCE_TEMPLATES: ResourceTemplate[] = [
 
 export interface RunUri {
   runId: string
-  /** Path inside the run folder: run.json, report.html, junit.xml, network.har or steps/<file>. */
+  /** Path inside the run folder: run.json, report.html, junit.xml, network.har, trace.json or steps/<file>. */
   file: string
   mimeType: string
 }
@@ -120,7 +129,7 @@ export function parseRunUri(uri: string): RunUri | null {
   if (!RUN_ID_RE.test(runId)) return null
   if (Object.hasOwn(RECORD_FILES, file)) return { runId, file, mimeType: RECORD_FILES[file as keyof typeof RECORD_FILES] }
   if (RUN_ASSET_RE.test(file)) {
-    const mimeType = file.endsWith('.har') ? 'application/json' : file.endsWith('.png') ? 'image/png' : 'image/jpeg'
+    const mimeType = file.endsWith('.har') || file.endsWith('.json') ? 'application/json' : file.endsWith('.png') ? 'image/png' : 'image/jpeg'
     return { runId, file, mimeType }
   }
   return null
@@ -164,7 +173,7 @@ export async function readRunResource(runsRoot: string, uri: unknown): Promise<R
   if (!parsed) {
     throw new ToolError(
       'INVALID_ARGUMENTS',
-      `Not a Nawi run resource: expected ${RUN_URI_PREFIX}<run_id>/run.json, report.html, junit.xml, network.har or steps/<file> (see resources/templates/list).`,
+      `Not a Nawi run resource: expected ${RUN_URI_PREFIX}<run_id>/run.json, report.html, junit.xml, network.har, trace.json or steps/<file> (see resources/templates/list).`,
       { uri }
     )
   }

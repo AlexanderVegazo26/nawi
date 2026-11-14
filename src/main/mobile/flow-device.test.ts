@@ -237,7 +237,7 @@ describe('runFlowFile on an android flow', () => {
     const logcat = javaCrash(Math.floor(START / 1000), PKG, { uid: 10234 })
     const host = simHost({ devices: [{ serial: 'emulator-5560', avd: 'loop-api36', api: 36 }], evidence: { logcat } })
     const runs = join(root, 'runs')
-    const report = await runFlowFile({ file: flowFile() }, { roots: [root], androidHost: host, now: host.now, record: { dir: runs } })
+    const report = await runFlowFile({ file: flowFile(), trace: false }, { roots: [root], androidHost: host, now: host.now, record: { dir: runs } })
     expect(report.status).toBe('failed')
     expect(report.failed_step_id).toBe('tap')
     expect(report.steps[0].error).toBe(`${PKG} crashed: java.lang.IllegalStateException: tracking id missing`)
@@ -406,6 +406,9 @@ describe('runFlowFile on an android flow', () => {
     const cdp = await refusal(runFlowFile({ file: flowFile(), cdpEndpoint: '9222' }, { roots: [root], androidHost: host }))
     expect(cdp.code).toBe('INVALID_ARGUMENTS')
     expect(cdp.message).toMatch(/cdp_endpoint is for browser flows/)
+    const traced = await refusal(runFlowFile({ file: flowFile(), trace: true }, { roots: [root], androidHost: host }))
+    expect(traced.code, 'a browser performance trace on an android flow is refused, not silently skipped').toBe('INVALID_ARGUMENTS')
+    expect(traced.message).toMatch(/trace is for browser flows/)
     const web = flowFile('version: 1\nname: w\ntarget: { kind: browser, url: "https://example.test" }\nsteps:\n  - { id: s1, action: press, key: Enter }\n', 'web.nawi.yaml')
     const opened: string[] = []
     const openPage = async (): Promise<never> => {

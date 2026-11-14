@@ -8,6 +8,7 @@ import {
   HEAL_REPLAY_MARKER,
   KEPT_HEAL_REPLAYS,
   NETWORK_HAR,
+  TRACE_JSON,
   RUN_ASSET_RE,
   RUN_ID_RE,
   buildRunRecord,
@@ -539,5 +540,53 @@ describe('buildRunRecord: the run HAR (roadmap DT1)', () => {
     expect(r.network_har).toBeUndefined()
     expect(assets.has(NETWORK_HAR)).toBe(false)
     expect('requests' in r.steps[0], 'no zero count either').toBe(false)
+  })
+})
+
+describe('buildRunRecord: the run trace (roadmap DT1b)', () => {
+  const trace = {
+    traceEvents: [{ name: 'TracingStartedInBrowser', ph: 'I', pid: 1, tid: 1, ts: 5 }],
+    metadata: { nawi: { dropped_events: 0, other_process_events: 3 } }
+  }
+  const run: FlowRun = { status: 'passed', startedAt: T0, durationMs: 300, steps: [{ id: 's1', action: 'click', status: 'passed' }], trace }
+
+  it('writes trace.json next to run.json and names it in trace_json', async () => {
+    const { record: r, assets } = record(run)
+    expect(r.trace_json).toBe(TRACE_JSON)
+    expect(r.trace_error).toBeUndefined()
+    expect(JSON.parse(assets.get(TRACE_JSON)?.toString('utf8') ?? 'null'), 'the trace as the run built it').toEqual(trace)
+    expect(RUN_ASSET_RE.test(TRACE_JSON), 'trace.json is a run asset').toBe(true)
+    for (const bad of ['steps/trace.json', '../trace.json', 'trace.json.exe', 'tracexjson', 'run.trace.json']) {
+      expect(RUN_ASSET_RE.test(bad), `${bad} is not a run asset`).toBe(false)
+    }
+    const runs = join(mkdtempSync(join(tmpdir(), 'nawi-run-trace-')), 'runs')
+    try {
+      const dir = await writeRunRecord(runs, r, assets)
+      expect(readdirSync(dir).sort()).toEqual(['junit.xml', 'run.json', 'trace.json'])
+      expect(JSON.parse(readFileSync(join(dir, TRACE_JSON), 'utf8')).traceEvents).toHaveLength(1)
+    } finally {
+      rmSync(join(runs, '..'), { recursive: true, force: true })
+    }
+  })
+
+  it('says why in trace_error, and writes no file, when the browser would not trace', () => {
+    const { record: r, assets } = record({ ...run, trace: undefined, traceError: 'the browser would not start a trace: busy' })
+    expect(r.trace_json).toBeUndefined()
+    expect(r.trace_error).toBe('the browser would not start a trace: busy')
+    expect(assets.has(TRACE_JSON)).toBe(false)
+  })
+
+  it('keeps the record, without the trace and saying why, when the trace cannot be serialized', () => {
+    const huge = { ...trace, toJSON: () => { throw new RangeError('Invalid string length') } }
+    const { record: r, assets } = record({ ...run, trace: huge })
+    expect(r.trace_json).toBeUndefined()
+    expect(r.trace_error).toBe('the trace could not be saved: Invalid string length')
+    expect(assets.has(TRACE_JSON)).toBe(false)
+    expect(r.status, 'the rest of the record is intact').toBe('passed')
+  })
+
+  it('has neither field for a run that did not ask for a trace', () => {
+    const { record: r } = record({ ...run, trace: undefined })
+    expect('trace_json' in r || 'trace_error' in r, JSON.stringify(r)).toBe(false)
   })
 })

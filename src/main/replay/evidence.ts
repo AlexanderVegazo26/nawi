@@ -46,7 +46,7 @@ const MAX_MESSAGE_CHARS = 1_000
 /** A header value in the run HAR (a Content-Security-Policy can be long). */
 const MAX_HEADER_CHARS = 16_000
 /** An absolute URL inside a header value (`Location`, `Link: <...>`, `Refresh: 0; url=...`). */
-const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s<>"',;]+/gi
+export const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s<>"',;]+/gi
 const MAX_URL_CHARS = 2_000
 /** Requests in flight we remember the step of; beyond this the oldest are forgotten. */
 const MAX_PENDING_REQUESTS = 2_000
