@@ -458,7 +458,7 @@ queued, or closes the request it sent. Code: `src/main/mcp/progress.ts`, `src/mc
 
 Saved runs are also MCP resources, so a client can read them without a tool call: `resources/list` names the
 record and HTML report of the 50 newest runs, `resources/templates/list` gives the patterns
-`nawi://runs/{run_id}/run.json`, `report.html`, `junit.xml`, `network.har`, `trace.json` and `{+screenshot}` (a step's `screenshot` or
+`nawi://runs/{run_id}/run.json`, `report.html`, `junit.xml`, `network.har`, `trace.json`, `console.json` and `{+screenshot}` (a step's `screenshot` or
 `shots.before`/`shots.after` path from run.json, returned as base64), and `resources/read` returns one file
 (up to 8 MiB). A URI that isn't one of those is JSON-RPC -32602, a run or file that doesn't exist -32002; both
 carry Nawi's typed code in `error.data.code`, like tool errors. Only files a run writer makes are reachable
@@ -710,6 +710,24 @@ alone.
   drops the same ones), secret values and token-like URL parameters scrubbed as
   elsewhere (also in URLs inside header values), every string through the Tier B
   pattern scan plus the workspace's redaction rules; at most 2,000 requests per run.
+  Browser runs also write `console.json` (roadmap DT1c): every console message
+  of every level (console API calls with their type, uncaught exceptions,
+  browser log entries such as violations and interventions), in time order, each
+  with its step (`step_id`, or `opening`), `t_ms` on the run's clock, `level`
+  (error, warning, info, debug) and `location` (`url:line:column`); scrubbed like
+  the HAR (the Tier B scan runs before a long message is cut), at most 5,000
+  messages of 1,000 characters. Each step counts its
+  messages by level in `console_counts` (all of them, also past the file's cap)
+  and has `dom_mutations`: nodes added and removed, attribute and text changes
+  in the main frame's document, counted by a MutationObserver in an isolated
+  world the page can't see, from the step's start until the next step began (a
+  re-render landing after the step returned but before the next step is still
+  the step's; counts go by time, not by cause);
+  `navigated: true` when a new page loaded during the step (the counts are then
+  that page's, its parsing included). Not counted: iframes, the inside of
+  shadow roots, and a `style` change that only toggles `-webkit-text-security`
+  (Nawi's own masking of secret fields for its screenshots). `report.html` shows both under each step (up to 50 console
+  messages per step).
   With `--trace` (MCP `trace: true`) a browser run also records a performance
   trace (roadmap DT1b): `trace.json` in the record (named in run.json's
   `trace_json` and the reply), in the browser's own JSON trace format, so it
@@ -1227,9 +1245,10 @@ CDP selectors and the MCP projection/revision model.
   `export_flow` only has input events to work with on captures whose sidecar
   carries them (for example DC-4 sidecars written by another tool). Wiring the
   harvest into browser recordings, run records and the flow editor land as
-  separate slices. Run records have the network (`network.har`, by step) and,
-  on request, a performance trace (`trace.json`), but not yet the rest of DT1's
-  DevTools-grade recording: console at all levels, DOM mutations, coverage, accessibility tree, storage changes and an in-app
+  separate slices. Run records have the network (`network.har`, by step), the
+  console at all levels (`console.json`), DOM mutation counts per step and, on
+  request, a performance trace (`trace.json`), but not yet the rest of DT1's
+  DevTools-grade recording: coverage, accessibility tree, storage changes and an in-app
   step timeline.
 - **Video is playback-only in the editor.** `isVideo` gates off annotate, crop,
   copy and export (`src/renderer/components/EditorView.tsx:922-1146`), so a

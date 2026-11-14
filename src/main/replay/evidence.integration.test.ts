@@ -58,6 +58,38 @@ const NET_PAGE = `<!doctype html>
   </script>
 </body></html>`
 
+/** DT1c: a page that logs at every level, changes its DOM in a click and again when a slow fetch answers. */
+const DOM_PAGE = `<!doctype html>
+<html><head><title>dom</title><link rel="icon" href="data:,"></head>
+<body>
+  <input id="pw" type="text" aria-label="Password">
+  <button id="act">Act</button>
+  <button id="probe">Probe</button>
+  <a id="next" href="/dom2">Next</a>
+  <ul id="list"></ul>
+  <p role="status" id="status">idle</p>
+  <script>
+    console.debug('boot debug')
+    document.querySelector('#act').addEventListener('click', async () => {
+      const list = document.querySelector('#list')
+      console.log('typed ' + document.querySelector('#pw').value)
+      console.info('info line')
+      console.warn('careful')
+      for (let i = 0; i < 3; i++) list.appendChild(document.createElement('li'))
+      list.setAttribute('data-n', '3')
+      const r = await fetch('/api/late')
+      for (let i = 0; i < 4; i++) list.appendChild(document.createElement('li'))
+      document.querySelector('#status').textContent = 'rendered ' + r.status
+    })
+    document.querySelector('#probe').addEventListener('click', () => {
+      document.querySelector('#status').textContent = 'probe ' + typeof window.__nawiDom + ' ' + ('__nawiDom' in window)
+    })
+  </script>
+</body></html>`
+
+const DOM_PAGE_2 = `<!doctype html><html><head><title>dom2</title><link rel="icon" href="data:,"></head>
+<body><p role="status">second page</p><script>console.error('page two boot')</script></body></html>`
+
 const executable = findBrowserExecutable(['playwright-chromium'])
 const describeWithBrowser = executable ? describe : describe.skip
 if (!executable) console.warn('[evidence.integration] no Playwright Chromium found; evidence tests SKIPPED, not passed')
@@ -77,6 +109,13 @@ describeWithBrowser('replay evidence (F4b) against a real Chromium', () => {
         res.writeHead(200, { 'content-type': 'text/html' }).end(PAGE)
       } else if (req.url === '/net') {
         res.writeHead(200, { 'content-type': 'text/html' }).end(NET_PAGE)
+      } else if (req.url === '/dom') {
+        res.writeHead(200, { 'content-type': 'text/html' }).end(DOM_PAGE)
+      } else if (req.url === '/dom2') {
+        res.writeHead(200, { 'content-type': 'text/html' }).end(DOM_PAGE_2)
+      } else if (req.url === '/api/late') {
+        // Answers after the click step returned, so the re-render it causes comes later.
+        setTimeout(() => res.writeHead(200, { 'content-type': 'text/plain' }).end('ok'), 150)
       } else if (req.url?.startsWith('/busy')) {
         // DT1b: another tab that keeps its renderer busy while a run traces.
         res
@@ -271,4 +310,59 @@ steps:
       await client.send('Target.closeTarget', { targetId: other.targetId }).catch(() => undefined)
     }
   }, 90_000)
+
+  it('DT1c: console.json has every level under its step with no secret; each step counts its DOM changes, unseen by the page', async () => {
+    const parsed = parseFlow(`version: 1
+name: Dom
+target: { kind: browser, url: "${origin}/dom" }
+steps:
+  - { id: type, action: fill, target: { selectors: [{ id: pw }] }, value: "\${secret.pw}" }
+  - { id: act, action: click, target: { selectors: [{ id: act }] } }
+  - { id: rendered, action: assert, target: { selectors: [{ role: status }] }, expect: { text: "rendered 200" } }
+  - { id: probe, action: click, target: { selectors: [{ id: probe }] } }
+  - { id: isolated, action: assert, target: { selectors: [{ role: status }] }, expect: { text: "probe undefined false" } }
+  - { id: next, action: click, target: { selectors: [{ id: next }] } }
+  - { id: there, action: assert, target: { selectors: [{ role: status }] }, expect: { text: "second page" } }
+`)
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors))
+    // Screenshots on: every capture masks the field holding the secret (a style change) and unmasks it after; that is
+    // the run's doing, not the page's, and must not show up in the steps' DOM counts.
+    const run = await replayFlow(client, parsed.flow, { sessionId, secret: (n) => (n === 'pw' ? SECRET : undefined), stepScreenshots: 'all' })
+    expect(run.status, `the page must not see the observer (isolated world): ${why(run)}`).toBe('passed')
+    expect(run.steps.filter((s) => s.shots?.after !== undefined).length, 'screenshots were taken (masking ran)').toBeGreaterThan(3)
+    const json = JSON.stringify(run)
+    expect(json.includes(SECRET), `the typed secret leaked: ${json}`).toBe(false)
+
+    const entries = run.console?.entries ?? []
+    const view = entries.map((e) => [e.opening ? '(opening)' : e.step_id, e.level, e.type, e.message])
+    expect(view, JSON.stringify(entries)).toEqual([
+      ['(opening)', 'debug', 'debug', 'boot debug'],
+      ['act', 'info', 'log', 'typed ${secret.pw}'],
+      ['act', 'info', 'info', 'info line'],
+      ['act', 'warning', 'warning', 'careful'],
+      [expect.stringMatching(/^(next|there)$/), 'error', 'error', 'page two boot']
+    ])
+    expect(entries[1].location, 'where the log call is, 1-based').toMatch(new RegExp(`^${origin}/dom:\\d+:\\d+$`))
+    const times = entries.map((e) => e.t_ms)
+    expect(times, 'in time order on the run clock').toEqual([...times].sort((a, b) => a - b))
+    expect(times[0]).toBeGreaterThan(0)
+    expect(times[times.length - 1]).toBeLessThan(run.durationMs)
+    const act = run.steps.find((s) => s.id === 'act')
+    expect(act?.consoleCounts, why(run)).toEqual({ info: 2, warning: 1 })
+    expect(act?.consoleErrors, 'console errors stay error-level only').toBeUndefined()
+
+    const dom = Object.fromEntries(run.steps.map((s) => [s.id, s.domMutations]))
+    expect(run.opening?.domMutations?.navigated, `the target loaded while opening: ${JSON.stringify(run.opening)}`).toBe(true)
+    expect(run.opening?.domMutations?.added, 'parsing the target counts').toBeGreaterThan(10)
+    // The click adds 3 items and an attribute at once; the late render (4 items + the status text) lands after the
+    // click returned, under the click or under the assert that waits for it, never later.
+    expect(dom.act?.added, JSON.stringify(dom)).toBeGreaterThanOrEqual(3)
+    expect(dom.act?.attributes, JSON.stringify(dom)).toBe(1)
+    const late = (k: 'added' | 'removed' | 'attributes' | 'text'): number => (dom.act?.[k] ?? 0) + (dom.rendered?.[k] ?? 0)
+    expect([late('added'), late('removed'), late('attributes'), late('text')], JSON.stringify(dom)).toEqual([8, 1, 1, 0])
+    expect(dom.probe, 'the probe click replaces the status text').toEqual({ added: 1, removed: 1, attributes: 0, text: 0 })
+    expect(dom.type, 'typing into a field changes no DOM node').toEqual({ added: 0, removed: 0, attributes: 0, text: 0 })
+    expect(dom.isolated).toEqual({ added: 0, removed: 0, attributes: 0, text: 0 })
+    expect([dom.next?.navigated, dom.there?.navigated].filter(Boolean), `one of them loaded the second page: ${JSON.stringify(dom)}`).toEqual([true])
+  }, 60_000)
 })

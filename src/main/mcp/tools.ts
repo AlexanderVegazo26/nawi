@@ -738,6 +738,8 @@ const runFlow = defineTool({
     'With screenshots "all" (default) the record also has the page before and after each step (steps[].shots: ' +
     'JPEG paths inside run_dir, PNG for an Android device\'s screen; fields that received a secret are masked); "failed" keeps only the page the ' +
     'failing step left, "off" none. ' +
+    'Browser runs also keep every console message by step ("console.json" inside run_dir; steps[].consoleCounts by level) ' +
+    'and what each step changed in the DOM (steps[].domMutations: nodes added/removed, attribute and text changes). ' +
     'Browser flows with trace: true also get a performance trace in the record (trace_json: "trace.json" inside run_dir, ' +
     "which the browser's Performance panel opens; each step is a measure on its Timings track; only this page's processes, " +
     'secrets and token-like URL parameters scrubbed); trace_error says why when the browser would not trace. ' +

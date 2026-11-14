@@ -63,7 +63,8 @@ describe('parseRunUri', () => {
     [`nawi://runs/${OLD}/steps/003-save.after.jpg`, 'steps/003-save.after.jpg', 'image/jpeg'],
     [`nawi://runs/${OLD}/steps/001-shot.png`, 'steps/001-shot.png', 'image/png'],
     [`nawi://runs/${OLD}/network.har`, 'network.har', 'application/json'],
-    [`nawi://runs/${OLD}/trace.json`, 'trace.json', 'application/json']
+    [`nawi://runs/${OLD}/trace.json`, 'trace.json', 'application/json'],
+    [`nawi://runs/${OLD}/console.json`, 'console.json', 'application/json']
   ])('accepts %s', (uri, file, mimeType) => {
     expect(parseRunUri(uri), uri).toEqual({ runId: OLD, file, mimeType })
   })
@@ -81,6 +82,7 @@ describe('parseRunUri', () => {
     ['a HAR anywhere but the run folder', `nawi://runs/${OLD}/steps/network.har`],
     ['a HAR by another name', `nawi://runs/${OLD}/network.har.json`],
     ['a trace anywhere but the run folder', `nawi://runs/${OLD}/steps/trace.json`],
+    ['a console log anywhere but the run folder', `nawi://runs/${OLD}/steps/console.json`],
     ['another .json file', `nawi://runs/${OLD}/other.json`]
   ])('refuses %s', (_label, uri) => {
     expect(parseRunUri(uri), uri).toBeNull()
@@ -95,6 +97,7 @@ describe('resource templates', () => {
       'nawi://runs/{run_id}/junit.xml',
       'nawi://runs/{run_id}/network.har',
       'nawi://runs/{run_id}/trace.json',
+      'nawi://runs/{run_id}/console.json',
       'nawi://runs/{run_id}/{+screenshot}'
     ])
   })
@@ -156,6 +159,13 @@ describe('readRunResource', () => {
     await saveRun(OLD, 'failed', { 'trace.json': trace })
     const got = await readRunResource(root, `nawi://runs/${OLD}/trace.json`)
     expect(got, 'a trace is text, not a blob').toEqual({ uri: `nawi://runs/${OLD}/trace.json`, mimeType: 'application/json', text: trace })
+  })
+
+  it("returns a run's console.json as JSON text", async () => {
+    const log = JSON.stringify({ version: 1, entries: [{ t_ms: 12.5, step_id: 'pay', level: 'warning', source: 'console', type: 'warning', message: 'slow' }] })
+    await saveRun(OLD, 'passed', { 'console.json': log })
+    const got = await readRunResource(root, `nawi://runs/${OLD}/console.json`)
+    expect(got, 'a console log is text, not a blob').toEqual({ uri: `nawi://runs/${OLD}/console.json`, mimeType: 'application/json', text: log })
   })
 
   it('refuses a non-string or malformed uri as INVALID_ARGUMENTS, naming the uri', async () => {

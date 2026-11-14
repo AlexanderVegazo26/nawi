@@ -1,4 +1,4 @@
-import { NETWORK_HAR, TRACE_JSON, describe, evidenceLines, missReason, scoreText, type RecordedStep, type RunRecord } from './run-record'
+import { CONSOLE_JSON, NETWORK_HAR, TRACE_JSON, describe, evidenceLines, missReason, scoreText, type RecordedEvidence, type RecordedStep, type RunRecord } from './run-record'
 
 /**
  * Roadmap F4c: the run's self-contained HTML report (`runs/<run-id>/report.html`).
@@ -19,6 +19,17 @@ const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' }
 
 /** Requests listed under one step; the rest are in network.har. */
 export const MAX_REPORT_REQUESTS_PER_STEP = 50
+
+/** Console messages listed under one step; the rest are in console.json. */
+export const MAX_REPORT_CONSOLE_PER_STEP = 50
+
+/** One console message as the report lists it. */
+interface ReportConsole {
+  level: string
+  message: string
+  location?: string
+  t: number
+}
 
 /** One request as the report lists it. */
 interface ReportRequest {
@@ -65,6 +76,45 @@ function requestsByStep(record: RunRecord, assets: ReadonlyMap<string, Buffer>):
     out.set(key, list)
   }
   return out
+}
+
+/**
+ * Roadmap DT1c: the run's console messages by step (key: step id, or '' while opening), read from console.json.
+ * Empty when the run has none or the file is not one; the report never fails on it.
+ */
+function consoleByStep(record: RunRecord, assets: ReadonlyMap<string, Buffer>): Map<string, ReportConsole[]> {
+  const out = new Map<string, ReportConsole[]>()
+  const bytes = record.console_json === CONSOLE_JSON ? assets.get(CONSOLE_JSON) : undefined
+  if (!bytes) return out
+  let entries: unknown
+  try {
+    entries = (JSON.parse(bytes.toString('utf8')) as { entries?: unknown }).entries
+  } catch {
+    return out
+  }
+  if (!Array.isArray(entries)) return out
+  for (const e of entries as Array<Record<string, unknown>>) {
+    if (typeof e?.message !== 'string') continue
+    const key = typeof e.step_id === 'string' ? e.step_id : ''
+    const list = out.get(key) ?? []
+    list.push({
+      level: typeof e.level === 'string' ? e.level : 'info',
+      message: e.message,
+      ...(typeof e.location === 'string' ? { location: e.location } : {}),
+      t: typeof e.t_ms === 'number' ? e.t_ms : 0
+    })
+    out.set(key, list)
+  }
+  return out
+}
+
+/** A step's DOM changes in one line (roadmap DT1c), or '' when it has none recorded. */
+export function domLine(e: Pick<RecordedEvidence, 'dom_mutations'>): string {
+  const d = e.dom_mutations
+  if (!d) return ''
+  const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+  const parts = [`${plural(d.added, 'node')} added`, `${d.removed} removed`, plural(d.attributes, 'attribute change'), plural(d.text, 'text change')]
+  return `DOM: ${parts.join(', ')}${d.navigated ? ' (a new page loaded: counts are from it)' : ''}`
 }
 
 export function htmlEscape(value: string): string {
@@ -147,6 +197,35 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
     )
   }
 
+  const consoleMessages = consoleByStep(record, assets)
+  /** A step's console messages of every level (or the opening's, key ''), collapsed: the step's slice of the console. */
+  const consoleList = (key: string, counts: RecordedEvidence['console_counts']): string => {
+    const list = consoleMessages.get(key) ?? []
+    const total = Object.values(counts ?? {}).reduce((sum, n) => sum + (typeof n === 'number' ? n : 0), 0)
+    if (list.length === 0 && total === 0) return ''
+    const byLevel = (['error', 'warning', 'info', 'debug'] as const)
+      .filter((level) => counts?.[level])
+      .map((level) => `${counts?.[level]} ${level}`)
+      .join(', ')
+    const shown = list.slice(0, MAX_REPORT_CONSOLE_PER_STEP).map((c) => {
+      const where = c.location !== undefined ? ` · ${c.location}` : ''
+      return `<li${c.level === 'error' ? ' class="failed"' : ''}><span class="muted">${htmlEscape(c.level)}</span> ${htmlEscape(c.message)} <span class="muted">${htmlEscape(`at ${ms(c.t)}${where}`)}</span></li>`
+    })
+    // In the file but not listed here, and counted but past the file's cap (never kept anywhere).
+    const inFile = list.length - shown.length
+    const notKept = Math.max(0, total - list.length)
+    return (
+      `<details><summary>Console (${byLevel || `${list.length}`})</summary><ul>${shown.join('')}` +
+      (inFile > 0 ? `<li class="muted">${inFile} more in ${CONSOLE_JSON}</li>` : '') +
+      (notKept > 0 ? `<li class="muted">${notKept} more not kept (past the run's console cap)</li>` : '') +
+      '</ul></details>'
+    )
+  }
+  const dom = (e: Pick<RecordedEvidence, 'dom_mutations'>): string => {
+    const line = domLine(e)
+    return line ? `<div class="muted">${htmlEscape(line)}</div>` : ''
+  }
+
   const evidence = (e: Parameters<typeof evidenceLines>[0]): string => {
     const lines = evidenceLines(e)
     if (lines.length === 0) return ''
@@ -185,7 +264,9 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
       `<span class="badge">${htmlEscape(STATUS_LABEL[s.status] ?? s.status)}</span>` +
       `<span class="muted">${htmlEscape(ms(s.duration_ms))}</span></div>` +
       detail.join('') +
+      dom(s) +
       evidence(s) +
+      consoleList(s.id, s.console_counts) +
       network(s.id) +
       (shots ? `<div class="shots">${shots}</div>` : '') +
       '</li>'
@@ -239,9 +320,14 @@ export function toHtmlReport(record: RunRecord, assets: ReadonlyMap<string, Buff
       : '',
     drift,
     `<dl>${rows.map(([k, v]) => `<dt>${htmlEscape(k)}</dt><dd>${htmlEscape(v)}</dd>`).join('')}</dl>`,
-    record.opening || byStep.has('') ? `<h2>While opening the target</h2>${record.opening ? evidence(record.opening) : ''}${network('')}` : '',
+    record.opening || byStep.has('') || consoleMessages.has('')
+      ? `<h2>While opening the target</h2>${record.opening ? dom(record.opening) + evidence(record.opening) : ''}${consoleList('', record.opening?.console_counts)}${network('')}`
+      : '',
     record.network_har === NETWORK_HAR
       ? `<p class="muted">Every request of the run, by step, is in ${NETWORK_HAR} next to this report (opens in a browser's network panel).</p>`
+      : '',
+    record.console_json === CONSOLE_JSON
+      ? `<p class="muted">Every console message of the run (all levels), by step, is in ${CONSOLE_JSON} next to this report.</p>`
       : '',
     record.trace_json === TRACE_JSON
       ? `<p class="muted">The run's performance trace is in ${TRACE_JSON} next to this report (load it in the browser's Performance panel; each step is marked on its Timings track).</p>`

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FlowRun } from './replay/replay'
 import { buildRunRecord, listRuns, newRunId, readRunRecord, writeRunRecord, type RunRecord } from './run-record'
-import { MAX_REPORT_REQUESTS_PER_STEP, htmlEscape, toHtmlReport } from './run-report'
+import { MAX_REPORT_CONSOLE_PER_STEP, MAX_REPORT_REQUESTS_PER_STEP, htmlEscape, toHtmlReport } from './run-report'
 
 const T0 = Date.UTC(2026, 10, 2, 10, 39, 0, 123)
 const JPG = Buffer.from('ffd8ffe000104a46494600010100000100010000', 'hex')
@@ -309,3 +309,64 @@ describe('toHtmlReport: the run trace (roadmap DT1b)', () => {
     expect(toHtmlReport(build().record, build().assets)).not.toMatch(/trace\.json|performance trace/i)
   })
 })
+
+describe('toHtmlReport: console and DOM changes by step (roadmap DT1c)', () => {
+  const entry = (where: Record<string, unknown>, level: string, message: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    t_ms: 1500,
+    ...where,
+    level,
+    source: 'console',
+    message,
+    ...extra
+  })
+  const withConsole = (entries: Array<Record<string, unknown>>, counts: Record<string, number> = {}): { record: RunRecord; assets: Map<string, Buffer> } =>
+    build({
+      ...RUN,
+      steps: [
+        { id: 's1', action: 'click', status: 'passed', domMutations: { added: 1, removed: 0, attributes: 2, text: 1 } },
+        { id: 's2', action: 'click', status: 'passed', consoleCounts: counts, domMutations: { added: 0, removed: 0, attributes: 0, text: 0, navigated: true } }
+      ],
+      console: { version: 1, entries } as unknown as NonNullable<FlowRun['console']>
+    })
+
+  it("lists each step's console messages under it, escaped, errors marked, with counts by level, and the opening's under the opening", () => {
+    const { record, assets } = withConsole(
+      [
+        entry({ opening: true }, 'debug', 'boot'),
+        entry({ step_id: 's2' }, 'error', '<img src=x onerror=alert(1)>', { location: 'https://app.example/app.js:3:9' }),
+        entry({ step_id: 's2' }, 'info', 'hello')
+      ],
+      { error: 1, info: 1 }
+    )
+    const html = toHtmlReport(record, assets)
+    expect(html, 'page text never becomes markup').not.toContain('<img src=x')
+    const s1 = html.slice(html.indexOf('id="step-1"'), html.indexOf('id="step-2"'))
+    const s2 = html.slice(html.indexOf('id="step-2"'))
+    expect(s1, 'step 1 logged nothing').not.toContain('Console (')
+    expect(s1).toContain('DOM: 1 node added, 0 removed, 2 attribute changes, 1 text change')
+    expect(s2).toContain('<summary>Console (1 error, 1 info)</summary>')
+    expect(s2).toContain('<li class="failed"><span class="muted">error</span> &lt;img src=x onerror=alert(1)&gt; <span class="muted">at 1.50 s · https://app.example/app.js:3:9</span></li>')
+    expect(s2).toContain('<li><span class="muted">info</span> hello <span class="muted">at 1.50 s</span></li>')
+    expect(s2).toContain('DOM: 0 nodes added, 0 removed, 0 attribute changes, 0 text changes (a new page loaded: counts are from it)')
+    const opening = html.slice(html.indexOf('While opening the target'), html.indexOf('id="step-1"'))
+    expect(opening).toContain('<li><span class="muted">debug</span> boot')
+    expect(html).toContain('Every console message of the run (all levels), by step, is in console.json')
+  })
+
+  it('lists at most MAX_REPORT_CONSOLE_PER_STEP messages per step, points to console.json for the rest, and says which were never kept', () => {
+    const many = Array.from({ length: MAX_REPORT_CONSOLE_PER_STEP + 7 }, (_, i) => entry({ step_id: 's2' }, 'info', `line ${i}`))
+    const { record, assets } = withConsole(many, { info: MAX_REPORT_CONSOLE_PER_STEP + 10 })
+    const html = toHtmlReport(record, assets)
+    expect(html.match(/line \d+ </g), 'listed messages').toHaveLength(MAX_REPORT_CONSOLE_PER_STEP)
+    expect(html, 'the file holds 7 more of this step').toContain('<li class="muted">7 more in console.json</li>')
+    expect(html, 'counted past the file cap').toContain(`<li class="muted">3 more not kept (past the run's console cap)</li>`)
+  })
+
+  it('still renders when console.json is not one, and says nothing about a console without one', () => {
+    const { record, assets } = withConsole([entry({ step_id: 's2' }, 'info', 'x')])
+    assets.set('console.json', Buffer.from('{not json'))
+    expect(toHtmlReport(record, assets)).not.toContain('<li><span class="muted">info</span> x')
+    expect(toHtmlReport(build().record, build().assets)).not.toMatch(/console\.json|Console \(|DOM: /)
+  })
+})
+

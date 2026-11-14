@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EvidenceCollector, MAX_ENTRIES_PER_STEP, MAX_HAR_REQUESTS, wallClockMs } from './evidence'
+import { EvidenceCollector, MAX_CONSOLE_ENTRIES, MAX_ENTRIES_PER_STEP, MAX_HAR_REQUESTS, wallClockMs } from './evidence'
 import { REQUEST_BODY_NOT_KEPT } from '../harvest/har'
 
 type Listener = (event: { method: string; params: Record<string, unknown>; sessionId?: string }) => void
@@ -197,7 +197,8 @@ describe('EvidenceCollector', () => {
     ev.stop()
     expect(ev.forStep(-1)).toEqual({
       failedRequests: [{ method: 'POST', url: 'https://app.example/missing.css', resource_type: 'Fetch', status: 404 }],
-      consoleErrors: [{ source: 'console', message: 'boot failed' }]
+      consoleErrors: [{ source: 'console', message: 'boot failed' }],
+      consoleCounts: { error: 1 }
     })
   })
 
@@ -577,5 +578,134 @@ describe('EvidenceCollector.network (roadmap DT1: the run HAR)', () => {
     expect(har?.log.entries).toHaveLength(MAX_HAR_REQUESTS)
     expect(har?.log.comment).toBe(`3 more requests not kept (the run HAR keeps ${MAX_HAR_REQUESTS})`)
     expect(ev.network(['poll'], 1_000_000)?.perStep.get(0), 'the count is of kept requests, matching the file').toBe(MAX_HAR_REQUESTS)
+  })
+})
+
+describe('EvidenceCollector.consoleLog (roadmap DT1c: every console message of the run)', () => {
+  const T0 = 1_000_000
+  const call = (type: string, at: number | undefined, ...values: unknown[]): Record<string, unknown> => ({
+    type,
+    args: values.map((value) => ({ type: typeof value, value })),
+    ...(at !== undefined ? { timestamp: at } : {})
+  })
+
+  it('keeps every level in time order with its step, run-clock time, level, type and 1-based location; counts each step by level', async () => {
+    let t = T0
+    const { client, ev } = await collector(undefined, () => t)
+    client.emit('Runtime.consoleAPICalled', call('info', T0 + 1, 'booting'))
+    t = T0 + 10
+    ev.beginStep(0)
+    client.emit('Runtime.consoleAPICalled', {
+      ...call('log', T0 + 12, 'clicked', 3),
+      stackTrace: { callFrames: [{ url: 'https://app.example/app.js', lineNumber: 41, columnNumber: 6 }] }
+    })
+    client.emit('Runtime.consoleAPICalled', call('warning', T0 + 13, 'deprecated'))
+    client.emit('Runtime.consoleAPICalled', call('debug', T0 + 14, 'state', { a: 1 }))
+    client.emit('Log.entryAdded', { entry: { level: 'verbose', source: 'violation', text: "'click' handler took 120ms", timestamp: T0 + 15 } })
+    client.emit('Log.entryAdded', {
+      entry: { level: 'error', source: 'network', text: 'Failed to load resource: 404', timestamp: T0 + 16, url: 'https://app.example/x.png' }
+    })
+    t = T0 + 20
+    ev.beginStep(1)
+    client.emit('Runtime.consoleAPICalled', call('assert', T0 + 22))
+    client.emit('Runtime.exceptionThrown', {
+      timestamp: T0 + 23,
+      exceptionDetails: { text: 'Uncaught', exception: { description: 'TypeError: x is undefined' }, url: 'https://app.example/app.js', lineNumber: 0, columnNumber: 0 }
+    })
+    // Arrived first but happened earlier: the file is in time order, not arrival order.
+    client.emit('Runtime.consoleAPICalled', call('table', T0 + 21, 'rows'))
+    ev.stop()
+
+    const log = ev.consoleLog(['open', 'save'], T0)
+    expect(log, JSON.stringify(log)).toEqual({
+      version: 1,
+      entries: [
+        { t_ms: 1, opening: true, level: 'info', source: 'console', type: 'info', message: 'booting' },
+        { t_ms: 12, step_id: 'open', level: 'info', source: 'console', type: 'log', message: 'clicked 3', location: 'https://app.example/app.js:42:7' },
+        { t_ms: 13, step_id: 'open', level: 'warning', source: 'console', type: 'warning', message: 'deprecated' },
+        { t_ms: 14, step_id: 'open', level: 'debug', source: 'console', type: 'debug', message: 'state {"a":1}' },
+        { t_ms: 15, step_id: 'open', level: 'debug', source: 'log', type: 'violation', message: "'click' handler took 120ms" },
+        { t_ms: 16, step_id: 'open', level: 'error', source: 'log', type: 'network', message: 'Failed to load resource: 404', location: 'https://app.example/x.png' },
+        { t_ms: 21, step_id: 'save', level: 'info', source: 'console', type: 'table', message: 'rows' },
+        { t_ms: 22, step_id: 'save', level: 'error', source: 'console', type: 'assert', message: 'console.assert' },
+        { t_ms: 23, step_id: 'save', level: 'error', source: 'exception', message: 'TypeError: x is undefined', location: 'https://app.example/app.js:1:1' }
+      ]
+    })
+    expect(ev.forStep(-1)?.consoleCounts).toEqual({ info: 1 })
+    expect(ev.forStep(0)?.consoleCounts, 'the network log line counts as an error message too').toEqual({ info: 1, warning: 1, debug: 2, error: 1 })
+    expect(ev.forStep(1)?.consoleCounts).toEqual({ info: 1, error: 2 })
+    expect(ev.forStep(0)?.consoleErrors, 'console errors stay error-level only, without the network line the failed requests repeat').toBeUndefined()
+    expect(ev.forStep(1)?.consoleErrors?.map((c) => c.source)).toEqual(['console', 'exception'])
+  })
+
+  it('places a message without a browser timestamp at the time it arrived', async () => {
+    let t = T0
+    const { client, ev } = await collector(undefined, () => t)
+    ev.beginStep(0)
+    t = T0 + 40
+    client.emit('Runtime.consoleAPICalled', call('log', undefined, 'no stamp'))
+    ev.stop()
+    expect(ev.consoleLog(['a'], T0)?.entries).toEqual([{ t_ms: 40, step_id: 'a', level: 'info', source: 'console', type: 'log', message: 'no stamp' }])
+  })
+
+  it('is undefined when the page logged nothing', async () => {
+    const { ev } = await collector(undefined, () => T0)
+    ev.beginStep(0)
+    ev.stop()
+    expect(ev.consoleLog(['a'], T0)).toBeUndefined()
+  })
+
+  it('scrubs secrets from messages, token parameters from locations (keeping the line), and applies Tier B and the workspace rules', async () => {
+    const rule = { id: 'acme', label: 'ACME ref', pattern: 'ACME-[0-9a-f]{8}', enabled: true }
+    const client = new FakeClient()
+    const ev = new EvidenceCollector(client, SESSION, redact, () => T0, [rule])
+    await ev.start()
+    ev.beginStep(0)
+    client.emit('Runtime.consoleAPICalled', {
+      ...call('log', T0 + 1, `typed ${SECRET} for ACME-0123abcd`),
+      stackTrace: { callFrames: [{ url: `https://app.example/app.js?access_token=t0k3n&v=${SECRET}`, lineNumber: 9, columnNumber: 2 }] }
+    })
+    client.emit('Runtime.consoleAPICalled', call('warning', T0 + 2, 'key AKIAIOSFODNN7EXAMPLE leaked'))
+    ev.stop()
+    const log = ev.consoleLog(['a'], T0)
+    const text = JSON.stringify(log)
+    expect(text.includes(SECRET), text).toBe(false)
+    expect(text, 'token parameter').not.toContain('t0k3n')
+    expect(text, 'Tier B pattern (AWS access key id)').not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(log?.entries[0]?.message, 'secret + workspace rule').toBe('typed [secret] for [REDACTED:acme]')
+    expect(log?.entries[0]?.location).toBe('https://app.example/app.js?v=[secret]:10:3')
+  })
+
+  it('runs the pattern scan before cutting a long message, so a token across the cut leaves no prefix behind', async () => {
+    const rule = { id: 'acme', label: 'ACME ref', pattern: 'ACME-[0-9a-f]{8}', enabled: true }
+    const client = new FakeClient()
+    const ev = new EvidenceCollector(client, SESSION, redact, () => T0, [rule])
+    await ev.start()
+    ev.beginStep(0)
+    client.emit('Runtime.consoleAPICalled', call('error', T0 + 1, `${'x'.repeat(993)}ACME-0123abcd tail`))
+    ev.stop()
+    const [entry] = ev.consoleLog(['a'], T0)?.entries ?? []
+    expect(entry?.message, 'cut at 1000 chars').toHaveLength(1001)
+    expect(entry?.message, 'no part of the token').not.toMatch(/ACME-0/)
+    expect(ev.forStep(0)?.consoleErrors?.[0]?.message, 'console errors get the same scan').not.toMatch(/ACME-0/)
+  })
+
+  it(`keeps at most ${MAX_CONSOLE_ENTRIES} messages, counts all of them per step, and never scrubs what it does not keep`, async () => {
+    const { client, ev } = await collector(undefined, () => T0)
+    ev.beginStep(0)
+    for (let i = 0; i < MAX_CONSOLE_ENTRIES; i++) client.emit('Runtime.consoleAPICalled', call('log', T0 + 1, `line ${i}`))
+    let read = 0
+    const costly = { type: 'log', timestamp: T0 + 2, get args() {
+      read++
+      return [{ type: 'string', value: 'past the cap' }]
+    } }
+    client.emit('Runtime.consoleAPICalled', costly)
+    client.emit('Runtime.consoleAPICalled', call('warning', T0 + 3, 'also past'))
+    ev.stop()
+    const log = ev.consoleLog(['spam'], T0)
+    expect(log?.entries).toHaveLength(MAX_CONSOLE_ENTRIES)
+    expect(log?.dropped).toBe(2)
+    expect(read, 'a message past the cap is never turned into text').toBe(0)
+    expect(ev.forStep(0)?.consoleCounts).toEqual({ info: MAX_CONSOLE_ENTRIES + 1, warning: 1 })
   })
 })

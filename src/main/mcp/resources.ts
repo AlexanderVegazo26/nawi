@@ -16,6 +16,7 @@ import { within } from '../flow-run'
  *     nawi://runs/<run-id>/junit.xml
  *     nawi://runs/<run-id>/network.har (browser runs, roadmap DT1: the run's requests by step)
  *     nawi://runs/<run-id>/trace.json (browser runs with trace, roadmap DT1b: the performance trace)
+ *     nawi://runs/<run-id>/console.json (browser runs, roadmap DT1c: every console message by step)
  *     nawi://runs/<run-id>/steps/<NNN-step>.png | .before.jpg | .after.jpg | .before.png | .after.png (Android)
  *
  * `resources/list` names the record and report of the newest runs;
@@ -103,6 +104,14 @@ export const RESOURCE_TEMPLATES: ResourceTemplate[] = [
     mimeType: 'application/json'
   },
   {
+    uriTemplate: `${RUN_URI_PREFIX}{run_id}/console.json`,
+    name: 'run-console',
+    title: 'Run console log',
+    description:
+      'Browser runs: every console message of the run, all levels (console API calls, uncaught exceptions, browser log entries), as `{ version: 1, entries: [{ t_ms, step_id | opening, level, source, type, message, location }] }` in time order. Secrets scrubbed. Present when run.json has `console_json`; per-step counts are in each step\'s `console_counts`.',
+    mimeType: 'application/json'
+  },
+  {
     uriTemplate: `${RUN_URI_PREFIX}{run_id}/{+screenshot}`,
     name: 'run-screenshot',
     title: 'Run screenshot',
@@ -113,7 +122,7 @@ export const RESOURCE_TEMPLATES: ResourceTemplate[] = [
 
 export interface RunUri {
   runId: string
-  /** Path inside the run folder: run.json, report.html, junit.xml, network.har, trace.json or steps/<file>. */
+  /** Path inside the run folder: run.json, report.html, junit.xml, network.har, trace.json, console.json or steps/<file>. */
   file: string
   mimeType: string
 }
@@ -173,7 +182,7 @@ export async function readRunResource(runsRoot: string, uri: unknown): Promise<R
   if (!parsed) {
     throw new ToolError(
       'INVALID_ARGUMENTS',
-      `Not a Nawi run resource: expected ${RUN_URI_PREFIX}<run_id>/run.json, report.html, junit.xml, network.har, trace.json or steps/<file> (see resources/templates/list).`,
+      `Not a Nawi run resource: expected ${RUN_URI_PREFIX}<run_id>/run.json, report.html, junit.xml, network.har, trace.json, console.json or steps/<file> (see resources/templates/list).`,
       { uri }
     )
   }

@@ -22,7 +22,8 @@ import { buildProbeSource, type ProbeClient } from '../cdp/probe'
 import { createInterpolator, MissingFlowInputsError, type FlowInputs, type FlowInterpolator } from '@shared/flow/interpolate'
 import { locatorLayer, type Flow, type FlowStep, type LocatorLayer, type Selector } from '@shared/flow/schema'
 import { MODIFIER_BITS, parseKey, UnknownKeyError, type KeyPress } from './keys'
-import { EvidenceCollector, type AppCrash, type StepEvidence } from './evidence'
+import { EvidenceCollector, type AppCrash, type ConsoleLog, type StepEvidence } from './evidence'
+import { DomMutationCounter } from './dom-mutations'
 import { TraceRecorder, type TraceFile } from './trace'
 import type { HarLog } from '../harvest/har'
 import type { RedactionRule } from '@shared/settings'
@@ -165,6 +166,11 @@ export interface FlowRun {
    * RunNetwork). The run record writes it as `network.har`. Absent when the run sent no request.
    */
   network?: HarLog
+  /**
+   * Browser runs (roadmap DT1c): every console message of the run, scrubbed, each tagged with its step (see
+   * EvidenceCollector.consoleLog). The run record writes it as `console.json`. Absent when the page logged nothing.
+   */
+  console?: ConsoleLog
   /** Browser runs with `trace` (roadmap DT1b): the run's performance trace (see TraceRecorder), written as `trace.json`. */
   trace?: TraceFile
   /** Why a run asked to trace has none. */
@@ -534,6 +540,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
   })
 
   const evidence = new EvidenceCollector(client, options.sessionId, interp.redact, undefined, options.redactionRules)
+  const dom = new DomMutationCounter(client, options.sessionId)
   const trace = options.trace
     ? new TraceRecorder(client, options.sessionId, interp.redact, options.redactionRules)
     : undefined
@@ -542,7 +549,7 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
   let run: FlowRun | undefined
   try {
     try {
-      await evidence.start()
+      await Promise.all([evidence.start(), dom.start()])
       // Before the target opens, so its load is in the trace too.
       await trace?.start()
       await session.send('Page.enable')
@@ -556,29 +563,31 @@ export async function replayFlow(client: ReplayClient, flow: Flow, options: Repl
     } catch (error) {
       run = abort(interp.redact(`could not open the flow's target: ${(error as Error).message ?? error}`))
     }
-    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence, options.stepScreenshots ?? 'off', options.onStep, trace)
+    run ??= await runSteps(flow, runner, startedAt, now, options.signal, evidence, options.stepScreenshots ?? 'off', options.onStep, trace, dom)
   } finally {
     // Always ended, even when a step threw: a browser left tracing refuses the next run's trace.
     traced = await trace?.stop()
     evidence.stop()
+    await dom.stop()
     offDialog?.()
     await uninstall?.().catch(() => undefined)
   }
   const withTrace = traced?.trace ? { trace: traced.trace } : traced?.error !== undefined ? { traceError: traced.error } : {}
-  return { ...withEvidence(run, flow, evidence), ...withTrace }
+  return { ...withEvidence(run, flow, evidence, dom), ...withTrace }
 }
 
 /** Files the collected evidence onto the run's steps (aligned with `flow.steps` by index). */
-function withEvidence(run: FlowRun, flow: Flow, evidence: EvidenceCollector): FlowRun {
-  const network = evidence.network(
-    flow.steps.map((s) => s.id),
-    run.startedAt
-  )
-  /** The step's evidence plus how many requests it sent (in the run HAR). */
+function withEvidence(run: FlowRun, flow: Flow, evidence: EvidenceCollector, dom: DomMutationCounter): FlowRun {
+  const stepIds = flow.steps.map((s) => s.id)
+  const network = evidence.network(stepIds, run.startedAt)
+  const consoleLog = evidence.consoleLog(stepIds, run.startedAt)
+  /** The step's evidence plus how many requests it sent (in the run HAR) and what it changed in the DOM. */
   const evidenceOf = (index: number): Omit<StepEvidence, 'url'> | StepEvidence | undefined => {
     const e = evidence.forStep(index)
     const requests = network?.perStep.get(index)
-    return requests ? { ...e, requests } : e
+    const domMutations = dom.forStep(index)
+    if (!requests && !domMutations) return e
+    return { ...e, ...(requests ? { requests } : {}), ...(domMutations ? { domMutations } : {}) }
   }
   const steps = run.steps.map((step, index) => {
     const e = flow.steps[index]?.id === step.id ? evidenceOf(index) : undefined
@@ -591,7 +600,8 @@ function withEvidence(run: FlowRun, flow: Flow, evidence: EvidenceCollector): Fl
     steps,
     ...(opening ? { opening } : {}),
     ...(finalUrl !== undefined ? { finalUrl } : {}),
-    ...(network ? { network: network.har } : {})
+    ...(network ? { network: network.har } : {}),
+    ...(consoleLog ? { console: consoleLog } : {})
   }
 }
 
@@ -609,7 +619,8 @@ async function runSteps(
   evidence: EvidenceCollector,
   shots: StepScreenshots,
   onStep?: (event: StepProgress) => void,
-  trace?: TraceRecorder
+  trace?: TraceRecorder,
+  dom?: DomMutationCounter
 ): Promise<FlowRun> {
   const steps: StepRun[] = []
   const settled = (index: number, step: FlowStep, status: StepProgress['status']): void => {
@@ -636,6 +647,8 @@ async function runSteps(
       continue
     }
     const before = shots === 'all' ? (lastAfter ?? (await runner.capturePage())) : undefined
+    // What the DOM did since the last read (the previous step's late renders) is the previous step's.
+    await dom?.beginStep(index)
     evidence.beginStep(index)
     trace?.beginStep(index, step.id, step.action)
     const run = await runner.run(step)
@@ -652,6 +665,7 @@ async function runSteps(
     settled(index, step, run.status === 'failed' ? 'failed' : 'passed')
   }
   await evidence.settle()
+  await dom?.finish()
 
   return {
     status: failed === undefined && stopped === undefined ? 'passed' : 'failed',

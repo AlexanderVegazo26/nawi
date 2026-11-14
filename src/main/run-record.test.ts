@@ -7,6 +7,7 @@ import { toHtmlReport } from './run-report'
 import {
   HEAL_REPLAY_MARKER,
   KEPT_HEAL_REPLAYS,
+  CONSOLE_JSON,
   NETWORK_HAR,
   TRACE_JSON,
   RUN_ASSET_RE,
@@ -590,3 +591,58 @@ describe('buildRunRecord: the run trace (roadmap DT1b)', () => {
     expect('trace_json' in r || 'trace_error' in r, JSON.stringify(r)).toBe(false)
   })
 })
+
+describe('buildRunRecord: console log and DOM changes (roadmap DT1c)', () => {
+  const log = {
+    version: 1 as const,
+    entries: [
+      { t_ms: 3, opening: true as const, level: 'debug' as const, source: 'console' as const, type: 'debug', message: 'boot' },
+      { t_ms: 12, step_id: 's1', level: 'warning' as const, source: 'console' as const, type: 'warning', message: 'careful' }
+    ]
+  }
+  const run: FlowRun = {
+    status: 'passed',
+    startedAt: T0,
+    durationMs: 300,
+    opening: { consoleCounts: { debug: 1 }, domMutations: { added: 40, removed: 0, attributes: 2, text: 0, navigated: true } },
+    steps: [{ id: 's1', action: 'click', status: 'passed', consoleCounts: { warning: 1 }, domMutations: { added: 3, removed: 1, attributes: 1, text: 0 } }],
+    console: log
+  }
+
+  it('writes console.json next to run.json, names it in console_json, and spells counts and DOM changes in snake_case', async () => {
+    const { record: r, assets } = record(run)
+    expect(r.console_json).toBe(CONSOLE_JSON)
+    expect(r.steps[0], JSON.stringify(r.steps[0])).toMatchObject({
+      console_counts: { warning: 1 },
+      dom_mutations: { added: 3, removed: 1, attributes: 1, text: 0 }
+    })
+    expect('consoleCounts' in r.steps[0] || 'domMutations' in r.steps[0], 'no camelCase evidence keys in run.json').toBe(false)
+    expect(r.opening).toEqual({ console_counts: { debug: 1 }, dom_mutations: { added: 40, removed: 0, attributes: 2, text: 0, navigated: true } })
+    expect(JSON.parse(assets.get(CONSOLE_JSON)?.toString('utf8') ?? 'null'), 'the log as the run built it').toEqual(log)
+    expect(RUN_ASSET_RE.test(CONSOLE_JSON), 'console.json is a run asset').toBe(true)
+    for (const bad of ['steps/console.json', '../console.json', 'console.json.exe', 'consolexjson']) {
+      expect(RUN_ASSET_RE.test(bad), `${bad} is not a run asset`).toBe(false)
+    }
+    const runs = join(mkdtempSync(join(tmpdir(), 'nawi-run-console-')), 'runs')
+    try {
+      const dir = await writeRunRecord(runs, r, assets)
+      expect(readdirSync(dir).sort()).toEqual(['console.json', 'junit.xml', 'run.json'])
+      expect(JSON.parse(readFileSync(join(dir, CONSOLE_JSON), 'utf8')).entries).toHaveLength(2)
+    } finally {
+      rmSync(join(runs, '..'), { recursive: true, force: true })
+    }
+  })
+
+  it('has no console_json, no file, and no empty counts when the page logged nothing', () => {
+    const { record: r, assets } = record({ ...run, console: undefined, opening: undefined, steps: [{ id: 's1', action: 'click', status: 'passed', consoleCounts: {} }] })
+    expect(r.console_json).toBeUndefined()
+    expect(assets.has(CONSOLE_JSON)).toBe(false)
+    expect('console_counts' in r.steps[0] || 'dom_mutations' in r.steps[0], JSON.stringify(r.steps[0])).toBe(false)
+  })
+
+  it('keeps JUnit output unchanged: counts are not errors', () => {
+    const { record: r } = record(run)
+    expect(toJUnitXml(r), 'a passing step with only counts has no system-err').not.toContain('system-err')
+  })
+})
+

@@ -38,10 +38,13 @@ import { HarBuilder, type HarEntry, type HarHeader, type HarLog } from '../harve
 import { sealValue } from '../sidecar/seal'
 import type { RedactionRule } from '@shared/settings'
 import type { ReplayClient } from './replay'
+import type { DomMutations } from './dom-mutations'
 
 export const MAX_ENTRIES_PER_STEP = 20
 /** Requests a run's `network.har` keeps (roadmap DT1); the rest are counted in the log's comment. */
 export const MAX_HAR_REQUESTS = 2_000
+/** Console messages a run's `console.json` keeps (roadmap DT1c); the rest are only counted. */
+export const MAX_CONSOLE_ENTRIES = 5_000
 const MAX_MESSAGE_CHARS = 1_000
 /** A header value in the run HAR (a Content-Security-Policy can be long). */
 const MAX_HEADER_CHARS = 16_000
@@ -60,6 +63,37 @@ export interface ConsoleError {
   /** `console` = console.error/assert, `exception` = uncaught, `log` = a browser log entry. */
   source: 'console' | 'exception' | 'log'
   message: string
+}
+
+/** A console message's level, as the browser's console filters them. */
+export type ConsoleLevel = 'error' | 'warning' | 'info' | 'debug'
+
+/** Console messages of one step by level (roadmap DT1c), all of them, also those past the run file's cap. */
+export type ConsoleCounts = Partial<Record<ConsoleLevel, number>>
+
+/** One message in a run's `console.json` (roadmap DT1c). */
+export interface ConsoleEntry {
+  /** Ms since the run started (the browser's own timestamp of the message). */
+  t_ms: number
+  /** The step that was running; absent (and `opening` set) while the target was opening. */
+  step_id?: string
+  opening?: true
+  level: ConsoleLevel
+  /** `console` = a console API call, `exception` = uncaught, `log` = a browser log entry (violations, interventions, network...). */
+  source: ConsoleError['source']
+  /** The console API call (`log`, `warn`, `table`, `assert`...) or the browser log entry's source (`violation`, `network`...). */
+  type?: string
+  message: string
+  /** Where it came from, `url:line:column` (1-based), scrubbed. */
+  location?: string
+}
+
+/** Roadmap DT1c: every console message of a browser run, the file the run record writes as `console.json`. */
+export interface ConsoleLog {
+  version: 1
+  entries: ConsoleEntry[]
+  /** Messages past MAX_CONSOLE_ENTRIES, counted in the steps' `consoleCounts` but not kept here. */
+  dropped?: number
 }
 
 export interface FailedRequest {
@@ -110,10 +144,14 @@ export interface StepEvidence {
   consoleErrors?: ConsoleError[]
   /** Console errors beyond the per-step cap. */
   consoleErrorsDropped?: number
+  /** Browser runs (roadmap DT1c): console messages of every level by level, each in the run's `console.json`. */
+  consoleCounts?: ConsoleCounts
   failedRequests?: FailedRequest[]
   failedRequestsDropped?: number
   /** Browser runs (roadmap DT1): requests the step sent, all of them in the run's `network.har` under its id. */
   requests?: number
+  /** Browser runs (roadmap DT1c): what the step changed in the main frame's DOM (see DomMutationCounter). */
+  domMutations?: DomMutations
   /** Main-frame URL after the step, scrubbed. */
   url?: string
 }
@@ -146,6 +184,16 @@ export function wallClockMs(): number {
   const offset = Date.now() - mono
   if (Math.abs(offset - anchor) > 2) anchor = offset
   return anchor + mono
+}
+
+/** A CDP code location: the URL and its `:line:column` suffix (1-based; CDP's are 0-based). */
+type CodeLocation = { url: string; suffix: string }
+
+function codeLocation(url: unknown, line: unknown, column: unknown): CodeLocation | undefined {
+  if (typeof url !== 'string' || url === '') return undefined
+  const n = (x: unknown): string => (typeof x === 'number' && Number.isInteger(x) && x >= 0 ? `:${x + 1}` : '')
+  const l = n(line)
+  return { url, suffix: `${l}${l ? n(column) : ''}` }
 }
 
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text)
@@ -185,6 +233,9 @@ export class EvidenceCollector {
   /** The step that sent each request the HAR holds (the first hop's step for a redirect chain). */
   private readonly harStep = new Map<string, number>()
   private harDropped = 0
+  /** Roadmap DT1c: every console message of the run (scrubbed when kept), for `console.json`. */
+  private readonly consoleEntries: Array<Omit<ConsoleEntry, 't_ms' | 'step_id' | 'opening'> & { at: number; step: number }> = []
+  private consoleDropped = 0
 
   constructor(
     private readonly client: ReplayClient,
@@ -327,6 +378,14 @@ export class EvidenceCollector {
     return clip(this.redact(text), MAX_MESSAGE_CHARS)
   }
 
+  /**
+   * scrubText plus the Tier B pattern scan and the workspace's rules, both before the cut: a token cut in half no
+   * longer matches its pattern (console messages, roadmap DT1c).
+   */
+  private sealText(text: string): string {
+    return clip(sealValue(this.redact(text), this.rules).value, MAX_MESSAGE_CHARS)
+  }
+
   private scrubUrl(url: string): string {
     // data: URLs can be megabytes of payload; the type is what matters.
     if (/^data:/i.test(url)) return `${url.slice(0, Math.max(5, url.search(/[,;]/)))},…`
@@ -350,34 +409,102 @@ export class EvidenceCollector {
     else e.failedRequestsDropped = (e.failedRequestsDropped ?? 0) + 1
   }
 
-  private addConsole(at: unknown, source: ConsoleError['source'], message: () => string): void {
-    this.push(this.stepAt(at), 'consoleErrors', () => ({ source, message: this.scrubText(message()) }))
+  /**
+   * One console message: counted under its step by level, kept for `console.json` while there is room, and filed
+   * among the step's console errors when `error` says so. `message` is called at most once, and only when the
+   * message is kept somewhere, so a page logging in a loop costs no scrubbing past the caps.
+   */
+  private addConsole(
+    at: unknown,
+    source: ConsoleError['source'],
+    level: ConsoleLevel,
+    type: string | undefined,
+    location: CodeLocation | undefined,
+    message: () => string,
+    error: boolean
+  ): void {
+    const when = typeof at === 'number' && Number.isFinite(at) && at > 0 ? at : this.clock()
+    const step = this.stepAt(at)
+    const counts = (this.bucket(step).consoleCounts ??= {})
+    counts[level] = (counts[level] ?? 0) + 1
+    let scrubbed: string | undefined
+    const text = (): string => (scrubbed ??= this.sealText(message()))
+    if (this.consoleEntries.length < MAX_CONSOLE_ENTRIES) {
+      this.consoleEntries.push({
+        at: when,
+        step,
+        level,
+        source,
+        ...(type !== undefined ? { type } : {}),
+        message: text(),
+        ...(location !== undefined ? { location: this.scrubUrl(location.url) + location.suffix } : {})
+      })
+    } else this.consoleDropped++
+    if (error) this.push(step, 'consoleErrors', () => ({ source, message: text() }))
   }
 
   private onConsole(p: Record<string, unknown>): void {
-    if (p.type !== 'error' && p.type !== 'assert') return
-    this.addConsole(p.timestamp, 'console', () => {
+    const type = typeof p.type === 'string' ? p.type : 'log'
+    const level: ConsoleLevel = type === 'error' || type === 'assert' ? 'error' : type === 'warning' ? 'warning' : type === 'debug' ? 'debug' : 'info'
+    const frame = (p.stackTrace as { callFrames?: unknown } | undefined)?.callFrames
+    const top = Array.isArray(frame) ? (frame[0] as Record<string, unknown> | undefined) : undefined
+    this.addConsole(p.timestamp, 'console', level, type, codeLocation(top?.url, top?.lineNumber, top?.columnNumber), () => {
       const message = argsToMessage(p.args)
-      return p.type === 'assert' && !message ? 'console.assert' : message
-    })
+      return type === 'assert' && !message ? 'console.assert' : message
+    }, level === 'error')
   }
 
   private onException(p: Record<string, unknown>): void {
-    const d = p.exceptionDetails as { text?: unknown; exception?: { description?: unknown } } | undefined
-    this.addConsole(p.timestamp, 'exception', () =>
+    const d = p.exceptionDetails as
+      | { text?: unknown; exception?: { description?: unknown }; url?: unknown; lineNumber?: unknown; columnNumber?: unknown }
+      | undefined
+    this.addConsole(p.timestamp, 'exception', 'error', undefined, codeLocation(d?.url, d?.lineNumber, d?.columnNumber), () =>
       typeof d?.exception?.description === 'string'
         ? d.exception.description
         : typeof d?.text === 'string'
           ? d.text
           : 'uncaught exception'
-    )
+    , true)
   }
 
   private onLog(p: Record<string, unknown>): void {
-    const entry = p.entry as { level?: unknown; source?: unknown; text?: unknown; timestamp?: unknown } | undefined
+    const entry = p.entry as
+      | { level?: unknown; source?: unknown; text?: unknown; timestamp?: unknown; url?: unknown; lineNumber?: unknown }
+      | undefined
+    if (!entry) return
+    const level: ConsoleLevel =
+      entry.level === 'error' ? 'error' : entry.level === 'warning' ? 'warning' : entry.level === 'verbose' ? 'debug' : 'info'
     // Network log lines ("Failed to load resource: ... 404") repeat what failedRequests already says.
-    if (!entry || entry.level !== 'error' || entry.source === 'network') return
-    this.addConsole(entry.timestamp, 'log', () => (typeof entry.text === 'string' ? entry.text : ''))
+    const error = level === 'error' && entry.source !== 'network'
+    this.addConsole(
+      entry.timestamp,
+      'log',
+      level,
+      typeof entry.source === 'string' ? entry.source : undefined,
+      codeLocation(entry.url, entry.lineNumber, undefined),
+      () => (typeof entry.text === 'string' ? entry.text : ''),
+      error
+    )
+  }
+
+  /**
+   * Roadmap DT1c: the run's console messages for `console.json`, each with its step (`step_id`, or `opening`) and its
+   * time since `runStartedAt` (epoch ms). Undefined when the page logged nothing. Call after `stop()`.
+   */
+  consoleLog(stepIds: readonly string[], runStartedAt: number): ConsoleLog | undefined {
+    if (this.consoleEntries.length === 0 && this.consoleDropped === 0) return undefined
+    const entries = [...this.consoleEntries]
+      .sort((a, b) => a.at - b.at)
+      .map(({ at, step, ...rest }): ConsoleEntry => {
+        const stepId = stepIds[step]
+        return {
+          t_ms: Math.round((at - runStartedAt) * 1000) / 1000,
+          ...(step < 0 || stepId === undefined ? { opening: true as const } : { step_id: stepId }),
+          ...rest
+        }
+      })
+    const log: ConsoleLog = { version: 1, entries, ...(this.consoleDropped > 0 ? { dropped: this.consoleDropped } : {}) }
+    return sealValue(log, this.rules).value
   }
 
   private onRequest(p: Record<string, unknown>): void {

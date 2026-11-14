@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import type { ConsoleError, DeviceLogLine, FailedRequest, StepEvidence } from './replay/evidence'
+import type { ConsoleCounts, ConsoleError, DeviceLogLine, FailedRequest, StepEvidence } from './replay/evidence'
+import type { DomMutations } from './replay/dom-mutations'
 import type { FlowRun, StepRun } from './replay/replay'
 import { anchorMissText } from './replay/visual-anchor'
 
@@ -59,8 +60,10 @@ const STEP_ID_RE = new RegExp(`^${STEP_ID}$`)
 export const NETWORK_HAR = 'network.har'
 /** Roadmap DT1b: the run's performance trace (opt-in), a file next to run.json that the browser's Performance panel opens. */
 export const TRACE_JSON = 'trace.json'
+/** Roadmap DT1c: every console message of the run, a file next to run.json. */
+export const CONSOLE_JSON = 'console.json'
 /** A file a run folder holds besides run.json/junit.xml/report.html, relative to it: a screenshot (`steps/003-save.after.jpg`) or NETWORK_HAR. */
-export const RUN_ASSET_RE = new RegExp(`^(?:steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.(?:jpg|png))|network\\.har|trace\\.json)$`)
+export const RUN_ASSET_RE = new RegExp(`^(?:steps/\\d{3}(?:-${STEP_ID})?(?:\\.png|\\.(?:before|after)\\.(?:jpg|png))|network\\.har|trace\\.json|console\\.json)$`)
 /** Folders a write in progress uses; one older than this was left by a crash. */
 const STALE_TEMP_MS = 60 * 60 * 1000
 
@@ -89,10 +92,17 @@ export interface RecordedEvidence {
   logcat_dropped?: number
   console_errors?: ConsoleError[]
   console_errors_dropped?: number
+  /** Browser runs (roadmap DT1c): console messages of every level, by level; each is in `console.json` under the step. */
+  console_counts?: ConsoleCounts
   failed_requests?: FailedRequest[]
   failed_requests_dropped?: number
   /** Browser runs (roadmap DT1): requests sent in this step (or while opening), each in `network.har` under its id. */
   requests?: number
+  /**
+   * Browser runs (roadmap DT1c): what the step changed in the main frame's DOM (nodes added/removed, attribute and text
+   * changes), counted until the next step began; `navigated` = a new document loaded, the counts are its own.
+   */
+  dom_mutations?: DomMutations
 }
 
 export interface RecordedStep
@@ -160,6 +170,12 @@ export interface RunRecord {
   trace_json?: typeof TRACE_JSON
   /** Why a run asked to trace has no `trace_json` (the browser refused or never finished the trace). */
   trace_error?: string
+  /**
+   * Browser runs (roadmap DT1c): every console message of the run, all levels, in the run folder (always
+   * `console.json`): `{ version: 1, entries: [{ t_ms, step_id | opening, level, source, type?, message, location? }] }`.
+   * Scrubbed like the HAR. Absent when the page logged nothing.
+   */
+  console_json?: typeof CONSOLE_JSON
   steps: RecordedStep[]
 }
 
@@ -171,7 +187,9 @@ function recordedEvidence(e: Omit<StepEvidence, 'url'>): RecordedEvidence {
     ...(e.consoleErrorsDropped ? { console_errors_dropped: e.consoleErrorsDropped } : {}),
     ...(e.failedRequests?.length ? { failed_requests: e.failedRequests } : {}),
     ...(e.failedRequestsDropped ? { failed_requests_dropped: e.failedRequestsDropped } : {}),
-    ...(e.requests ? { requests: e.requests } : {})
+    ...(e.requests ? { requests: e.requests } : {}),
+    ...(e.consoleCounts && Object.keys(e.consoleCounts).length > 0 ? { console_counts: e.consoleCounts } : {}),
+    ...(e.domMutations ? { dom_mutations: e.domMutations } : {})
   }
 }
 
@@ -214,13 +232,25 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
       logcat,
       logcatDropped,
       requests,
+      consoleCounts,
+      domMutations,
       url,
       ...rest
     } = step
     const out: RecordedStep = {
       ...rest,
       ...(url !== undefined ? { url } : {}),
-      ...recordedEvidence({ consoleErrors, consoleErrorsDropped, failedRequests, failedRequestsDropped, logcat, logcatDropped, requests })
+      ...recordedEvidence({
+        consoleErrors,
+        consoleErrorsDropped,
+        failedRequests,
+        failedRequestsDropped,
+        logcat,
+        logcatDropped,
+        requests,
+        consoleCounts,
+        domMutations
+      })
     }
     if (startedAt !== undefined) out.started_at = new Date(startedAt).toISOString()
     if (durationMs !== undefined) out.duration_ms = durationMs
@@ -269,10 +299,12 @@ export function buildRunRecord(input: RunRecordInput): { record: RunRecord; asse
     ...(run.network ? { network_har: NETWORK_HAR } : {}),
     ...(traceBytes ? { trace_json: TRACE_JSON } : {}),
     ...(traceError !== undefined ? { trace_error: traceError } : {}),
+    ...(run.console ? { console_json: CONSOLE_JSON } : {}),
     steps
   }
   if (run.network) assets.set(NETWORK_HAR, Buffer.from(`${JSON.stringify(run.network)}\n`))
   if (traceBytes) assets.set(TRACE_JSON, traceBytes)
+  if (run.console) assets.set(CONSOLE_JSON, Buffer.from(`${JSON.stringify(run.console)}\n`))
   return { record, assets }
 }
 
