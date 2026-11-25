@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Rect } from '@shared/types'
 import { isNudgeKey, nudgeRect } from './lib/nudge'
+import { DIM_OUTSIDE, dragRect, previewRect } from './lib/region'
 import { LiveAnnouncer } from './components/ui'
 import './styles.css'
 
@@ -30,7 +31,8 @@ function Overlay(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [origin, setOrigin] = useState<{ x: number; y: number } | null>(null)
   const [rect, setRect] = useState<Rect | null>(null)
-  const [cursor, setCursor] = useState({ x: 0, y: 0 })
+  /** Null until the pointer is over this display's overlay: with several displays only the one under it follows. */
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
   const dragging = useRef(false)
   /**
    * True once an arrow key has been used. Gates the magnifier (UX-CAP.5 asks
@@ -142,14 +144,7 @@ function Overlay(): React.JSX.Element {
   const onPointerMove = (e: React.PointerEvent): void => {
     setCursor({ x: e.clientX, y: e.clientY })
     if (!dragging.current || !origin) return
-    const x = Math.min(origin.x, e.clientX)
-    const y = Math.min(origin.y, e.clientY)
-    setRect({
-      x,
-      y,
-      width: Math.abs(e.clientX - origin.x),
-      height: Math.abs(e.clientY - origin.y)
-    })
+    setRect(dragRect(origin, { x: e.clientX, y: e.clientY }))
   }
 
   const onPointerUp = (): void => {
@@ -162,6 +157,10 @@ function Overlay(): React.JSX.Element {
     }
     commit(rect)
   }
+
+  /** What is left undimmed: the drag, else the clear window following the cursor before a click. */
+  const clear =
+    rect ?? (cursor ? previewRect(cursor, { width: window.innerWidth, height: window.innerHeight }) : null)
 
   if (error) {
     return (
@@ -187,6 +186,10 @@ function Overlay(): React.JSX.Element {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerLeave={() => {
+        // With several displays each has its own overlay: the one the pointer left stops showing a stale preview.
+        if (!dragging.current) setCursor(null)
+      }}
       onContextMenu={(e) => {
         e.preventDefault()
         window.api.cancelRegion()
@@ -206,12 +209,26 @@ function Overlay(): React.JSX.Element {
         <defs>
           <mask id="cutout">
             <rect width="100%" height="100%" fill="white" />
-            {rect && (
-              <rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} fill="black" />
+            {clear && (
+              <rect x={clear.x} y={clear.y} width={clear.width} height={clear.height} fill="black" />
             )}
           </mask>
         </defs>
-        <rect width="100%" height="100%" fill="rgba(0,0,0,0.45)" mask="url(#cutout)" />
+        <rect width="100%" height="100%" fill={`rgba(0,0,0,${DIM_OUTSIDE})`} mask="url(#cutout)" data-testid="overlay-dim" />
+        {!rect && clear && (
+          <rect
+            x={clear.x}
+            y={clear.y}
+            width={clear.width}
+            height={clear.height}
+            fill="none"
+            stroke="var(--color-accent)"
+            strokeOpacity={0.7}
+            strokeDasharray="4 3"
+            strokeWidth={1}
+            data-testid="overlay-preview"
+          />
+        )}
         {rect && rect.width > 0 && (
           <rect
             x={rect.x}
@@ -226,7 +243,7 @@ function Overlay(): React.JSX.Element {
       </svg>
 
       {/* Crosshair guides before the first drag. */}
-      {!rect && (
+      {!rect && cursor && (
         <svg className="pointer-events-none absolute inset-0 h-full w-full">
           <line x1={cursor.x} y1={0} x2={cursor.x} y2="100%" stroke="var(--color-accent)" strokeOpacity={0.5} strokeWidth={1} />
           <line x1={0} y1={cursor.y} x2="100%" y2={cursor.y} stroke="var(--color-accent)" strokeOpacity={0.5} strokeWidth={1} />
@@ -311,7 +328,7 @@ function Overlay(): React.JSX.Element {
             previous line said "Arrows resize", which was true of the shipped
             handler and wrong against both specs.
           */}
-          Drag to select · <kbd className="text-text-primary">Arrows</kbd> move 1px ·{' '}
+          Move to aim, click and drag to select · <kbd className="text-text-primary">Arrows</kbd> move 1px ·{' '}
           <kbd className="text-text-primary">Shift</kbd> 10px ·{' '}
           <kbd className="text-text-primary">Ctrl</kbd>+arrows resize ·{' '}
           <kbd className="text-text-primary">Enter</kbd> confirm ·{' '}

@@ -366,6 +366,8 @@ async function beginRegion(): Promise<LibraryItem | null> {
 
     const displayByWc = new Map<number, number>()
     const windows: BrowserWindow[] = []
+    // The overlay on the display under the pointer takes focus; the others are shown without stealing it.
+    const underPointer = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
     for (const d of screen.getAllDisplays()) {
       const win = new BrowserWindow({
         x: d.bounds.x,
@@ -381,13 +383,20 @@ async function beginRegion(): Promise<LibraryItem | null> {
         fullscreenable: false,
         backgroundColor: '#000000',
         show: false,
+        // macOS: the first click on a window that is not focused is otherwise swallowed to focus it. With one
+        // overlay per display that made the user click a screen before the selection would start.
+        acceptFirstMouse: true,
         webPreferences
       })
       win.setAlwaysOnTop(true, 'screen-saver')
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
       win.once('ready-to-show', () => {
-        win.show()
-        win.focus()
+        if (d.id === underPointer) {
+          win.show()
+          win.focus()
+        } else {
+          win.showInactive()
+        }
       })
       hardenWindow(win)
       attachDiagnostics(win, `overlay:${d.id}`)

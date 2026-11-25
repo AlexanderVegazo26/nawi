@@ -129,3 +129,29 @@ jobs:
             test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+  package-macos:
+    name: Packaged app starts (macOS arm64)
+    needs: verify
+    # The release workflow builds and launches the macOS app only on a tag. This job does the same on a pull
+    # request, so a change to the packaging, the entitlements or the signing cannot ship an app that will not open.
+    # The runner is Apple Silicon: the arm64 build is launched natively, the x64 build under Rosetta when present.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run install-electron
+      # The same wrapper the release uses: with no signing secrets it builds the app ad-hoc signed.
+      - run: node scripts/release-build.ts dist:mac
+      - run: node scripts/smoke-packaged.ts
+      - name: Smoke the x64 build (Rosetta)
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            node scripts/smoke-packaged.ts --arch x64
+          else
+            echo "::warning::Rosetta is not installed on this runner; the x64 macOS build was not launched"
+          fi
