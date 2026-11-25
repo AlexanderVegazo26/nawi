@@ -17,6 +17,8 @@ import path from 'node:path'
 
 const READY = /nawi serve: ready on http:\/\/127\.0\.0\.1:\d+/
 const START_TIMEOUT_MS = 45_000
+/** Rosetta translates the whole Electron binary on a cold first launch, which takes far longer than a native start. */
+const ROSETTA_START_TIMEOUT_MS = 240_000
 const STOP_TIMEOUT_MS = 15_000
 
 export type Arch = 'x64' | 'arm64'
@@ -62,6 +64,7 @@ function checkMacSignature(exe: string): string | null {
 function launch(exe: string, platform: NodeJS.Platform, arch: Arch): Promise<string | null> {
   const profile = mkdtempSync(path.join(tmpdir(), 'nawi-smoke-'))
   const rosetta = platform === 'darwin' && arch !== (process.arch as Arch)
+  const startTimeoutMs = rosetta ? ROSETTA_START_TIMEOUT_MS : START_TIMEOUT_MS
   const cmd = rosetta ? 'arch' : exe
   const args = rosetta ? [`-${arch === 'x64' ? 'x86_64' : 'arm64'}`, exe, ...launchArgs(platform, profile)] : launchArgs(platform, profile)
   const env: NodeJS.ProcessEnv = { ...process.env, NAWI_MCP_CONFIG: path.join(profile, 'mcp.json') }
@@ -83,8 +86,8 @@ function launch(exe: string, platform: NodeJS.Platform, arch: Arch): Promise<str
       resolve(failure)
     }
     const startTimer = setTimeout(
-      () => finish(`no ready line within ${START_TIMEOUT_MS / 1000} s. Output:\n${log || '(none)'}`),
-      START_TIMEOUT_MS
+      () => finish(`no ready line within ${startTimeoutMs / 1000} s. Output:\n${log || '(none)'}`),
+      startTimeoutMs
     )
     const onData = (d: Buffer): void => {
       log += d.toString()
