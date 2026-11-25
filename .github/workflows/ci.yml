@@ -146,7 +146,11 @@ jobs:
       - run: npm ci
       - run: npm run install-electron
       # The same wrapper the release uses: with no signing secrets it builds the app ad-hoc signed.
+      # electron-builder skips signing on a pull request ("code signing will be skipped") unless told otherwise,
+      # which left this job's bundle unsealed. No secret is involved: without a certificate this is ad-hoc signing.
       - run: node scripts/release-build.ts dist:mac
+        env:
+          CSC_FOR_PULL_REQUEST: 'true'
       - run: node scripts/smoke-packaged.ts
       - name: Smoke the x64 build (Rosetta)
         run: |
