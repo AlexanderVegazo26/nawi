@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { BUILD_SCRIPTS, SIGNING_VARS, withoutEmptySigningVars } from './release-build.ts'
+import { BUILD_SCRIPTS, SIGNING_VARS, hasSigningCertificate, macAdHocArgs, withoutEmptySigningVars } from './release-build.ts'
 
 const root = path.resolve(import.meta.dirname, '..')
 
@@ -62,6 +62,24 @@ describe('release.yml build step', () => {
   })
 })
 
+describe('macAdHocArgs', () => {
+  it('asks for an ad-hoc, non-hardened macOS build when there is no certificate', () => {
+    expect(macAdHocArgs('dist:mac', {})).toEqual(['--', '-c.mac.identity=-', '-c.mac.hardenedRuntime=false'])
+  })
+  it('does nothing when a certificate is present, so a real signing identity is never overridden', () => {
+    expect(macAdHocArgs('dist:mac', { CSC_LINK: 'x' })).toEqual([])
+    expect(macAdHocArgs('dist:mac', { CSC_NAME: 'Developer ID Application: Someone' })).toEqual([])
+  })
+  it('does nothing for other platforms', () => {
+    expect(macAdHocArgs('dist:win', {})).toEqual([])
+    expect(macAdHocArgs('dist:linux', {})).toEqual([])
+  })
+  it('treats a blank certificate variable as absent', () => {
+    expect(hasSigningCertificate({ CSC_LINK: '  ' })).toBe(false)
+    expect(hasSigningCertificate({ CSC_NAME: 'x' })).toBe(true)
+  })
+})
+
 describe.skipIf(process.platform === 'win32')('scripts/release-build.ts command', () => {
   let dir: string
   beforeEach(() => {
@@ -88,8 +106,31 @@ describe.skipIf(process.platform === 'win32')('scripts/release-build.ts command'
     const result = run(['dist:mac'], { CSC_LINK: '', CSC_KEY_PASSWORD: '', APPLE_ID: 'me@example.test' })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
     const seen = JSON.parse(readFileSync(path.join(dir, 'seen.json'), 'utf8'))
-    expect(seen).toEqual({ args: ['run', 'dist:mac'], env: { APPLE_ID: 'me@example.test' } })
+    expect(seen.args, 'no certificate: the macOS app is built ad-hoc signed, not left with a broken seal').toEqual([
+      'run',
+      'dist:mac',
+      '--',
+      '-c.mac.identity=-',
+      '-c.mac.hardenedRuntime=false'
+    ])
+    expect(seen.env, 'notarization inputs are dropped for an ad-hoc build, empty signing vars too').toEqual({})
     expect(result.stdout).toContain('unset empty CSC_LINK, CSC_KEY_PASSWORD')
+  })
+
+  it('signs with the certificate when one is configured: no ad-hoc flags, signing variables kept', () => {
+    const result = run(['dist:mac'], { CSC_LINK: 'base64cert', CSC_KEY_PASSWORD: 'pw', APPLE_ID: 'me@example.test' })
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0)
+    const seen = JSON.parse(readFileSync(path.join(dir, 'seen.json'), 'utf8'))
+    expect(seen).toEqual({
+      args: ['run', 'dist:mac'],
+      env: { CSC_LINK: 'base64cert', CSC_KEY_PASSWORD: 'pw', APPLE_ID: 'me@example.test' }
+    })
+  })
+
+  it('leaves the Windows and Linux builds alone', () => {
+    const result = run(['dist:linux'], { CSC_LINK: '' })
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0)
+    expect(JSON.parse(readFileSync(path.join(dir, 'seen.json'), 'utf8')).args).toEqual(['run', 'dist:linux'])
   })
 
   it('exits with the build exit code so a failed build fails the job', () => {

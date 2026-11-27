@@ -255,14 +255,20 @@ apart from policy.
 1. Open the `.dmg` and drag Nawi to Applications. Pick the build matching your
    hardware: `Nawi-<version>-arm64.dmg` for Apple Silicon, `Nawi-<version>.dmg`
    (no suffix) for Intel.
-2. **Gatekeeper will block it.** The build is neither signed nor notarized, so a
-   *downloaded* copy is quarantined and macOS reports *"Nawi is damaged and
-   can't be opened"* (exact wording varies by macOS version). It is not damaged.
-   Clear the quarantine flag:
+2. **Gatekeeper will still block the first launch.** The build is ad-hoc signed (a
+   consistent signature with no Apple identity), not notarized, so a *downloaded*
+   copy is quarantined and macOS refuses it until you allow it. Either right-click
+   Nawi in Applications and choose **Open**, then **Open** again, or (on newer
+   macOS) allow it under **System Settings → Privacy & Security → Open Anyway**,
+   or clear the quarantine flag:
    ```bash
    xattr -dr com.apple.quarantine /Applications/Nawi.app
    ```
-   Building and running locally never reproduces this, because quarantine is
+   Releases up to 0.1.1 were not signed at all: their bundle signature did not
+   match the bundle and Apple Silicon reported *"Nawi is damaged and can't be
+   opened"* or did not start it. It was not damaged. The release workflow now
+   starts the packaged arm64 app on a macOS runner before it publishes.
+   Building and running locally never reproduces the quarantine, because it is
    applied only to downloads.
 3. Launch Nawi and **take a screenshot** (Capture region / full screen). This is
    what triggers macOS's screen-recording request — Nawi deliberately does not

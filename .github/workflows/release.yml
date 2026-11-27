@@ -94,6 +94,22 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Start the packaged app itself (`<app> --serve`, headless) and wait for it to answer. v0.1.0's arm64 macOS
+      # build was packaged, uploaded and unable to open, and nothing started it before release. On macOS this also
+      # verifies the bundle's code signature (`codesign --verify --deep --strict`); the runner is Apple Silicon, so
+      # this is the arm64 launch check.
+      - name: Smoke the packaged app
+        run: node scripts/smoke-packaged.ts
+
+      - name: Smoke the packaged app (macOS x64, under Rosetta)
+        if: runner.os == 'macOS'
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            node scripts/smoke-packaged.ts --arch x64
+          else
+            echo "::warning::Rosetta is not installed on this runner; the x64 macOS build was not launched"
+          fi
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nawi-${{ matrix.artifact }}
